@@ -72,14 +72,36 @@ db.exec(`
     title TEXT NOT NULL,
     event_type TEXT NOT NULL DEFAULT 'scrim',
     status TEXT NOT NULL DEFAULT 'pending',
-    start_at TEXT NOT NULL,
-    end_at TEXT NOT NULL,
-    meeting_at TEXT NOT NULL,
+    option_date TEXT NOT NULL,
+    window_start_at TEXT NOT NULL,
+    window_end_at TEXT NOT NULL,
+    scheduled_start_at TEXT,
+    scheduled_end_at TEXT,
+    meeting_scrim_at TEXT,
+    meeting_primeleague_at TEXT,
+    available_players_text TEXT,
+    opgg_url TEXT,
     note TEXT,
+    suggestion_key TEXT UNIQUE,
+    is_auto_generated INTEGER NOT NULL DEFAULT 0,
     created_by_discord_user_id TEXT NOT NULL,
     updated_by_discord_user_id TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
+  );
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS team_calendar_assignments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id INTEGER NOT NULL,
+    role_label TEXT NOT NULL,
+    player_label TEXT NOT NULL,
+    note TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(event_id, role_label),
+    FOREIGN KEY(event_id) REFERENCES team_calendar_events(id)
   );
 `);
 
@@ -94,8 +116,8 @@ db.exec(`
 `);
 
 db.exec(`
-  CREATE INDEX IF NOT EXISTS idx_team_calendar_events_time
-  ON team_calendar_events (start_at, status);
+  CREATE INDEX IF NOT EXISTS idx_team_calendar_events_option_date
+  ON team_calendar_events (option_date, status);
 `);
 
 function columnExists(tableName, columnName) {
@@ -103,32 +125,24 @@ function columnExists(tableName, columnName) {
   return columns.some(column => column.name === columnName);
 }
 
-if (!columnExists('availability_rules', 'recurrence_type')) {
-  db.exec(`
-    ALTER TABLE availability_rules
-    ADD COLUMN recurrence_type TEXT NOT NULL DEFAULT 'weekly';
-  `);
+function addColumnIfMissing(tableName, columnName, definitionSql) {
+  if (!columnExists(tableName, columnName)) {
+    db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definitionSql};`);
+  }
 }
 
-if (!columnExists('availability_rules', 'anchor_date')) {
-  db.exec(`
-    ALTER TABLE availability_rules
-    ADD COLUMN anchor_date TEXT;
-  `);
-}
+addColumnIfMissing('availability_rules', 'recurrence_type', `TEXT NOT NULL DEFAULT 'weekly'`);
+addColumnIfMissing('availability_rules', 'anchor_date', `TEXT`);
+addColumnIfMissing('availability_rules', 'active', `INTEGER NOT NULL DEFAULT 1`);
 
-if (!columnExists('availability_rules', 'active')) {
-  db.exec(`
-    ALTER TABLE availability_rules
-    ADD COLUMN active INTEGER NOT NULL DEFAULT 1;
-  `);
-}
-
-if (!columnExists('team_calendar_events', 'note')) {
-  db.exec(`
-    ALTER TABLE team_calendar_events
-    ADD COLUMN note TEXT;
-  `);
-}
+addColumnIfMissing('team_calendar_events', 'scheduled_start_at', `TEXT`);
+addColumnIfMissing('team_calendar_events', 'scheduled_end_at', `TEXT`);
+addColumnIfMissing('team_calendar_events', 'meeting_scrim_at', `TEXT`);
+addColumnIfMissing('team_calendar_events', 'meeting_primeleague_at', `TEXT`);
+addColumnIfMissing('team_calendar_events', 'available_players_text', `TEXT`);
+addColumnIfMissing('team_calendar_events', 'opgg_url', `TEXT`);
+addColumnIfMissing('team_calendar_events', 'note', `TEXT`);
+addColumnIfMissing('team_calendar_events', 'suggestion_key', `TEXT UNIQUE`);
+addColumnIfMissing('team_calendar_events', 'is_auto_generated', `INTEGER NOT NULL DEFAULT 0`);
 
 module.exports = db;

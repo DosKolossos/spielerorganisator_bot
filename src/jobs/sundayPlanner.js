@@ -23,16 +23,6 @@ function tryAcquireJobRun(jobName, runKey) {
   return result.changes > 0;
 }
 
-function tableExists(tableName) {
-  const row = db.prepare(`
-    SELECT name
-    FROM sqlite_master
-    WHERE type = 'table' AND name = ?
-  `).get(tableName);
-
-  return !!row;
-}
-
 function playerDisplay(row) {
   return row.alias || row.global_name || row.username || row.discord_user_id;
 }
@@ -119,9 +109,9 @@ function parseTimeToMinutes(timeStr) {
 }
 
 function minutesToTime(minutes) {
-  const safeMinutes = Math.max(0, minutes);
-  const hours = String(Math.floor(safeMinutes / 60)).padStart(2, '0');
-  const mins = String(safeMinutes % 60).padStart(2, '0');
+  const safe = Math.max(0, minutes);
+  const hours = String(Math.floor(safe / 60)).padStart(2, '0');
+  const mins = String(safe % 60).padStart(2, '0');
   return `${hours}:${mins}`;
 }
 
@@ -139,7 +129,7 @@ function overlaps(startA, endA, startB, endB) {
 
 function getWeekdayIndexFromIsoDate(dateStr) {
   const [year, month, day] = dateStr.split('-').map(Number);
-  return new Date(Date.UTC(year, month - 1, day)).getUTCDay(); // 0=So ... 6=Sa
+  return new Date(Date.UTC(year, month - 1, day)).getUTCDay();
 }
 
 function getWeekdayBitFromIsoDate(dateStr) {
@@ -197,17 +187,11 @@ function matchesRuleOnDate(rule, dateStr) {
       return weekDiff >= 0 && weekDiff % 2 === 0;
     }
 
-    case 'monthly': {
-      const targetDay = Number(dateStr.slice(8, 10));
-      const anchorDay = Number(anchorDate.slice(8, 10));
-      return targetDay === anchorDay;
-    }
+    case 'monthly':
+      return Number(dateStr.slice(8, 10)) === Number(anchorDate.slice(8, 10));
 
-    case 'yearly': {
-      const targetMonthDay = dateStr.slice(5, 10);
-      const anchorMonthDay = anchorDate.slice(5, 10);
-      return targetMonthDay === anchorMonthDay;
-    }
+    case 'yearly':
+      return dateStr.slice(5, 10) === anchorDate.slice(5, 10);
 
     default:
       return false;
@@ -220,54 +204,30 @@ function getRuleBlockedIntervalsForDate(rule, dateStr) {
   }
 
   if (rule.rule_type === 'nicht_verfuegbar') {
-    return [{
-      start_at: `${dateStr} 00:00`,
-      end_at: `${dateStr} 23:59`
-    }];
+    return [{ start_at: `${dateStr} 00:00`, end_at: `${dateStr} 23:59` }];
   }
 
   if (rule.rule_type === 'erst_ab' && rule.time_value) {
-    return [{
-      start_at: `${dateStr} 00:00`,
-      end_at: `${dateStr} ${rule.time_value}`
-    }];
+    return [{ start_at: `${dateStr} 00:00`, end_at: `${dateStr} ${rule.time_value}` }];
   }
 
   if (rule.rule_type === 'bis' && rule.time_value) {
-    return [{
-      start_at: `${dateStr} ${rule.time_value}`,
-      end_at: `${dateStr} 23:59`
-    }];
+    return [{ start_at: `${dateStr} ${rule.time_value}`, end_at: `${dateStr} 23:59` }];
   }
 
   return [];
 }
 
 function recurringDetail(rule) {
-  if (rule.rule_type === 'nicht_verfuegbar') {
-    return 'ganztägig nicht verfügbar';
-  }
-
-  if (rule.rule_type === 'erst_ab') {
-    return `bis ${rule.time_value} nicht verfügbar`;
-  }
-
-  if (rule.rule_type === 'bis') {
-    return `ab ${rule.time_value} nicht verfügbar`;
-  }
-
+  if (rule.rule_type === 'nicht_verfuegbar') return 'ganztägig nicht verfügbar';
+  if (rule.rule_type === 'erst_ab') return `bis ${rule.time_value} nicht verfügbar`;
+  if (rule.rule_type === 'bis') return `ab ${rule.time_value} nicht verfügbar`;
   return rule.rule_type;
 }
 
 function recurringSortKey(rule, dateStr) {
-  if (rule.rule_type === 'nicht_verfuegbar' || rule.rule_type === 'erst_ab') {
-    return `${dateStr} 00:00`;
-  }
-
-  if (rule.rule_type === 'bis') {
-    return `${dateStr} ${rule.time_value ?? '23:59'}`;
-  }
-
+  if (rule.rule_type === 'nicht_verfuegbar' || rule.rule_type === 'erst_ab') return `${dateStr} 00:00`;
+  if (rule.rule_type === 'bis') return `${dateStr} ${rule.time_value ?? '23:59'}`;
   return `${dateStr} 00:00`;
 }
 
@@ -279,12 +239,11 @@ function expandRecurringRules(rules, windowDates) {
       if (!matchesRuleOnDate(rule, dateStr)) continue;
 
       items.push({
-        source_type: 'recurring',
         sort_key: recurringSortKey(rule, dateStr),
         player_name: playerDisplay(rule),
         display_text:
           `- ${playerDisplay(rule)} • [Regelmäßig] ${formatDateDE(dateStr)} • ` +
-          `${recurringDetail(rule)} • Start: ${formatDateDE(rule.anchor_date)} • Notiz: ${rule.note ?? '-'}`
+          `${recurringDetail(rule)} • Start: ${formatDateDE(rule.anchor_date ?? dateStr)} • Notiz: ${rule.note ?? '-'}`
       });
     }
   }
@@ -297,7 +256,6 @@ function mapExplicitEntries(entries) {
     const typeLabel = entry.entry_type === 'vacation' ? 'Urlaub' : 'Abwesenheit';
 
     return {
-      source_type: 'entry',
       sort_key: entry.start_at,
       player_name: playerDisplay(entry),
       display_text:
@@ -305,39 +263,6 @@ function mapExplicitEntries(entries) {
         `Grund: ${entry.reason ?? '-'}`
     };
   });
-}
-
-function statusLabel(status) {
-  switch (status) {
-    case 'fixed':
-      return 'Fixed';
-    case 'cancelled':
-      return 'Cancelled';
-    default:
-      return 'Pending';
-  }
-}
-
-function eventTypeLabel(type) {
-  switch (type) {
-    case 'primeleague':
-      return 'Prime League';
-    case 'scrim':
-      return 'Scrim';
-    default:
-      return 'Termin';
-  }
-}
-
-function formatCalendarEvent(event) {
-  return [
-    `- [${statusLabel(event.status)}] ${event.title}`,
-    `  ${formatDateLongDE(extractDatePart(event.start_at))}`,
-    `  ${extractTimePart(event.start_at)}–${extractTimePart(event.end_at)} Uhr`,
-    `  Treffen: ${extractTimePart(event.meeting_at)} Uhr`,
-    `  Typ: ${eventTypeLabel(event.event_type)}`,
-    `  Hinweis: ${event.note ?? '-'}`
-  ].join('\n');
 }
 
 function getCandidateStartTimesForDate(dateStr) {
@@ -357,16 +282,9 @@ function getCandidateStartTimesForDate(dateStr) {
   return starts;
 }
 
-function getPlayers() {
-  return db.prepare(`
-    SELECT id, discord_user_id, username, global_name, alias
-    FROM players
-    ORDER BY id ASC
-  `).all();
-}
-
 function getUnavailablePlayersForSlot(players, explicitEntries, rules, dateStr, slotStartAt, slotEndAt) {
   const unavailable = [];
+  const available = [];
 
   for (const player of players) {
     const playerEntries = explicitEntries.filter(entry => entry.player_id === player.id);
@@ -394,12 +312,11 @@ function getUnavailablePlayersForSlot(players, explicitEntries, rules, dateStr, 
       }
     }
 
-    if (blocked) {
-      unavailable.push(playerDisplay(player));
-    }
+    if (blocked) unavailable.push(playerDisplay(player));
+    else available.push(playerDisplay(player));
   }
 
-  return unavailable;
+  return { unavailable, available };
 }
 
 function compressStartWindows(startTimes) {
@@ -430,71 +347,152 @@ function compressStartWindows(startTimes) {
 
   return ranges
     .map(([start, end]) => {
-      if (start === end) {
-        return `${minutesToTime(start)} Uhr`;
-      }
-      return `${minutesToTime(start)}–${minutesToTime(end)} Uhr`;
+      const rangeEnd = end + SLOT_CONFIG.minDurationMinutes;
+      return `${minutesToTime(start)}–${minutesToTime(rangeEnd)} Uhr`;
     })
     .join(', ');
 }
 
-function buildDailySuggestionPosts(players, explicitEntries, rules, windowDates) {
-  const dayPosts = [];
+function buildDailySuggestion(players, explicitEntries, rules, dateStr) {
+  const startTimes = getCandidateStartTimesForDate(dateStr);
+  const slots = [];
 
-  for (const dateStr of windowDates) {
-    const startTimes = getCandidateStartTimesForDate(dateStr);
-    const validSlots = [];
+  for (const startTime of startTimes) {
+    const endTime = addMinutesToTime(startTime, SLOT_CONFIG.minDurationMinutes);
+    const slotStartAt = buildDateTime(dateStr, startTime);
+    const slotEndAt = buildDateTime(dateStr, endTime);
 
-    for (const startTime of startTimes) {
-      const endTime = addMinutesToTime(startTime, SLOT_CONFIG.minDurationMinutes);
-      const slotStartAt = buildDateTime(dateStr, startTime);
-      const slotEndAt = buildDateTime(dateStr, endTime);
+    const { unavailable, available } = getUnavailablePlayersForSlot(
+      players,
+      explicitEntries,
+      rules,
+      dateStr,
+      slotStartAt,
+      slotEndAt
+    );
 
-      const unavailablePlayers = getUnavailablePlayersForSlot(
-        players,
-        explicitEntries,
-        rules,
-        dateStr,
-        slotStartAt,
-        slotEndAt
-      );
-
-      if (unavailablePlayers.length === 0) {
-        validSlots.push({
-          start_time: startTime,
-          end_time: endTime
-        });
-      }
-    }
-
-    if (validSlots.length === 0) {
-      continue;
-    }
-
-    const earliestStart = validSlots[0].start_time;
-    const latestStart = validSlots[validSlots.length - 1].start_time;
-    const latestEnd = validSlots[validSlots.length - 1].end_time;
-    const startWindows = compressStartWindows(validSlots.map(slot => slot.start_time));
-
-    const lines = [];
-    lines.push(`**Terminoption – ${formatDateLongDE(dateStr)}**`);
-    lines.push(`Frühestmöglicher Beginn: **${earliestStart} Uhr**`);
-    lines.push(`Spätestmöglicher Beginn: **${latestStart} Uhr**`);
-    lines.push(`Spätestmögliches Ende: **${latestEnd} Uhr**`);
-    lines.push(`Mögliche Startfenster: **${startWindows}**`);
-    lines.push(`Treffpunkt: **15 Min vorher (Scrim) / 30 Min vorher (Prime League)**`);
-    lines.push(`Hinweis: **-**`);
-
-    dayPosts.push(lines.join('\n'));
+    slots.push({
+      startTime,
+      endTime,
+      available,
+      unavailable,
+      signature: available.slice().sort((a, b) => a.localeCompare(b, 'de')).join('||'),
+      availableCount: available.length
+    });
   }
 
-  return dayPosts;
+  if (!slots.length) return null;
+
+  const maxAvailable = Math.max(...slots.map(slot => slot.availableCount));
+  if (maxAvailable <= 0) return null;
+
+  const bestSlots = slots.filter(slot => slot.availableCount === maxAvailable);
+
+  const grouped = new Map();
+  for (const slot of bestSlots) {
+    if (!grouped.has(slot.signature)) {
+      grouped.set(slot.signature, []);
+    }
+    grouped.get(slot.signature).push(slot);
+  }
+
+  const chosenGroup = [...grouped.values()].sort((a, b) => {
+    if (b.length !== a.length) return b.length - a.length;
+    return a[0].startTime.localeCompare(b[0].startTime);
+  })[0];
+
+  const availablePlayers = chosenGroup[0].available;
+  const firstSlot = chosenGroup[0];
+  const lastSlot = chosenGroup[chosenGroup.length - 1];
+
+  return {
+    date: dateStr,
+    title: `Terminoption – ${formatDateLongDE(dateStr)}`,
+    earliestStart: firstSlot.startTime,
+    latestEnd: lastSlot.endTime,
+    startWindows: compressStartWindows(chosenGroup.map(slot => slot.startTime)),
+    availablePlayers,
+    availablePlayersText: availablePlayers.join(', '),
+    suggestionKey: `daily:${dateStr}`,
+    windowStartAt: `${dateStr} ${firstSlot.startTime}`,
+    windowEndAt: `${dateStr} ${lastSlot.endTime}`
+  };
+}
+
+function syncSuggestionEvent(suggestion) {
+  const now = new Date().toISOString();
+
+  const existing = db.prepare(`
+    SELECT *
+    FROM team_calendar_events
+    WHERE suggestion_key = ?
+  `).get(suggestion.suggestionKey);
+
+  if (!existing) {
+    const result = db.prepare(`
+      INSERT INTO team_calendar_events (
+        title,
+        event_type,
+        status,
+        option_date,
+        window_start_at,
+        window_end_at,
+        scheduled_start_at,
+        scheduled_end_at,
+        meeting_scrim_at,
+        meeting_primeleague_at,
+        available_players_text,
+        opgg_url,
+        note,
+        suggestion_key,
+        is_auto_generated,
+        created_by_discord_user_id,
+        updated_by_discord_user_id,
+        created_at,
+        updated_at
+      )
+      VALUES (?, 'scrim', 'pending', ?, ?, ?, NULL, NULL, NULL, NULL, ?, NULL, NULL, ?, 1, 'system', 'system', ?, ?)
+    `).run(
+      suggestion.title,
+      suggestion.date,
+      suggestion.windowStartAt,
+      suggestion.windowEndAt,
+      suggestion.availablePlayersText,
+      suggestion.suggestionKey,
+      now,
+      now
+    );
+
+    return Number(result.lastInsertRowid);
+  }
+
+  if (existing.is_auto_generated === 1 && existing.status === 'pending') {
+    db.prepare(`
+      UPDATE team_calendar_events
+      SET title = ?,
+          option_date = ?,
+          window_start_at = ?,
+          window_end_at = ?,
+          available_players_text = ?,
+          updated_by_discord_user_id = 'system',
+          updated_at = ?
+      WHERE id = ?
+    `).run(
+      suggestion.title,
+      suggestion.date,
+      suggestion.windowStartAt,
+      suggestion.windowEndAt,
+      suggestion.availablePlayersText,
+      now,
+      existing.id
+    );
+  }
+
+  return existing.id;
 }
 
 function splitLongMessage(text, maxLength = 1900) {
-  if (text.length <= maxLength) {
-    return [text];
-  }
+  if (text.length <= maxLength) return [text];
 
   const lines = text.split('\n');
   const chunks = [];
@@ -535,7 +533,11 @@ async function runSundayPlanner(client, options = {}) {
   const windowStart = `${berlinToday} 00:00`;
   const windowEndInclusive = `${addDaysIso(berlinToday, 6)} 23:59`;
 
-  const players = getPlayers();
+  const players = db.prepare(`
+    SELECT id, discord_user_id, username, global_name, alias
+    FROM players
+    ORDER BY id ASC
+  `).all();
 
   const upcomingEntries = db.prepare(`
     SELECT
@@ -576,25 +578,6 @@ async function runSundayPlanner(client, options = {}) {
     ORDER BY p.id ASC, r.id ASC
   `).all();
 
-  let calendarEvents = [];
-  if (tableExists('team_calendar_events')) {
-    calendarEvents = db.prepare(`
-      SELECT
-        id,
-        title,
-        event_type,
-        status,
-        start_at,
-        end_at,
-        meeting_at,
-        note
-      FROM team_calendar_events
-      WHERE start_at >= ?
-        AND start_at <= ?
-      ORDER BY start_at ASC
-    `).all(windowStart, windowEndInclusive);
-  }
-
   const explicitItems = mapExplicitEntries(upcomingEntries);
   const recurringItems = expandRecurringRules(rules, windowDates);
 
@@ -604,7 +587,15 @@ async function runSundayPlanner(client, options = {}) {
     return a.player_name.localeCompare(b.player_name, 'de');
   });
 
-  const dayPosts = buildDailySuggestionPosts(players, upcomingEntries, rules, windowDates);
+  const suggestions = [];
+
+  for (const dateStr of windowDates) {
+    const suggestion = buildDailySuggestion(players, upcomingEntries, rules, dateStr);
+    if (!suggestion) continue;
+
+    const calendarId = syncSuggestionEvent(suggestion);
+    suggestions.push({ ...suggestion, calendarId });
+  }
 
   const overviewLines = [];
   overviewLines.push('📋 **Wochenplanung – Rohübersicht**');
@@ -621,32 +612,31 @@ async function runSundayPlanner(client, options = {}) {
   }
 
   overviewLines.push('');
-  overviewLines.push('**Spielerkalender (nächste 7 Tage)**');
-  if (calendarEvents.length === 0) {
-    overviewLines.push('- Keine gespeicherten Teamtermine.');
-  } else {
-    for (const event of calendarEvents) {
-      overviewLines.push(formatCalendarEvent(event));
-    }
-  }
+  overviewLines.push('➡️ Nächster Schritt: Tagesoption prüfen, Kalender-ID merken und dann mit `/spieltermin bearbeiten` oder `/spieltermin lineup` weiterarbeiten.');
 
-  overviewLines.push('');
-  overviewLines.push('➡️ Nächster Schritt: Passende Tagesoptionen prüfen und gewünschte Termine in den Spielerkalender übernehmen.');
+  const dayMessages = suggestions.map(item => [
+    `**${item.title}**`,
+    `Kalender-ID: **#${item.calendarId}**`,
+    `Mögliche Zeit: **${item.earliestStart}–${item.latestEnd} Uhr**`,
+    `Verfügbare Spieler: **${item.availablePlayersText || '-'}**`,
+    `Treffpunkt bei Terminstart: **15 Min vorher (Scrim) / 30 Min vorher (Prime League)**`,
+    `OPGG: **-**`,
+    `Hinweis: **-**`
+  ].join('\n'));
+
+  if (dayMessages.length === 0) {
+    dayMessages.push('**Terminoptionen**\nKein passender Tagesvorschlag in den nächsten 7 Tagen gefunden.');
+  }
 
   const adminChannel = await client.channels.fetch(process.env.ADMIN_CHANNEL_ID);
   if (!adminChannel || !adminChannel.isTextBased()) {
     return { skipped: false, sent: false, reason: 'invalid_admin_channel' };
   }
 
-  const overviewText = overviewLines.join('\n');
   const messagesToSend = [
-    ...splitLongMessage(overviewText),
-    ...dayPosts
+    ...splitLongMessage(overviewLines.join('\n')),
+    ...dayMessages
   ];
-
-  if (dayPosts.length === 0) {
-    messagesToSend.push('**Terminoptionen**\nKein gemeinsamer Teamtermin mit allen Spielern in den nächsten 7 Tagen möglich.');
-  }
 
   for (const message of messagesToSend) {
     await adminChannel.send(message);
@@ -656,10 +646,8 @@ async function runSundayPlanner(client, options = {}) {
     skipped: false,
     sent: true,
     messages: messagesToSend.length,
-    explicitCount: explicitItems.length,
-    recurringCount: recurringItems.length,
-    eventCount: calendarEvents.length,
-    dayOptionCount: dayPosts.length
+    absenceCount: mergedAbsenceItems.length,
+    suggestionCount: suggestions.length
   };
 }
 
