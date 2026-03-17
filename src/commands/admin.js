@@ -54,7 +54,6 @@ module.exports = {
 
             return;
         }
-
         if (subcommand === 'test-planner') {
             await interaction.reply({
                 content: 'Starte Planner-Test …',
@@ -62,9 +61,7 @@ module.exports = {
             });
 
             try {
-                const result = await runSundayPlanner(interaction.client, {
-                    channelId: interaction.channelId
-                });
+                const result = await runSundayPlanner(interaction.client, { force: true });
                 await interaction.followUp({
                     content: `Planner-Test abgeschlossen.\n\`\`\`json\n${JSON.stringify(result, null, 2)}\n\`\`\``,
                     ephemeral: true
