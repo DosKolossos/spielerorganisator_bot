@@ -14,6 +14,7 @@ const profilCommand = require('./commands/profil');
 const abwesenheitCommand = require('./commands/abwesenheit');
 const regelCommand = require('./commands/regel');
 const urlaubCommand = require('./commands/urlaub');
+const adminCommand = require('./commands/admin');
 
 const { runSundayReminder } = require('./jobs/sundayReminder');
 const { runSundayPlanner } = require('./jobs/sundayPlanner');
@@ -28,15 +29,16 @@ client.commands.set(profilCommand.data.name, profilCommand);
 client.commands.set(abwesenheitCommand.data.name, abwesenheitCommand);
 client.commands.set(regelCommand.data.name, regelCommand);
 client.commands.set(urlaubCommand.data.name, urlaubCommand);
+client.commands.set(adminCommand.data.name, adminCommand);
 
-async function registerCommands() {
-  const commands = [
-    pingCommand.data.toJSON(),
-    profilCommand.data.toJSON(),
-    abwesenheitCommand.data.toJSON(),
-    regelCommand.data.toJSON(),
-    urlaubCommand.data.toJSON()
-  ];
+const commands = [
+  pingCommand.data.toJSON(),
+  profilCommand.data.toJSON(),
+  abwesenheitCommand.data.toJSON(),
+  regelCommand.data.toJSON(),
+  urlaubCommand.data.toJSON(),
+  adminCommand.data.toJSON()
+];
 
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
 
