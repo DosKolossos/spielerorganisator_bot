@@ -114,14 +114,6 @@ function parseDateInput(value) {
     return null;
 }
 
-function todayAsDateString() {
-    const now = new Date();
-    const y = now.getFullYear();
-    const m = String(now.getMonth() + 1).padStart(2, '0');
-    const d = String(now.getDate()).padStart(2, '0');
-    return `${y}-${m}-${d}`;
-}
-
 function parseWeekdayMask(input) {
     const normalized = input.toLowerCase().replace(/\s+/g, '');
 
@@ -170,20 +162,32 @@ function formatDayMonth(dateStr) {
     return `${day}.${month}.`;
 }
 
+function getWeekdayIndexFromIsoDate(dateStr) {
+    const [year, month, day] = dateStr.split('-').map(Number);
+    return new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+}
+
+function getWeekdayNameFromIsoDate(dateStr) {
+    const names = ['Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag'];
+    return names[getWeekdayIndexFromIsoDate(dateStr)];
+}
+
 function recurrenceToLabel(recurrenceType, weekdayMask, anchorDate) {
+    const startLabel = `aktiv ab ${getWeekdayNameFromIsoDate(anchorDate)}, ${formatDateDE(anchorDate)}`;
+
     switch (recurrenceType) {
         case 'weekly':
-            return `Wöchentlich • ${weekdayMaskToLabel(weekdayMask)}`;
+            return `Wöchentlich • ${weekdayMaskToLabel(weekdayMask)} • ${startLabel}`;
         case 'biweekly':
-            return `Alle 2 Wochen • ${weekdayMaskToLabel(weekdayMask)} • ab ${formatDateDE(anchorDate)}`;
+            return `Alle 2 Wochen • ${weekdayMaskToLabel(weekdayMask)} • ${startLabel}`;
         case 'monthly': {
-            const day = anchorDate.split('-')[2];
-            return `Monatlich • am ${day}.`;
+            const day = Number(anchorDate.split('-')[2]);
+            return `Monatlich • am ${day}. • ${startLabel}`;
         }
         case 'yearly':
-            return `Jährlich • am ${formatDayMonth(anchorDate)}`;
+            return `Jährlich • am ${formatDayMonth(anchorDate)} • ${startLabel}`;
         default:
-            return `Wöchentlich • ${weekdayMaskToLabel(weekdayMask)}`;
+            return `Wöchentlich • ${weekdayMaskToLabel(weekdayMask)} • ${startLabel}`;
     }
 }
 
@@ -228,14 +232,14 @@ module.exports = {
                 )
                 .addStringOption(option =>
                     option
-                        .setName('tage')
-                        .setDescription('Für wöchentliche Regeln: werktage, wochenende, alle oder montag,dienstag')
-                        .setRequired(false)
+                        .setName('startdatum')
+                        .setDescription('Pflicht: TT.MM.JJJJ oder YYYY-MM-DD, ab wann die Regel gilt')
+                        .setRequired(true)
                 )
                 .addStringOption(option =>
                     option
-                        .setName('datum')
-                        .setDescription('Optional: TT.MM.JJJJ oder YYYY-MM-DD. Standard: heute')
+                        .setName('tage')
+                        .setDescription('Für wöchentliche Regeln: werktage, wochenende, alle oder montag,dienstag')
                         .setRequired(false)
                 )
                 .addStringOption(option =>
@@ -274,17 +278,17 @@ module.exports = {
 
         if (subcommand === 'hinzufuegen') {
             const recurrenceType = interaction.options.getString('wiederholung', true);
-            const tageInput = interaction.options.getString('tage')?.trim() ?? null;
-            const datumInput = interaction.options.getString('datum')?.trim() ?? null;
             const ruleType = interaction.options.getString('typ', true);
+            const startdatumInput = interaction.options.getString('startdatum', true).trim();
+            const tageInput = interaction.options.getString('tage')?.trim() ?? null;
             const timeValue = interaction.options.getString('uhrzeit')?.trim() ?? null;
             const note = interaction.options.getString('notiz')?.trim() ?? null;
 
-            const anchorDate = datumInput ? parseDateInput(datumInput) : todayAsDateString();
+            const anchorDate = parseDateInput(startdatumInput);
 
-            if (datumInput && !anchorDate) {
+            if (!anchorDate) {
                 return interaction.reply({
-                    content: 'Datum ungültig. Nutze TT.MM.JJJJ oder YYYY-MM-DD, z. B. 11.04.2026.',
+                    content: 'Startdatum ungültig. Nutze TT.MM.JJJJ oder YYYY-MM-DD, z. B. 11.04.2026.',
                     ephemeral: true
                 });
             }
@@ -323,7 +327,7 @@ module.exports = {
                 }
             } else if (tageInput) {
                 return interaction.reply({
-                    content: 'Für monatliche oder jährliche Regeln nutze bitte das Feld "datum" statt "tage".',
+                    content: 'Für monatliche oder jährliche Regeln nutze bitte kein Feld "tage", sondern nur das Startdatum.',
                     ephemeral: true
                 });
             }
@@ -387,7 +391,7 @@ module.exports = {
                 const recurrenceLabel = recurrenceToLabel(
                     row.recurrence_type ?? 'weekly',
                     row.weekday_mask,
-                    row.anchor_date ?? todayAsDateString()
+                    row.anchor_date
                 );
 
                 return `**#${row.id}** • ${recurrenceLabel} • ${ruleToLabel(row.rule_type, row.time_value)} • Notiz: ${row.note ?? '-'}`;
