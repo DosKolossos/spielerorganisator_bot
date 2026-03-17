@@ -44,7 +44,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS availability_rules (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     player_id INTEGER NOT NULL,
-    weekday INTEGER NOT NULL,
+    weekday_mask INTEGER NOT NULL,
     rule_type TEXT NOT NULL,
     time_value TEXT,
     note TEXT,
