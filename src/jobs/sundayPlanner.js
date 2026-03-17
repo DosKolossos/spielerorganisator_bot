@@ -19,6 +19,7 @@ function weekdayMaskToLabel(mask) {
   if (mask === (2 | 4 | 8 | 16 | 32)) return 'Werktage';
   if (mask === (1 | 64)) return 'Wochenende';
   if (mask === (1 | 2 | 4 | 8 | 16 | 32 | 64)) return 'Alle Tage';
+  if (mask === 0) return '-';
 
   const labels = [];
   if (mask & 1) labels.push('Sonntag');
@@ -34,6 +35,72 @@ function weekdayMaskToLabel(mask) {
 
 function playerDisplay(row) {
   return row.alias || row.global_name || row.username || row.discord_user_id;
+}
+
+function extractDatePart(dateTime) {
+  return dateTime.slice(0, 10);
+}
+
+function extractTimePart(dateTime) {
+  return dateTime.slice(11, 16);
+}
+
+function formatDateDE(dateStr) {
+  const [year, month, day] = dateStr.split('-');
+  return `${day}.${month}.${year}`;
+}
+
+function formatDateTimeDE(dateTime) {
+  const [dateStr, timeStr] = dateTime.split(' ');
+  return `${formatDateDE(dateStr)}, ${timeStr}`;
+}
+
+function formatEntryRange(startAt, endAt) {
+  const startDate = extractDatePart(startAt);
+  const endDate = extractDatePart(endAt);
+  const startTime = extractTimePart(startAt);
+  const endTime = extractTimePart(endAt);
+
+  const isAllDay = startTime === '00:00' && endTime === '23:59';
+
+  if (isAllDay && startDate === endDate) {
+    return `${formatDateDE(startDate)} (ganztägig)`;
+  }
+
+  if (isAllDay) {
+    return `${formatDateDE(startDate)} → ${formatDateDE(endDate)} (ganztägig)`;
+  }
+
+  return `${formatDateTimeDE(startAt)} → ${formatDateTimeDE(endAt)}`;
+}
+
+function formatDayMonth(dateStr) {
+  const [, month, day] = dateStr.split('-');
+  return `${day}.${month}.`;
+}
+
+function recurrenceToLabel(recurrenceType, weekdayMask, anchorDate) {
+  switch (recurrenceType) {
+    case 'weekly':
+      return `Wöchentlich • ${weekdayMaskToLabel(weekdayMask)}`;
+    case 'biweekly':
+      return `Alle 2 Wochen • ${weekdayMaskToLabel(weekdayMask)} • ab ${formatDateDE(anchorDate)}`;
+    case 'monthly': {
+      const day = anchorDate.split('-')[2];
+      return `Monatlich • am ${day}.`;
+    }
+    case 'yearly':
+      return `Jährlich • am ${formatDayMonth(anchorDate)}`;
+    default:
+      return `Wöchentlich • ${weekdayMaskToLabel(weekdayMask)}`;
+  }
+}
+
+function ruleToLabel(ruleType, timeValue) {
+  if (ruleType === 'nicht_verfuegbar') return 'nicht verfügbar';
+  if (ruleType === 'erst_ab') return `erst ab ${timeValue}`;
+  if (ruleType === 'bis') return `verfügbar bis ${timeValue}`;
+  return ruleType;
 }
 
 async function runSundayPlanner(client, options = {}) {
@@ -75,6 +142,8 @@ async function runSundayPlanner(client, options = {}) {
       r.rule_type,
       r.time_value,
       r.note,
+      r.recurrence_type,
+      r.anchor_date,
       p.discord_user_id,
       p.username,
       p.global_name,
@@ -98,25 +167,27 @@ async function runSundayPlanner(client, options = {}) {
     for (const entry of upcomingEntries) {
       const typeLabel = entry.entry_type === 'vacation' ? 'Urlaub' : 'Abwesenheit';
       lines.push(
-        `- ${playerDisplay(entry)} • [${typeLabel}] ${entry.start_at} → ${entry.end_at} • Grund: ${entry.reason ?? '-'}`
+        `- ${playerDisplay(entry)} • [${typeLabel}] ${formatEntryRange(entry.start_at, entry.end_at)} • Grund: ${entry.reason ?? '-'}`
       );
     }
   }
 
   lines.push('');
+
   if (rules.length === 0) {
     lines.push('**Wiederkehrende Regeln**');
     lines.push('- Keine aktiven Regeln gespeichert.');
   } else {
     lines.push('**Wiederkehrende Regeln**');
     for (const rule of rules) {
-      let detail = rule.rule_type;
-      if (rule.rule_type === 'nicht_verfuegbar') detail = 'nicht verfügbar';
-      else if (rule.rule_type === 'erst_ab') detail = `erst ab ${rule.time_value}`;
-      else if (rule.rule_type === 'bis') detail = `verfügbar bis ${rule.time_value}`;
+      const recurrenceLabel = recurrenceToLabel(
+        rule.recurrence_type ?? 'weekly',
+        rule.weekday_mask,
+        rule.anchor_date ?? getRunKey()
+      );
 
       lines.push(
-        `- ${playerDisplay(rule)} • ${weekdayMaskToLabel(rule.weekday_mask)} • ${detail} • Notiz: ${rule.note ?? '-'}`
+        `- ${playerDisplay(rule)} • ${recurrenceLabel} • ${ruleToLabel(rule.rule_type, rule.time_value)} • Notiz: ${rule.note ?? '-'}`
       );
     }
   }

@@ -83,6 +83,45 @@ function isValidTime(value) {
   return hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59;
 }
 
+function isValidIsoDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+
+  const [year, month, day] = value.split('-').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+  );
+}
+
+function parseDateInput(value) {
+  if (!value) return null;
+
+  const trimmed = value.trim();
+
+  if (isValidIsoDate(trimmed)) {
+    return trimmed;
+  }
+
+  if (/^\d{2}\.\d{2}\.\d{4}$/.test(trimmed)) {
+    const [day, month, year] = trimmed.split('.');
+    const iso = `${year}-${month}-${day}`;
+    return isValidIsoDate(iso) ? iso : null;
+  }
+
+  return null;
+}
+
+function todayAsDateString() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
 function parseWeekdayMask(input) {
   const normalized = input.toLowerCase().replace(/\s+/g, '');
 
@@ -107,6 +146,7 @@ function weekdayMaskToLabel(mask) {
   if (mask === (2 | 4 | 8 | 16 | 32)) return 'Werktage';
   if (mask === (1 | 64)) return 'Wochenende';
   if (mask === (1 | 2 | 4 | 8 | 16 | 32 | 64)) return 'Alle Tage';
+  if (mask === 0) return '-';
 
   const labels = [];
   if (mask & 1) labels.push('Sonntag');
@@ -120,6 +160,41 @@ function weekdayMaskToLabel(mask) {
   return labels.join(', ');
 }
 
+function formatDateDE(dateStr) {
+  const [year, month, day] = dateStr.split('-');
+  return `${day}.${month}.${year}`;
+}
+
+function formatDayMonth(dateStr) {
+  const [, month, day] = dateStr.split('-');
+  return `${day}.${month}.`;
+}
+
+function recurrenceToLabel(recurrenceType, weekdayMask, anchorDate) {
+  switch (recurrenceType) {
+    case 'weekly':
+      return `Wöchentlich • ${weekdayMaskToLabel(weekdayMask)}`;
+    case 'biweekly':
+      return `Alle 2 Wochen • ${weekdayMaskToLabel(weekdayMask)} • ab ${formatDateDE(anchorDate)}`;
+    case 'monthly': {
+      const day = anchorDate.split('-')[2];
+      return `Monatlich • am ${day}.`;
+    }
+    case 'yearly':
+      return `Jährlich • am ${formatDayMonth(anchorDate)}`;
+    default:
+      return `Wöchentlich • ${weekdayMaskToLabel(weekdayMask)}`;
+  }
+}
+
+function ruleToLabel(ruleType, timeValue) {
+  if (ruleType === 'nicht_verfuegbar') {
+    return 'nicht verfügbar';
+  }
+
+  return `${ruleLabelMap[ruleType]} ${timeValue}`;
+}
+
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('regel')
@@ -130,9 +205,27 @@ module.exports = {
         .setDescription('Fügt eine neue Regel hinzu.')
         .addStringOption(option =>
           option
-            .setName('tage')
-            .setDescription('Z. B. werktage, wochenende, alle oder montag,dienstag')
+            .setName('wiederholung')
+            .setDescription('Wie oft wiederholt sich die Regel?')
             .setRequired(true)
+            .addChoices(
+              { name: 'Wöchentlich', value: 'weekly' },
+              { name: 'Alle 2 Wochen', value: 'biweekly' },
+              { name: 'Monatlich', value: 'monthly' },
+              { name: 'Jährlich / Geburtstag', value: 'yearly' }
+            )
+        )
+        .addStringOption(option =>
+          option
+            .setName('tage')
+            .setDescription('Für wöchentliche Regeln: werktage, wochenende, alle oder montag,dienstag')
+            .setRequired(false)
+        )
+        .addStringOption(option =>
+          option
+            .setName('datum')
+            .setDescription('Optional: TT.MM.JJJJ oder YYYY-MM-DD. Standard: heute')
+            .setRequired(false)
         )
         .addStringOption(option =>
           option
@@ -154,7 +247,7 @@ module.exports = {
         .addStringOption(option =>
           option
             .setName('notiz')
-            .setDescription('Optional: z. B. Arbeit, Uni, Training')
+            .setDescription('Optional: z. B. Arbeit, Uni, Training, Geburtstag')
             .setRequired(false)
         )
     )
@@ -180,16 +273,18 @@ module.exports = {
     const player = ensurePlayer(interaction.user);
 
     if (subcommand === 'hinzufuegen') {
-      const tageInput = interaction.options.getString('tage', true).trim();
+      const recurrenceType = interaction.options.getString('wiederholung', true);
+      const tageInput = interaction.options.getString('tage')?.trim() ?? null;
+      const datumInput = interaction.options.getString('datum')?.trim() ?? null;
       const ruleType = interaction.options.getString('typ', true);
       const timeValue = interaction.options.getString('uhrzeit')?.trim() ?? null;
       const note = interaction.options.getString('notiz')?.trim() ?? null;
 
-      const weekdayMask = parseWeekdayMask(tageInput);
+      const anchorDate = datumInput ? parseDateInput(datumInput) : todayAsDateString();
 
-      if (weekdayMask === null) {
+      if (datumInput && !anchorDate) {
         return interaction.reply({
-          content: 'Ungültige Tage. Nutze z. B. werktage, wochenende, alle oder montag,dienstag.',
+          content: 'Datum ungültig. Nutze TT.MM.JJJJ oder YYYY-MM-DD, z. B. 11.04.2026.',
           ephemeral: true
         });
       }
@@ -208,6 +303,31 @@ module.exports = {
         });
       }
 
+      let weekdayMask = 0;
+
+      if (recurrenceType === 'weekly' || recurrenceType === 'biweekly') {
+        if (!tageInput) {
+          return interaction.reply({
+            content: 'Für wöchentliche oder zweiwöchentliche Regeln musst du Tage angeben.',
+            ephemeral: true
+          });
+        }
+
+        weekdayMask = parseWeekdayMask(tageInput);
+
+        if (weekdayMask === null) {
+          return interaction.reply({
+            content: 'Ungültige Tage. Nutze z. B. werktage, wochenende, alle oder montag,dienstag.',
+            ephemeral: true
+          });
+        }
+      } else if (tageInput) {
+        return interaction.reply({
+          content: 'Für monatliche oder jährliche Regeln nutze bitte das Feld "datum" statt "tage".',
+          ephemeral: true
+        });
+      }
+
       const now = new Date().toISOString();
 
       const result = db.prepare(`
@@ -217,32 +337,31 @@ module.exports = {
           rule_type,
           time_value,
           note,
+          recurrence_type,
+          anchor_date,
           active,
           created_at,
           updated_at
         )
-        VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
       `).run(
         player.id,
         weekdayMask,
         ruleType,
         timeValue,
         note,
+        recurrenceType,
+        anchorDate,
         now,
         now
       );
-
-      const readable =
-        ruleType === 'nicht_verfuegbar'
-          ? 'nicht verfügbar'
-          : `${ruleLabelMap[ruleType]} ${timeValue}`;
 
       return interaction.reply({
         content:
           `Regel gespeichert.\n` +
           `ID: **${result.lastInsertRowid}**\n` +
-          `Tage: **${weekdayMaskToLabel(weekdayMask)}**\n` +
-          `Regel: **${readable}**\n` +
+          `Wiederholung: **${recurrenceToLabel(recurrenceType, weekdayMask, anchorDate)}**\n` +
+          `Regel: **${ruleToLabel(ruleType, timeValue)}**\n` +
           `Notiz: **${note ?? '-'}**`,
         ephemeral: true
       });
@@ -250,7 +369,7 @@ module.exports = {
 
     if (subcommand === 'anzeigen') {
       const rows = db.prepare(`
-        SELECT id, weekday_mask, rule_type, time_value, note
+        SELECT id, weekday_mask, rule_type, time_value, note, recurrence_type, anchor_date
         FROM availability_rules
         WHERE player_id = ?
           AND active = 1
@@ -265,13 +384,13 @@ module.exports = {
       }
 
       const lines = rows.map(row => {
-        let detail = ruleLabelMap[row.rule_type] ?? row.rule_type;
+        const recurrenceLabel = recurrenceToLabel(
+          row.recurrence_type ?? 'weekly',
+          row.weekday_mask,
+          row.anchor_date ?? todayAsDateString()
+        );
 
-        if (row.rule_type === 'erst_ab' || row.rule_type === 'bis') {
-          detail += ` ${row.time_value}`;
-        }
-
-        return `**#${row.id}** • ${weekdayMaskToLabel(row.weekday_mask)} • ${detail} • Notiz: ${row.note ?? '-'}`;
+        return `**#${row.id}** • ${recurrenceLabel} • ${ruleToLabel(row.rule_type, row.time_value)} • Notiz: ${row.note ?? '-'}`;
       });
 
       return interaction.reply({

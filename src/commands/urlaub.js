@@ -53,7 +53,7 @@ function ensurePlayer(user) {
   return player;
 }
 
-function isValidDate(value) {
+function isValidIsoDate(value) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
 
   const [year, month, day] = value.split('-').map(Number);
@@ -66,12 +66,50 @@ function isValidDate(value) {
   );
 }
 
+function parseDateInput(value) {
+  if (!value) return null;
+
+  const trimmed = value.trim();
+
+  if (isValidIsoDate(trimmed)) {
+    return trimmed;
+  }
+
+  if (/^\d{2}\.\d{2}\.\d{4}$/.test(trimmed)) {
+    const [day, month, year] = trimmed.split('.');
+    const iso = `${year}-${month}-${day}`;
+    return isValidIsoDate(iso) ? iso : null;
+  }
+
+  return null;
+}
+
 function todayAsDateString() {
   const now = new Date();
   const y = now.getFullYear();
   const m = String(now.getMonth() + 1).padStart(2, '0');
   const d = String(now.getDate()).padStart(2, '0');
   return `${y}-${m}-${d}`;
+}
+
+function extractDatePart(dateTime) {
+  return dateTime.slice(0, 10);
+}
+
+function formatDateDE(dateStr) {
+  const [year, month, day] = dateStr.split('-');
+  return `${day}.${month}.${year}`;
+}
+
+function formatVacationRange(startAt, endAt) {
+  const startDate = extractDatePart(startAt);
+  const endDate = extractDatePart(endAt);
+
+  if (startDate === endDate) {
+    return formatDateDE(startDate);
+  }
+
+  return `${formatDateDE(startDate)} → ${formatDateDE(endDate)}`;
 }
 
 module.exports = {
@@ -85,14 +123,14 @@ module.exports = {
         .addStringOption(option =>
           option
             .setName('startdatum')
-            .setDescription('Startdatum im Format YYYY-MM-DD')
-            .setRequired(true)
+            .setDescription('Optional: TT.MM.JJJJ oder YYYY-MM-DD. Standard: heute')
+            .setRequired(false)
         )
         .addStringOption(option =>
           option
             .setName('enddatum')
-            .setDescription('Enddatum im Format YYYY-MM-DD')
-            .setRequired(true)
+            .setDescription('Optional: TT.MM.JJJJ oder YYYY-MM-DD. Standard: Startdatum')
+            .setRequired(false)
         )
         .addStringOption(option =>
           option
@@ -119,19 +157,19 @@ module.exports = {
         .addStringOption(option =>
           option
             .setName('startdatum')
-            .setDescription('Neues Startdatum im Format YYYY-MM-DD')
-            .setRequired(true)
+            .setDescription('Optional: Neues Startdatum, TT.MM.JJJJ oder YYYY-MM-DD')
+            .setRequired(false)
         )
         .addStringOption(option =>
           option
             .setName('enddatum')
-            .setDescription('Neues Enddatum im Format YYYY-MM-DD')
-            .setRequired(true)
+            .setDescription('Optional: Neues Enddatum, TT.MM.JJJJ oder YYYY-MM-DD')
+            .setRequired(false)
         )
         .addStringOption(option =>
           option
             .setName('grund')
-            .setDescription('Neuer Grund')
+            .setDescription('Optional: Neuer Grund')
             .setRequired(false)
         )
     )
@@ -152,16 +190,29 @@ module.exports = {
     const player = ensurePlayer(interaction.user);
 
     if (subcommand === 'hinzufuegen') {
-      const startdatum = interaction.options.getString('startdatum', true).trim();
-      const enddatum = interaction.options.getString('enddatum', true).trim();
+      const startdatumInput = interaction.options.getString('startdatum')?.trim() ?? null;
+      const enddatumInput = interaction.options.getString('enddatum')?.trim() ?? null;
       const grund = interaction.options.getString('grund')?.trim() ?? null;
 
-      if (!isValidDate(startdatum) || !isValidDate(enddatum)) {
+      const parsedStartDate = parseDateInput(startdatumInput);
+      const parsedEndDate = parseDateInput(enddatumInput);
+
+      if (startdatumInput && !parsedStartDate) {
         return interaction.reply({
-          content: 'Datum ungültig. Bitte nutze YYYY-MM-DD, z. B. 2026-03-20.',
+          content: 'Startdatum ungültig. Nutze TT.MM.JJJJ oder YYYY-MM-DD, z. B. 11.04.2026.',
           ephemeral: true
         });
       }
+
+      if (enddatumInput && !parsedEndDate) {
+        return interaction.reply({
+          content: 'Enddatum ungültig. Nutze TT.MM.JJJJ oder YYYY-MM-DD, z. B. 11.04.2026.',
+          ephemeral: true
+        });
+      }
+
+      const startdatum = parsedStartDate ?? todayAsDateString();
+      const enddatum = parsedEndDate ?? startdatum;
 
       const startAt = `${startdatum} 00:00`;
       const endAt = `${enddatum} 23:59`;
@@ -204,8 +255,7 @@ module.exports = {
         content:
           `Urlaub gespeichert.\n` +
           `ID: **${result.lastInsertRowid}**\n` +
-          `Von: **${startAt}**\n` +
-          `Bis: **${endAt}**\n` +
+          `Zeitraum: **${formatVacationRange(startAt, endAt)}**\n` +
           `Grund: **${grund ?? '-'}**`,
         ephemeral: true
       });
@@ -232,7 +282,7 @@ module.exports = {
       }
 
       const lines = rows.map(row =>
-        `**#${row.id}** • ${row.start_at} → ${row.end_at} • Grund: ${row.reason ?? '-'}`
+        `**#${row.id}** • ${formatVacationRange(row.start_at, row.end_at)} • Grund: ${row.reason ?? '-'}`
       );
 
       return interaction.reply({
@@ -243,12 +293,12 @@ module.exports = {
 
     if (subcommand === 'bearbeiten') {
       const id = interaction.options.getInteger('id', true);
-      const startdatum = interaction.options.getString('startdatum', true).trim();
-      const enddatum = interaction.options.getString('enddatum', true).trim();
+      const startdatumInput = interaction.options.getString('startdatum')?.trim() ?? null;
+      const enddatumInput = interaction.options.getString('enddatum')?.trim() ?? null;
       const grund = interaction.options.getString('grund')?.trim() ?? null;
 
       const existing = db.prepare(`
-        SELECT id
+        SELECT id, start_at, end_at
         FROM availability_entries
         WHERE id = ?
           AND player_id = ?
@@ -262,12 +312,25 @@ module.exports = {
         });
       }
 
-      if (!isValidDate(startdatum) || !isValidDate(enddatum)) {
+      const parsedStartDate = parseDateInput(startdatumInput);
+      const parsedEndDate = parseDateInput(enddatumInput);
+
+      if (startdatumInput && !parsedStartDate) {
         return interaction.reply({
-          content: 'Datum ungültig. Bitte nutze YYYY-MM-DD, z. B. 2026-03-20.',
+          content: 'Startdatum ungültig. Nutze TT.MM.JJJJ oder YYYY-MM-DD, z. B. 11.04.2026.',
           ephemeral: true
         });
       }
+
+      if (enddatumInput && !parsedEndDate) {
+        return interaction.reply({
+          content: 'Enddatum ungültig. Nutze TT.MM.JJJJ oder YYYY-MM-DD, z. B. 11.04.2026.',
+          ephemeral: true
+        });
+      }
+
+      const startdatum = parsedStartDate ?? extractDatePart(existing.start_at);
+      const enddatum = parsedEndDate ?? extractDatePart(existing.end_at);
 
       const startAt = `${startdatum} 00:00`;
       const endAt = `${enddatum} 23:59`;
@@ -304,8 +367,7 @@ module.exports = {
       return interaction.reply({
         content:
           `Urlaub **#${id}** wurde aktualisiert.\n` +
-          `Von: **${startAt}**\n` +
-          `Bis: **${endAt}**\n` +
+          `Zeitraum: **${formatVacationRange(startAt, endAt)}**\n` +
           `Grund: **${grund ?? '-'}**`,
         ephemeral: true
       });

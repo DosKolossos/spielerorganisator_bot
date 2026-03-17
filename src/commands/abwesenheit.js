@@ -2,14 +2,14 @@ const { SlashCommandBuilder } = require('discord.js');
 const db = require('../db/database');
 
 function ensurePlayer(user) {
-    const now = new Date().toISOString();
+  const now = new Date().toISOString();
 
-    let player = db
-        .prepare('SELECT * FROM players WHERE discord_user_id = ?')
-        .get(user.id);
+  let player = db
+    .prepare('SELECT * FROM players WHERE discord_user_id = ?')
+    .get(user.id);
 
-    if (!player) {
-        db.prepare(`
+  if (!player) {
+    db.prepare(`
       INSERT INTO players (
         discord_user_id,
         username,
@@ -20,227 +20,295 @@ function ensurePlayer(user) {
       )
       VALUES (?, ?, ?, ?, ?, ?)
     `).run(
-            user.id,
-            user.username,
-            user.globalName ?? null,
-            null,
-            now,
-            now
-        );
+      user.id,
+      user.username,
+      user.globalName ?? null,
+      null,
+      now,
+      now
+    );
 
-        player = db
-            .prepare('SELECT * FROM players WHERE discord_user_id = ?')
-            .get(user.id);
-    } else {
-        db.prepare(`
+    player = db
+      .prepare('SELECT * FROM players WHERE discord_user_id = ?')
+      .get(user.id);
+  } else {
+    db.prepare(`
       UPDATE players
       SET username = ?,
           global_name = ?,
           updated_at = ?
       WHERE discord_user_id = ?
     `).run(
-            user.username,
-            user.globalName ?? null,
-            now,
-            user.id
-        );
+      user.username,
+      user.globalName ?? null,
+      now,
+      user.id
+    );
 
-        player = db
-            .prepare('SELECT * FROM players WHERE discord_user_id = ?')
-            .get(user.id);
-    }
+    player = db
+      .prepare('SELECT * FROM players WHERE discord_user_id = ?')
+      .get(user.id);
+  }
 
-    return player;
+  return player;
 }
 
-function isValidDate(value) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+function isValidIsoDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
 
-    const [year, month, day] = value.split('-').map(Number);
-    const date = new Date(Date.UTC(year, month - 1, day));
+  const [year, month, day] = value.split('-').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
 
-    return (
-        date.getUTCFullYear() === year &&
-        date.getUTCMonth() === month - 1 &&
-        date.getUTCDate() === day
-    );
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+  );
+}
+
+function parseDateInput(value) {
+  if (!value) return null;
+
+  const trimmed = value.trim();
+
+  if (isValidIsoDate(trimmed)) {
+    return trimmed;
+  }
+
+  if (/^\d{2}\.\d{2}\.\d{4}$/.test(trimmed)) {
+    const [day, month, year] = trimmed.split('.');
+    const iso = `${year}-${month}-${day}`;
+    return isValidIsoDate(iso) ? iso : null;
+  }
+
+  return null;
 }
 
 function isValidTime(value) {
-    if (!/^\d{2}:\d{2}$/.test(value)) return false;
+  if (!/^\d{2}:\d{2}$/.test(value)) return false;
 
-    const [hours, minutes] = value.split(':').map(Number);
-    return hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59;
+  const [hours, minutes] = value.split(':').map(Number);
+  return hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59;
 }
 
 function buildDateTime(dateStr, timeStr, fallbackTime) {
-    return `${dateStr} ${timeStr ?? fallbackTime}`;
+  return `${dateStr} ${timeStr ?? fallbackTime}`;
 }
 
 function todayAsDateString() {
-    const now = new Date();
-    const y = now.getFullYear();
-    const m = String(now.getMonth() + 1).padStart(2, '0');
-    const d = String(now.getDate()).padStart(2, '0');
-    return `${y}-${m}-${d}`;
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function extractDatePart(dateTime) {
+  return dateTime.slice(0, 10);
+}
+
+function extractTimePart(dateTime) {
+  return dateTime.slice(11, 16);
+}
+
+function formatDateDE(dateStr) {
+  const [year, month, day] = dateStr.split('-');
+  return `${day}.${month}.${year}`;
+}
+
+function formatDateTimeDE(dateTime) {
+  const [dateStr, timeStr] = dateTime.split(' ');
+  return `${formatDateDE(dateStr)}, ${timeStr}`;
+}
+
+function formatEntryRange(startAt, endAt) {
+  const startDate = extractDatePart(startAt);
+  const endDate = extractDatePart(endAt);
+  const startTime = extractTimePart(startAt);
+  const endTime = extractTimePart(endAt);
+
+  const isAllDay = startTime === '00:00' && endTime === '23:59';
+
+  if (isAllDay && startDate === endDate) {
+    return `${formatDateDE(startDate)} (ganztägig)`;
+  }
+
+  if (isAllDay) {
+    return `${formatDateDE(startDate)} → ${formatDateDE(endDate)} (ganztägig)`;
+  }
+
+  return `${formatDateTimeDE(startAt)} → ${formatDateTimeDE(endAt)}`;
 }
 
 module.exports = {
-    data: new SlashCommandBuilder()
-        .setName('abwesenheit')
-        .setDescription('Verwalte deine Abwesenheiten.')
-        .addSubcommand(sub =>
-            sub
-                .setName('hinzufuegen')
-                .setDescription('Trägt eine neue Abwesenheit ein.')
-                .addStringOption(option =>
-                    option
-                        .setName('startdatum')
-                        .setDescription('Startdatum im Format YYYY-MM-DD')
-                        .setRequired(true)
-                )
-                .addStringOption(option =>
-                    option
-                        .setName('enddatum')
-                        .setDescription('Enddatum im Format YYYY-MM-DD')
-                        .setRequired(true)
-                )
-                .addStringOption(option =>
-                    option
-                        .setName('startzeit')
-                        .setDescription('Optional: Startzeit im Format HH:MM')
-                        .setRequired(false)
-                )
-                .addStringOption(option =>
-                    option
-                        .setName('endzeit')
-                        .setDescription('Optional: Endzeit im Format HH:MM')
-                        .setRequired(false)
-                )
-                .addBooleanOption(option =>
-                    option
-                        .setName('ganztag')
-                        .setDescription('Wenn true, gilt der Eintrag als ganztägig')
-                        .setRequired(false)
-                )
-                .addStringOption(option =>
-                    option
-                        .setName('grund')
-                        .setDescription('Optionaler Grund')
-                        .setRequired(false)
-                )
+  data: new SlashCommandBuilder()
+    .setName('abwesenheit')
+    .setDescription('Verwalte deine Abwesenheiten.')
+    .addSubcommand(sub =>
+      sub
+        .setName('hinzufuegen')
+        .setDescription('Trägt eine neue Abwesenheit ein.')
+        .addStringOption(option =>
+          option
+            .setName('startdatum')
+            .setDescription('Optional: TT.MM.JJJJ oder YYYY-MM-DD. Standard: heute')
+            .setRequired(false)
         )
-        .addSubcommand(sub =>
-            sub
-                .setName('anzeigen')
-                .setDescription('Zeigt deine eingetragenen Abwesenheiten an.')
+        .addStringOption(option =>
+          option
+            .setName('enddatum')
+            .setDescription('Optional: TT.MM.JJJJ oder YYYY-MM-DD. Standard: Startdatum')
+            .setRequired(false)
         )
-        .addSubcommand(sub =>
-            sub
-                .setName('bearbeiten')
-                .setDescription('Bearbeitet eine bestehende Abwesenheit anhand der ID.')
-                .addIntegerOption(option =>
-                    option
-                        .setName('id')
-                        .setDescription('Die ID aus /abwesenheit anzeigen')
-                        .setRequired(true)
-                )
-                .addStringOption(option =>
-                    option
-                        .setName('startdatum')
-                        .setDescription('Neues Startdatum im Format YYYY-MM-DD')
-                        .setRequired(true)
-                )
-                .addStringOption(option =>
-                    option
-                        .setName('enddatum')
-                        .setDescription('Neues Enddatum im Format YYYY-MM-DD')
-                        .setRequired(true)
-                )
-                .addStringOption(option =>
-                    option
-                        .setName('startzeit')
-                        .setDescription('Optional: Neue Startzeit im Format HH:MM')
-                        .setRequired(false)
-                )
-                .addStringOption(option =>
-                    option
-                        .setName('endzeit')
-                        .setDescription('Optional: Neue Endzeit im Format HH:MM')
-                        .setRequired(false)
-                )
-                .addBooleanOption(option =>
-                    option
-                        .setName('ganztag')
-                        .setDescription('Wenn true, gilt der Eintrag als ganztägig')
-                        .setRequired(false)
-                )
-                .addStringOption(option =>
-                    option
-                        .setName('grund')
-                        .setDescription('Neuer Grund')
-                        .setRequired(false)
-                )
+        .addStringOption(option =>
+          option
+            .setName('startzeit')
+            .setDescription('Optional: Startzeit im Format HH:MM')
+            .setRequired(false)
         )
-        .addSubcommand(sub =>
-            sub
-                .setName('loeschen')
-                .setDescription('Löscht eine deiner Abwesenheiten anhand der ID.')
-                .addIntegerOption(option =>
-                    option
-                        .setName('id')
-                        .setDescription('Die ID aus /abwesenheit anzeigen')
-                        .setRequired(true)
-                )
-        ),
+        .addStringOption(option =>
+          option
+            .setName('endzeit')
+            .setDescription('Optional: Endzeit im Format HH:MM')
+            .setRequired(false)
+        )
+        .addBooleanOption(option =>
+          option
+            .setName('ganztag')
+            .setDescription('Wenn true, gilt der Eintrag als ganztägig')
+            .setRequired(false)
+        )
+        .addStringOption(option =>
+          option
+            .setName('grund')
+            .setDescription('Optionaler Grund')
+            .setRequired(false)
+        )
+    )
+    .addSubcommand(sub =>
+      sub
+        .setName('anzeigen')
+        .setDescription('Zeigt deine eingetragenen Abwesenheiten an.')
+    )
+    .addSubcommand(sub =>
+      sub
+        .setName('bearbeiten')
+        .setDescription('Bearbeitet eine bestehende Abwesenheit anhand der ID.')
+        .addIntegerOption(option =>
+          option
+            .setName('id')
+            .setDescription('Die ID aus /abwesenheit anzeigen')
+            .setRequired(true)
+        )
+        .addStringOption(option =>
+          option
+            .setName('startdatum')
+            .setDescription('Optional: Neues Startdatum, TT.MM.JJJJ oder YYYY-MM-DD')
+            .setRequired(false)
+        )
+        .addStringOption(option =>
+          option
+            .setName('enddatum')
+            .setDescription('Optional: Neues Enddatum, TT.MM.JJJJ oder YYYY-MM-DD')
+            .setRequired(false)
+        )
+        .addStringOption(option =>
+          option
+            .setName('startzeit')
+            .setDescription('Optional: Neue Startzeit im Format HH:MM')
+            .setRequired(false)
+        )
+        .addStringOption(option =>
+          option
+            .setName('endzeit')
+            .setDescription('Optional: Neue Endzeit im Format HH:MM')
+            .setRequired(false)
+        )
+        .addBooleanOption(option =>
+          option
+            .setName('ganztag')
+            .setDescription('Wenn true, gilt der Eintrag als ganztägig')
+            .setRequired(false)
+        )
+        .addStringOption(option =>
+          option
+            .setName('grund')
+            .setDescription('Optional: Neuer Grund')
+            .setRequired(false)
+        )
+    )
+    .addSubcommand(sub =>
+      sub
+        .setName('loeschen')
+        .setDescription('Löscht eine deiner Abwesenheiten anhand der ID.')
+        .addIntegerOption(option =>
+          option
+            .setName('id')
+            .setDescription('Die ID aus /abwesenheit anzeigen')
+            .setRequired(true)
+        )
+    ),
 
-    async execute(interaction) {
-        const subcommand = interaction.options.getSubcommand();
-        const player = ensurePlayer(interaction.user);
+  async execute(interaction) {
+    const subcommand = interaction.options.getSubcommand();
+    const player = ensurePlayer(interaction.user);
 
-        if (subcommand === 'hinzufuegen') {
-            const startdatum = interaction.options.getString('startdatum', true).trim();
-            const enddatum = interaction.options.getString('enddatum', true).trim();
-            const startzeit = interaction.options.getString('startzeit')?.trim() ?? null;
-            const endzeit = interaction.options.getString('endzeit')?.trim() ?? null;
-            const grund = interaction.options.getString('grund')?.trim() ?? null;
-            const ganztag =
-                interaction.options.getBoolean('ganztag') ?? (!startzeit && !endzeit);
+    if (subcommand === 'hinzufuegen') {
+      const startdatumInput = interaction.options.getString('startdatum')?.trim() ?? null;
+      const enddatumInput = interaction.options.getString('enddatum')?.trim() ?? null;
+      const startzeit = interaction.options.getString('startzeit')?.trim() ?? null;
+      const endzeit = interaction.options.getString('endzeit')?.trim() ?? null;
+      const grund = interaction.options.getString('grund')?.trim() ?? null;
+      const ganztag =
+        interaction.options.getBoolean('ganztag') ?? (!startzeit && !endzeit);
 
-            if (!isValidDate(startdatum) || !isValidDate(enddatum)) {
-                return interaction.reply({
-                    content: 'Datum ungültig. Bitte nutze YYYY-MM-DD, z. B. 2026-03-20.',
-                    ephemeral: true
-                });
-            }
+      const parsedStartDate = parseDateInput(startdatumInput);
+      const parsedEndDate = parseDateInput(enddatumInput);
 
-            if (startzeit && !isValidTime(startzeit)) {
-                return interaction.reply({
-                    content: 'Startzeit ungültig. Bitte nutze HH:MM, z. B. 18:30.',
-                    ephemeral: true
-                });
-            }
+      if (startdatumInput && !parsedStartDate) {
+        return interaction.reply({
+          content: 'Startdatum ungültig. Nutze TT.MM.JJJJ oder YYYY-MM-DD, z. B. 11.04.2026.',
+          ephemeral: true
+        });
+      }
 
-            if (endzeit && !isValidTime(endzeit)) {
-                return interaction.reply({
-                    content: 'Endzeit ungültig. Bitte nutze HH:MM, z. B. 19:45.',
-                    ephemeral: true
-                });
-            }
+      if (enddatumInput && !parsedEndDate) {
+        return interaction.reply({
+          content: 'Enddatum ungültig. Nutze TT.MM.JJJJ oder YYYY-MM-DD, z. B. 11.04.2026.',
+          ephemeral: true
+        });
+      }
 
-            const startAt = buildDateTime(startdatum, ganztag ? null : startzeit, '00:00');
-            const endAt = buildDateTime(enddatum, ganztag ? null : endzeit, '23:59');
+      if (startzeit && !isValidTime(startzeit)) {
+        return interaction.reply({
+          content: 'Startzeit ungültig. Bitte nutze HH:MM, z. B. 18:30.',
+          ephemeral: true
+        });
+      }
 
-            if (startAt > endAt) {
-                return interaction.reply({
-                    content: 'Der Start darf nicht nach dem Ende liegen.',
-                    ephemeral: true
-                });
-            }
+      if (endzeit && !isValidTime(endzeit)) {
+        return interaction.reply({
+          content: 'Endzeit ungültig. Bitte nutze HH:MM, z. B. 19:45.',
+          ephemeral: true
+        });
+      }
 
-            const now = new Date().toISOString();
+      const startdatum = parsedStartDate ?? todayAsDateString();
+      const enddatum = parsedEndDate ?? startdatum;
 
-            const result = db.prepare(`
+      const startAt = buildDateTime(startdatum, ganztag ? null : startzeit, '00:00');
+      const endAt = buildDateTime(enddatum, ganztag ? null : endzeit, '23:59');
+
+      if (startAt > endAt) {
+        return interaction.reply({
+          content: 'Der Start darf nicht nach dem Ende liegen.',
+          ephemeral: true
+        });
+      }
+
+      const now = new Date().toISOString();
+
+      const result = db.prepare(`
         INSERT INTO availability_entries (
           player_id,
           entry_type,
@@ -254,116 +322,146 @@ module.exports = {
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
-                player.id,
-                'absence',
-                startAt,
-                endAt,
-                grund,
-                interaction.user.id,
-                interaction.user.id,
-                now,
-                now
-            );
+        player.id,
+        'absence',
+        startAt,
+        endAt,
+        grund,
+        interaction.user.id,
+        interaction.user.id,
+        now,
+        now
+      );
 
-            return interaction.reply({
-                content:
-                    `Abwesenheit gespeichert.\n` +
-                    `ID: **${result.lastInsertRowid}**\n` +
-                    `Von: **${startAt}**\n` +
-                    `Bis: **${endAt}**\n` +
-                    `Grund: **${grund ?? '-'}**`,
-                ephemeral: true
-            });
-        }
+      return interaction.reply({
+        content:
+          `Abwesenheit gespeichert.\n` +
+          `ID: **${result.lastInsertRowid}**\n` +
+          `Zeitraum: **${formatEntryRange(startAt, endAt)}**\n` +
+          `Grund: **${grund ?? '-'}**`,
+        ephemeral: true
+      });
+    }
 
-        if (subcommand === 'anzeigen') {
-            const today = todayAsDateString();
-            const rows = db.prepare(`
-  SELECT id, entry_type, start_at, end_at, reason
-  FROM availability_entries
-  WHERE player_id = ?
-    AND end_at >= ?
-  ORDER BY start_at ASC
-  LIMIT 20
-`).all(player.id, `${today} 00:00`);
+    if (subcommand === 'anzeigen') {
+      const today = todayAsDateString();
 
-            if (rows.length === 0) {
-                return interaction.reply({
-                    content: 'Du hast aktuell keine kommenden Abwesenheiten eingetragen.',
-                    ephemeral: true
-                });
-            }
+      const rows = db.prepare(`
+        SELECT id, entry_type, start_at, end_at, reason
+        FROM availability_entries
+        WHERE player_id = ?
+          AND end_at >= ?
+        ORDER BY start_at ASC
+        LIMIT 20
+      `).all(player.id, `${today} 00:00`);
 
-            const lines = rows.map(row => {
-                const label = row.entry_type === 'vacation' ? 'Urlaub' : 'Abwesenheit';
-                return `**#${row.id}** • [${label}] ${row.start_at} → ${row.end_at} • Grund: ${row.reason ?? '-'}`;
-            });
+      if (rows.length === 0) {
+        return interaction.reply({
+          content: 'Du hast aktuell keine kommenden Abwesenheiten eingetragen.',
+          ephemeral: true
+        });
+      }
 
-            return interaction.reply({
-                content: `**Deine kommenden Fehlzeiten**\n${lines.join('\n')}`,
-                ephemeral: true
-            });
-        }
+      const lines = rows.map(row => {
+        const label = row.entry_type === 'vacation' ? 'Urlaub' : 'Abwesenheit';
+        return `**#${row.id}** • [${label}] ${formatEntryRange(row.start_at, row.end_at)} • Grund: ${row.reason ?? '-'}`;
+      });
 
-        if (subcommand === 'bearbeiten') {
-            const id = interaction.options.getInteger('id', true);
-            const startdatum = interaction.options.getString('startdatum', true).trim();
-            const enddatum = interaction.options.getString('enddatum', true).trim();
-            const startzeit = interaction.options.getString('startzeit')?.trim() ?? null;
-            const endzeit = interaction.options.getString('endzeit')?.trim() ?? null;
-            const grund = interaction.options.getString('grund')?.trim() ?? null;
-            const ganztag =
-                interaction.options.getBoolean('ganztag') ?? (!startzeit && !endzeit);
+      return interaction.reply({
+        content: `**Deine kommenden Fehlzeiten**\n${lines.join('\n')}`,
+        ephemeral: true
+      });
+    }
 
-            const existing = db.prepare(`
-        SELECT id
+    if (subcommand === 'bearbeiten') {
+      const id = interaction.options.getInteger('id', true);
+      const startdatumInput = interaction.options.getString('startdatum')?.trim() ?? null;
+      const enddatumInput = interaction.options.getString('enddatum')?.trim() ?? null;
+      const startzeit = interaction.options.getString('startzeit')?.trim() ?? null;
+      const endzeit = interaction.options.getString('endzeit')?.trim() ?? null;
+      const grund = interaction.options.getString('grund')?.trim() ?? null;
+      const explicitGanztag = interaction.options.getBoolean('ganztag');
+
+      const existing = db.prepare(`
+        SELECT id, start_at, end_at, reason
         FROM availability_entries
         WHERE id = ?
           AND player_id = ?
           AND entry_type = 'absence'
       `).get(id, player.id);
 
-            if (!existing) {
-                return interaction.reply({
-                    content: 'Ich habe keine eigene Abwesenheit mit dieser ID gefunden.',
-                    ephemeral: true
-                });
-            }
+      if (!existing) {
+        return interaction.reply({
+          content: 'Ich habe keine eigene Abwesenheit mit dieser ID gefunden.',
+          ephemeral: true
+        });
+      }
 
-            if (!isValidDate(startdatum) || !isValidDate(enddatum)) {
-                return interaction.reply({
-                    content: 'Datum ungültig. Bitte nutze YYYY-MM-DD, z. B. 2026-03-20.',
-                    ephemeral: true
-                });
-            }
+      const parsedStartDate = parseDateInput(startdatumInput);
+      const parsedEndDate = parseDateInput(enddatumInput);
 
-            if (startzeit && !isValidTime(startzeit)) {
-                return interaction.reply({
-                    content: 'Startzeit ungültig. Bitte nutze HH:MM, z. B. 18:30.',
-                    ephemeral: true
-                });
-            }
+      if (startdatumInput && !parsedStartDate) {
+        return interaction.reply({
+          content: 'Startdatum ungültig. Nutze TT.MM.JJJJ oder YYYY-MM-DD, z. B. 11.04.2026.',
+          ephemeral: true
+        });
+      }
 
-            if (endzeit && !isValidTime(endzeit)) {
-                return interaction.reply({
-                    content: 'Endzeit ungültig. Bitte nutze HH:MM, z. B. 19:45.',
-                    ephemeral: true
-                });
-            }
+      if (enddatumInput && !parsedEndDate) {
+        return interaction.reply({
+          content: 'Enddatum ungültig. Nutze TT.MM.JJJJ oder YYYY-MM-DD, z. B. 11.04.2026.',
+          ephemeral: true
+        });
+      }
 
-            const startAt = buildDateTime(startdatum, ganztag ? null : startzeit, '00:00');
-            const endAt = buildDateTime(enddatum, ganztag ? null : endzeit, '23:59');
+      if (startzeit && !isValidTime(startzeit)) {
+        return interaction.reply({
+          content: 'Startzeit ungültig. Bitte nutze HH:MM, z. B. 18:30.',
+          ephemeral: true
+        });
+      }
 
-            if (startAt > endAt) {
-                return interaction.reply({
-                    content: 'Der Start darf nicht nach dem Ende liegen.',
-                    ephemeral: true
-                });
-            }
+      if (endzeit && !isValidTime(endzeit)) {
+        return interaction.reply({
+          content: 'Endzeit ungültig. Bitte nutze HH:MM, z. B. 19:45.',
+          ephemeral: true
+        });
+      }
 
-            const now = new Date().toISOString();
+      const existingStartDate = extractDatePart(existing.start_at);
+      const existingEndDate = extractDatePart(existing.end_at);
+      const existingStartTime = extractTimePart(existing.start_at);
+      const existingEndTime = extractTimePart(existing.end_at);
+      const existingIsAllDay = existingStartTime === '00:00' && existingEndTime === '23:59';
 
-            db.prepare(`
+      const resolvedGanztag =
+        explicitGanztag ?? (!startzeit && !endzeit ? existingIsAllDay : false);
+
+      const startdatum = parsedStartDate ?? existingStartDate;
+      const enddatum = parsedEndDate ?? existingEndDate;
+
+      const startAt = buildDateTime(
+        startdatum,
+        resolvedGanztag ? null : (startzeit ?? existingStartTime),
+        '00:00'
+      );
+
+      const endAt = buildDateTime(
+        enddatum,
+        resolvedGanztag ? null : (endzeit ?? existingEndTime),
+        '23:59'
+      );
+
+      if (startAt > endAt) {
+        return interaction.reply({
+          content: 'Der Start darf nicht nach dem Ende liegen.',
+          ephemeral: true
+        });
+      }
+
+      const now = new Date().toISOString();
+
+      db.prepare(`
         UPDATE availability_entries
         SET start_at = ?,
             end_at = ?,
@@ -374,29 +472,28 @@ module.exports = {
           AND player_id = ?
           AND entry_type = 'absence'
       `).run(
-                startAt,
-                endAt,
-                grund,
-                interaction.user.id,
-                now,
-                id,
-                player.id
-            );
+        startAt,
+        endAt,
+        grund,
+        interaction.user.id,
+        now,
+        id,
+        player.id
+      );
 
-            return interaction.reply({
-                content:
-                    `Abwesenheit **#${id}** wurde aktualisiert.\n` +
-                    `Von: **${startAt}**\n` +
-                    `Bis: **${endAt}**\n` +
-                    `Grund: **${grund ?? '-'}**`,
-                ephemeral: true
-            });
-        }
+      return interaction.reply({
+        content:
+          `Abwesenheit **#${id}** wurde aktualisiert.\n` +
+          `Zeitraum: **${formatEntryRange(startAt, endAt)}**\n` +
+          `Grund: **${grund ?? '-'}**`,
+        ephemeral: true
+      });
+    }
 
-        if (subcommand === 'loeschen') {
-            const id = interaction.options.getInteger('id', true);
+    if (subcommand === 'loeschen') {
+      const id = interaction.options.getInteger('id', true);
 
-            const existing = db.prepare(`
+      const existing = db.prepare(`
         SELECT id
         FROM availability_entries
         WHERE id = ?
@@ -404,24 +501,24 @@ module.exports = {
           AND entry_type = 'absence'
       `).get(id, player.id);
 
-            if (!existing) {
-                return interaction.reply({
-                    content: 'Ich habe keine eigene Abwesenheit mit dieser ID gefunden.',
-                    ephemeral: true
-                });
-            }
+      if (!existing) {
+        return interaction.reply({
+          content: 'Ich habe keine eigene Abwesenheit mit dieser ID gefunden.',
+          ephemeral: true
+        });
+      }
 
-            db.prepare(`
+      db.prepare(`
         DELETE FROM availability_entries
         WHERE id = ?
           AND player_id = ?
           AND entry_type = 'absence'
       `).run(id, player.id);
 
-            return interaction.reply({
-                content: `Abwesenheit **#${id}** wurde gelöscht.`,
-                ephemeral: true
-            });
-        }
+      return interaction.reply({
+        content: `Abwesenheit **#${id}** wurde gelöscht.`,
+        ephemeral: true
+      });
     }
+  }
 };

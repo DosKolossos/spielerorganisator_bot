@@ -44,10 +44,12 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS availability_rules (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     player_id INTEGER NOT NULL,
-    weekday_mask INTEGER NOT NULL,
+    weekday_mask INTEGER NOT NULL DEFAULT 0,
     rule_type TEXT NOT NULL,
     time_value TEXT,
     note TEXT,
+    recurrence_type TEXT NOT NULL DEFAULT 'weekly',
+    anchor_date TEXT,
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -63,5 +65,24 @@ db.exec(`
     created_at TEXT NOT NULL
   );
 `);
+
+function columnExists(tableName, columnName) {
+  const columns = db.prepare(`PRAGMA table_info(${tableName})`).all();
+  return columns.some(column => column.name === columnName);
+}
+
+if (!columnExists('availability_rules', 'recurrence_type')) {
+  db.exec(`
+    ALTER TABLE availability_rules
+    ADD COLUMN recurrence_type TEXT NOT NULL DEFAULT 'weekly';
+  `);
+}
+
+if (!columnExists('availability_rules', 'anchor_date')) {
+  db.exec(`
+    ALTER TABLE availability_rules
+    ADD COLUMN anchor_date TEXT;
+  `);
+}
 
 module.exports = db;
