@@ -10,6 +10,7 @@ const {
 
 const pingCommand = require('./commands/ping');
 const profilCommand = require('./commands/profil');
+const abwesenheitCommand = require('./commands/abwesenheit');
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds]
@@ -18,11 +19,13 @@ const client = new Client({
 client.commands = new Collection();
 client.commands.set(pingCommand.data.name, pingCommand);
 client.commands.set(profilCommand.data.name, profilCommand);
+client.commands.set(abwesenheitCommand.data.name, abwesenheitCommand);
 
 async function registerCommands() {
   const commands = [
     pingCommand.data.toJSON(),
-    profilCommand.data.toJSON()
+    profilCommand.data.toJSON(),
+    abwesenheitCommand.data.toJSON()
   ];
 
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -38,7 +41,7 @@ async function registerCommands() {
   console.log('Slash-Commands registriert.');
 }
 
-client.once('ready', async () => {
+client.once('clientReady', async () => {
   console.log(`Eingeloggt als ${client.user.tag}`);
   await registerCommands();
 });

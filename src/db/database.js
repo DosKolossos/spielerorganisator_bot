@@ -24,4 +24,20 @@ db.exec(`
   );
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS availability_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    player_id INTEGER NOT NULL,
+    entry_type TEXT NOT NULL DEFAULT 'absence',
+    start_at TEXT NOT NULL,
+    end_at TEXT NOT NULL,
+    reason TEXT,
+    created_by_discord_user_id TEXT NOT NULL,
+    updated_by_discord_user_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(player_id) REFERENCES players(id)
+  );
+`);
+
 module.exports = db;
