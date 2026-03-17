@@ -11,6 +11,7 @@ const {
 const pingCommand = require('./commands/ping');
 const profilCommand = require('./commands/profil');
 const abwesenheitCommand = require('./commands/abwesenheit');
+const regelCommand = require('./commands/regel');
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds]
@@ -20,12 +21,14 @@ client.commands = new Collection();
 client.commands.set(pingCommand.data.name, pingCommand);
 client.commands.set(profilCommand.data.name, profilCommand);
 client.commands.set(abwesenheitCommand.data.name, abwesenheitCommand);
+client.commands.set(regelCommand.data.name, regelCommand);
 
 async function registerCommands() {
   const commands = [
     pingCommand.data.toJSON(),
     profilCommand.data.toJSON(),
-    abwesenheitCommand.data.toJSON()
+    abwesenheitCommand.data.toJSON(),
+    regelCommand.data.toJSON()
   ];
 
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);

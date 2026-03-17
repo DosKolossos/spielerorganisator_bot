@@ -40,4 +40,19 @@ db.exec(`
   );
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS availability_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    player_id INTEGER NOT NULL,
+    weekday INTEGER NOT NULL,
+    rule_type TEXT NOT NULL,
+    time_value TEXT,
+    note TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(player_id) REFERENCES players(id)
+  );
+`);
+
 module.exports = db;
