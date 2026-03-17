@@ -137,6 +137,53 @@ module.exports = {
     )
     .addSubcommand(sub =>
       sub
+        .setName('bearbeiten')
+        .setDescription('Bearbeitet eine bestehende Abwesenheit anhand der ID.')
+        .addIntegerOption(option =>
+          option
+            .setName('id')
+            .setDescription('Die ID aus /abwesenheit anzeigen')
+            .setRequired(true)
+        )
+        .addStringOption(option =>
+          option
+            .setName('startdatum')
+            .setDescription('Neues Startdatum im Format YYYY-MM-DD')
+            .setRequired(true)
+        )
+        .addStringOption(option =>
+          option
+            .setName('enddatum')
+            .setDescription('Neues Enddatum im Format YYYY-MM-DD')
+            .setRequired(true)
+        )
+        .addStringOption(option =>
+          option
+            .setName('startzeit')
+            .setDescription('Optional: Neue Startzeit im Format HH:MM')
+            .setRequired(false)
+        )
+        .addStringOption(option =>
+          option
+            .setName('endzeit')
+            .setDescription('Optional: Neue Endzeit im Format HH:MM')
+            .setRequired(false)
+        )
+        .addBooleanOption(option =>
+          option
+            .setName('ganztag')
+            .setDescription('Wenn true, gilt der Eintrag als ganztägig')
+            .setRequired(false)
+        )
+        .addStringOption(option =>
+          option
+            .setName('grund')
+            .setDescription('Neuer Grund')
+            .setRequired(false)
+        )
+    )
+    .addSubcommand(sub =>
+      sub
         .setName('loeschen')
         .setDescription('Löscht eine deiner Abwesenheiten anhand der ID.')
         .addIntegerOption(option =>
@@ -255,6 +302,94 @@ module.exports = {
 
       return interaction.reply({
         content: `**Deine kommenden Abwesenheiten**\n${lines.join('\n')}`,
+        ephemeral: true
+      });
+    }
+
+    if (subcommand === 'bearbeiten') {
+      const id = interaction.options.getInteger('id', true);
+      const startdatum = interaction.options.getString('startdatum', true).trim();
+      const enddatum = interaction.options.getString('enddatum', true).trim();
+      const startzeit = interaction.options.getString('startzeit')?.trim() ?? null;
+      const endzeit = interaction.options.getString('endzeit')?.trim() ?? null;
+      const grund = interaction.options.getString('grund')?.trim() ?? null;
+      const ganztag =
+        interaction.options.getBoolean('ganztag') ?? (!startzeit && !endzeit);
+
+      const existing = db.prepare(`
+        SELECT id
+        FROM availability_entries
+        WHERE id = ?
+          AND player_id = ?
+          AND entry_type = 'absence'
+      `).get(id, player.id);
+
+      if (!existing) {
+        return interaction.reply({
+          content: 'Ich habe keine eigene Abwesenheit mit dieser ID gefunden.',
+          ephemeral: true
+        });
+      }
+
+      if (!isValidDate(startdatum) || !isValidDate(enddatum)) {
+        return interaction.reply({
+          content: 'Datum ungültig. Bitte nutze YYYY-MM-DD, z. B. 2026-03-20.',
+          ephemeral: true
+        });
+      }
+
+      if (startzeit && !isValidTime(startzeit)) {
+        return interaction.reply({
+          content: 'Startzeit ungültig. Bitte nutze HH:MM, z. B. 18:30.',
+          ephemeral: true
+        });
+      }
+
+      if (endzeit && !isValidTime(endzeit)) {
+        return interaction.reply({
+          content: 'Endzeit ungültig. Bitte nutze HH:MM, z. B. 19:45.',
+          ephemeral: true
+        });
+      }
+
+      const startAt = buildDateTime(startdatum, ganztag ? null : startzeit, '00:00');
+      const endAt = buildDateTime(enddatum, ganztag ? null : endzeit, '23:59');
+
+      if (startAt > endAt) {
+        return interaction.reply({
+          content: 'Der Start darf nicht nach dem Ende liegen.',
+          ephemeral: true
+        });
+      }
+
+      const now = new Date().toISOString();
+
+      db.prepare(`
+        UPDATE availability_entries
+        SET start_at = ?,
+            end_at = ?,
+            reason = ?,
+            updated_by_discord_user_id = ?,
+            updated_at = ?
+        WHERE id = ?
+          AND player_id = ?
+          AND entry_type = 'absence'
+      `).run(
+        startAt,
+        endAt,
+        grund,
+        interaction.user.id,
+        now,
+        id,
+        player.id
+      );
+
+      return interaction.reply({
+        content:
+          `Abwesenheit **#${id}** wurde aktualisiert.\n` +
+          `Von: **${startAt}**\n` +
+          `Bis: **${endAt}**\n` +
+          `Grund: **${grund ?? '-'}**`,
         ephemeral: true
       });
     }
