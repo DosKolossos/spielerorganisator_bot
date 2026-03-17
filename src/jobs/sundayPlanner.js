@@ -1,545 +1,595 @@
 const db = require('../db/database');
 
 const SLOT_CONFIG = {
-  weekdayStart: '17:00',
-  weekendStart: '15:00',
-  dayEnd: '23:00',
-  minDurationMinutes: 150,
-  slotStepMinutes: 30
+    weekdayStart: '17:00',
+    weekendStart: '15:00',
+    dayEnd: '23:00',
+    minDurationMinutes: 150,
+    slotStepMinutes: 30
 };
 
 function getRunKey(date = new Date()) {
-  return date.toISOString().slice(0, 10);
+    return date.toISOString().slice(0, 10);
 }
 
 function tryAcquireJobRun(jobName, runKey) {
-  const now = new Date().toISOString();
+    const now = new Date().toISOString();
 
-  const result = db.prepare(`
+    const result = db.prepare(`
     INSERT OR IGNORE INTO job_runs (job_name, run_key, created_at)
     VALUES (?, ?, ?)
   `).run(jobName, `${jobName}:${runKey}`, now);
 
-  return result.changes > 0;
+    return result.changes > 0;
 }
 
 function playerDisplay(row) {
-  return row.alias || row.global_name || row.username || row.discord_user_id;
+    return row.alias || row.global_name || row.username || row.discord_user_id;
 }
 
 function todayInBerlin() {
-  return new Intl.DateTimeFormat('sv-SE', {
-    timeZone: 'Europe/Berlin',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit'
-  }).format(new Date());
+    return new Intl.DateTimeFormat('sv-SE', {
+        timeZone: 'Europe/Berlin',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+    }).format(new Date());
 }
 
 function addDaysIso(dateStr, daysToAdd) {
-  const [year, month, day] = dateStr.split('-').map(Number);
-  const date = new Date(Date.UTC(year, month - 1, day));
-  date.setUTCDate(date.getUTCDate() + daysToAdd);
+    const [year, month, day] = dateStr.split('-').map(Number);
+    const date = new Date(Date.UTC(year, month - 1, day));
+    date.setUTCDate(date.getUTCDate() + daysToAdd);
 
-  const y = date.getUTCFullYear();
-  const m = String(date.getUTCMonth() + 1).padStart(2, '0');
-  const d = String(date.getUTCDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
+    const y = date.getUTCFullYear();
+    const m = String(date.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(date.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
 }
 
 function getDateWindow(startDate, numberOfDays = 7) {
-  const dates = [];
-  for (let i = 0; i < numberOfDays; i++) {
-    dates.push(addDaysIso(startDate, i));
-  }
-  return dates;
+    const dates = [];
+    for (let i = 0; i < numberOfDays; i++) {
+        dates.push(addDaysIso(startDate, i));
+    }
+    return dates;
 }
 
 function extractDatePart(dateTime) {
-  return dateTime.slice(0, 10);
+    return dateTime.slice(0, 10);
 }
 
 function extractTimePart(dateTime) {
-  return dateTime.slice(11, 16);
+    return dateTime.slice(11, 16);
 }
 
 function formatDateDE(dateStr) {
-  const [year, month, day] = dateStr.split('-');
-  return `${day}.${month}.${year}`;
+    const [year, month, day] = dateStr.split('-');
+    return `${day}.${month}.${year}`;
 }
 
 function formatDateLongDE(dateStr) {
-  const [year, month, day] = dateStr.split('-').map(Number);
-  return new Intl.DateTimeFormat('de-DE', {
-    timeZone: 'UTC',
-    weekday: 'long',
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric'
-  }).format(new Date(Date.UTC(year, month - 1, day)));
+    const [year, month, day] = dateStr.split('-').map(Number);
+    return new Intl.DateTimeFormat('de-DE', {
+        timeZone: 'UTC',
+        weekday: 'long',
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric'
+    }).format(new Date(Date.UTC(year, month - 1, day)));
 }
 
 function formatDateTimeDE(dateTime) {
-  const [dateStr, timeStr] = dateTime.split(' ');
-  return `${formatDateDE(dateStr)}, ${timeStr}`;
+    const [dateStr, timeStr] = dateTime.split(' ');
+    return `${formatDateDE(dateStr)}, ${timeStr}`;
 }
 
 function formatEntryRange(startAt, endAt) {
-  const startDate = extractDatePart(startAt);
-  const endDate = extractDatePart(endAt);
-  const startTime = extractTimePart(startAt);
-  const endTime = extractTimePart(endAt);
+    const startDate = extractDatePart(startAt);
+    const endDate = extractDatePart(endAt);
+    const startTime = extractTimePart(startAt);
+    const endTime = extractTimePart(endAt);
 
-  const isAllDay = startTime === '00:00' && endTime === '23:59';
+    const isAllDay = startTime === '00:00' && endTime === '23:59';
 
-  if (isAllDay && startDate === endDate) {
-    return `${formatDateDE(startDate)} (ganztägig)`;
-  }
+    if (isAllDay && startDate === endDate) {
+        return `${formatDateDE(startDate)} (ganztägig)`;
+    }
 
-  if (isAllDay) {
-    return `${formatDateDE(startDate)} → ${formatDateDE(endDate)} (ganztägig)`;
-  }
+    if (isAllDay) {
+        return `${formatDateDE(startDate)} → ${formatDateDE(endDate)} (ganztägig)`;
+    }
 
-  return `${formatDateTimeDE(startAt)} → ${formatDateTimeDE(endAt)}`;
+    return `${formatDateTimeDE(startAt)} → ${formatDateTimeDE(endAt)}`;
 }
 
 function parseTimeToMinutes(timeStr) {
-  const [hours, minutes] = timeStr.split(':').map(Number);
-  return hours * 60 + minutes;
+    const [hours, minutes] = timeStr.split(':').map(Number);
+    return hours * 60 + minutes;
 }
 
 function minutesToTime(minutes) {
-  const safe = Math.max(0, minutes);
-  const hours = String(Math.floor(safe / 60)).padStart(2, '0');
-  const mins = String(safe % 60).padStart(2, '0');
-  return `${hours}:${mins}`;
+    const safe = Math.max(0, minutes);
+    const hours = String(Math.floor(safe / 60)).padStart(2, '0');
+    const mins = String(safe % 60).padStart(2, '0');
+    return `${hours}:${mins}`;
 }
 
 function addMinutesToTime(timeStr, minutesToAdd) {
-  return minutesToTime(parseTimeToMinutes(timeStr) + minutesToAdd);
+    return minutesToTime(parseTimeToMinutes(timeStr) + minutesToAdd);
 }
 
 function buildDateTime(dateStr, timeStr) {
-  return `${dateStr} ${timeStr}`;
+    return `${dateStr} ${timeStr}`;
 }
 
 function overlaps(startA, endA, startB, endB) {
-  return startA < endB && startB < endA;
+    return startA < endB && startB < endA;
 }
 
 function getWeekdayIndexFromIsoDate(dateStr) {
-  const [year, month, day] = dateStr.split('-').map(Number);
-  return new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+    const [year, month, day] = dateStr.split('-').map(Number);
+    return new Date(Date.UTC(year, month - 1, day)).getUTCDay();
 }
 
 function getWeekdayBitFromIsoDate(dateStr) {
-  const bits = [1, 2, 4, 8, 16, 32, 64];
-  return bits[getWeekdayIndexFromIsoDate(dateStr)];
+    const bits = [1, 2, 4, 8, 16, 32, 64];
+    return bits[getWeekdayIndexFromIsoDate(dateStr)];
 }
 
 function startOfWeekMonday(dateStr) {
-  const [year, month, day] = dateStr.split('-').map(Number);
-  const date = new Date(Date.UTC(year, month - 1, day));
-  const weekday = date.getUTCDay();
-  const diffToMonday = weekday === 0 ? 6 : weekday - 1;
-  date.setUTCDate(date.getUTCDate() - diffToMonday);
+    const [year, month, day] = dateStr.split('-').map(Number);
+    const date = new Date(Date.UTC(year, month - 1, day));
+    const weekday = date.getUTCDay();
+    const diffToMonday = weekday === 0 ? 6 : weekday - 1;
+    date.setUTCDate(date.getUTCDate() - diffToMonday);
 
-  const y = date.getUTCFullYear();
-  const m = String(date.getUTCMonth() + 1).padStart(2, '0');
-  const d = String(date.getUTCDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
+    const y = date.getUTCFullYear();
+    const m = String(date.getUTCMonth() + 1).padStart(2, '0');
+    const d = String(date.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
 }
 
 function daysBetweenIso(startDate, endDate) {
-  const [sy, sm, sd] = startDate.split('-').map(Number);
-  const [ey, em, ed] = endDate.split('-').map(Number);
+    const [sy, sm, sd] = startDate.split('-').map(Number);
+    const [ey, em, ed] = endDate.split('-').map(Number);
 
-  const start = Date.UTC(sy, sm - 1, sd);
-  const end = Date.UTC(ey, em - 1, ed);
+    const start = Date.UTC(sy, sm - 1, sd);
+    const end = Date.UTC(ey, em - 1, ed);
 
-  return Math.floor((end - start) / (1000 * 60 * 60 * 24));
+    return Math.floor((end - start) / (1000 * 60 * 60 * 24));
 }
 
 function weeksBetweenAnchorWeeks(anchorDate, targetDate) {
-  const anchorWeekStart = startOfWeekMonday(anchorDate);
-  const targetWeekStart = startOfWeekMonday(targetDate);
-  return Math.floor(daysBetweenIso(anchorWeekStart, targetWeekStart) / 7);
+    const anchorWeekStart = startOfWeekMonday(anchorDate);
+    const targetWeekStart = startOfWeekMonday(targetDate);
+    return Math.floor(daysBetweenIso(anchorWeekStart, targetWeekStart) / 7);
 }
 
 function matchesRuleOnDate(rule, dateStr) {
-  const recurrenceType = rule.recurrence_type ?? 'weekly';
-  const anchorDate = rule.anchor_date ?? dateStr;
+    const recurrenceType = rule.recurrence_type ?? 'weekly';
+    const anchorDate = rule.anchor_date ?? dateStr;
 
-  if (dateStr < anchorDate) {
-    return false;
-  }
-
-  switch (recurrenceType) {
-    case 'weekly':
-      return (rule.weekday_mask & getWeekdayBitFromIsoDate(dateStr)) !== 0;
-
-    case 'biweekly': {
-      if ((rule.weekday_mask & getWeekdayBitFromIsoDate(dateStr)) === 0) {
+    if (dateStr < anchorDate) {
         return false;
-      }
-
-      const weekDiff = weeksBetweenAnchorWeeks(anchorDate, dateStr);
-      return weekDiff >= 0 && weekDiff % 2 === 0;
     }
 
-    case 'monthly':
-      return Number(dateStr.slice(8, 10)) === Number(anchorDate.slice(8, 10));
+    switch (recurrenceType) {
+        case 'weekly':
+            return (rule.weekday_mask & getWeekdayBitFromIsoDate(dateStr)) !== 0;
 
-    case 'yearly':
-      return dateStr.slice(5, 10) === anchorDate.slice(5, 10);
+        case 'biweekly': {
+            if ((rule.weekday_mask & getWeekdayBitFromIsoDate(dateStr)) === 0) {
+                return false;
+            }
 
-    default:
-      return false;
-  }
+            const weekDiff = weeksBetweenAnchorWeeks(anchorDate, dateStr);
+            return weekDiff >= 0 && weekDiff % 2 === 0;
+        }
+
+        case 'monthly':
+            return Number(dateStr.slice(8, 10)) === Number(anchorDate.slice(8, 10));
+
+        case 'yearly':
+            return dateStr.slice(5, 10) === anchorDate.slice(5, 10);
+
+        default:
+            return false;
+    }
 }
 
 function getRuleBlockedIntervalsForDate(rule, dateStr) {
-  if (!matchesRuleOnDate(rule, dateStr)) {
+    if (!matchesRuleOnDate(rule, dateStr)) {
+        return [];
+    }
+
+    if (rule.rule_type === 'nicht_verfuegbar') {
+        return [{ start_at: `${dateStr} 00:00`, end_at: `${dateStr} 23:59` }];
+    }
+
+    if (rule.rule_type === 'erst_ab' && rule.time_value) {
+        return [{ start_at: `${dateStr} 00:00`, end_at: `${dateStr} ${rule.time_value}` }];
+    }
+
+    if (rule.rule_type === 'bis' && rule.time_value) {
+        return [{ start_at: `${dateStr} ${rule.time_value}`, end_at: `${dateStr} 23:59` }];
+    }
+
     return [];
-  }
-
-  if (rule.rule_type === 'nicht_verfuegbar') {
-    return [{ start_at: `${dateStr} 00:00`, end_at: `${dateStr} 23:59` }];
-  }
-
-  if (rule.rule_type === 'erst_ab' && rule.time_value) {
-    return [{ start_at: `${dateStr} 00:00`, end_at: `${dateStr} ${rule.time_value}` }];
-  }
-
-  if (rule.rule_type === 'bis' && rule.time_value) {
-    return [{ start_at: `${dateStr} ${rule.time_value}`, end_at: `${dateStr} 23:59` }];
-  }
-
-  return [];
 }
 
 function recurringDetail(rule) {
-  if (rule.rule_type === 'nicht_verfuegbar') return 'ganztägig nicht verfügbar';
-  if (rule.rule_type === 'erst_ab') return `bis ${rule.time_value} nicht verfügbar`;
-  if (rule.rule_type === 'bis') return `ab ${rule.time_value} nicht verfügbar`;
-  return rule.rule_type;
+    if (rule.rule_type === 'nicht_verfuegbar') return 'ganztägig nicht verfügbar';
+    if (rule.rule_type === 'erst_ab') return `bis ${rule.time_value} nicht verfügbar`;
+    if (rule.rule_type === 'bis') return `ab ${rule.time_value} nicht verfügbar`;
+    return rule.rule_type;
 }
 
 function recurringSortKey(rule, dateStr) {
-  if (rule.rule_type === 'nicht_verfuegbar' || rule.rule_type === 'erst_ab') return `${dateStr} 00:00`;
-  if (rule.rule_type === 'bis') return `${dateStr} ${rule.time_value ?? '23:59'}`;
-  return `${dateStr} 00:00`;
+    if (rule.rule_type === 'nicht_verfuegbar' || rule.rule_type === 'erst_ab') return `${dateStr} 00:00`;
+    if (rule.rule_type === 'bis') return `${dateStr} ${rule.time_value ?? '23:59'}`;
+    return `${dateStr} 00:00`;
 }
 
 function expandRecurringRules(rules, windowDates) {
-  const items = [];
+    const items = [];
 
-  for (const rule of rules) {
-    for (const dateStr of windowDates) {
-      if (!matchesRuleOnDate(rule, dateStr)) continue;
+    for (const rule of rules) {
+        for (const dateStr of windowDates) {
+            if (!matchesRuleOnDate(rule, dateStr)) continue;
 
-      items.push({
-        sort_key: recurringSortKey(rule, dateStr),
-        player_name: playerDisplay(rule),
-        display_text:
-          `- ${playerDisplay(rule)} • [Regelmäßig] ${formatDateDE(dateStr)} • ` +
-          `${recurringDetail(rule)} • Start: ${formatDateDE(rule.anchor_date ?? dateStr)} • Notiz: ${rule.note ?? '-'}`
-      });
+            items.push({
+                sort_key: recurringSortKey(rule, dateStr),
+                player_name: playerDisplay(rule),
+                display_text:
+                    `- ${playerDisplay(rule)} • [Regelmäßig] ${formatDateDE(dateStr)} • ` +
+                    `${recurringDetail(rule)} • Start: ${formatDateDE(rule.anchor_date ?? dateStr)} • Notiz: ${rule.note ?? '-'}`
+            });
+        }
     }
-  }
 
-  return items;
+    return items;
 }
 
 function mapExplicitEntries(entries) {
-  return entries.map(entry => {
-    const typeLabel = entry.entry_type === 'vacation' ? 'Urlaub' : 'Abwesenheit';
+    return entries.map(entry => {
+        const typeLabel = entry.entry_type === 'vacation' ? 'Urlaub' : 'Abwesenheit';
 
-    return {
-      sort_key: entry.start_at,
-      player_name: playerDisplay(entry),
-      display_text:
-        `- ${playerDisplay(entry)} • [Einmalig • ${typeLabel}] ${formatEntryRange(entry.start_at, entry.end_at)} • ` +
-        `Grund: ${entry.reason ?? '-'}`
-    };
-  });
+        return {
+            sort_key: entry.start_at,
+            player_name: playerDisplay(entry),
+            display_text:
+                `- ${playerDisplay(entry)} • [Einmalig • ${typeLabel}] ${formatEntryRange(entry.start_at, entry.end_at)} • ` +
+                `Grund: ${entry.reason ?? '-'}`
+        };
+    });
 }
 
 function getCandidateStartTimesForDate(dateStr) {
-  const weekday = getWeekdayIndexFromIsoDate(dateStr);
-  const isWeekend = weekday === 0 || weekday === 6;
+    const weekday = getWeekdayIndexFromIsoDate(dateStr);
+    const isWeekend = weekday === 0 || weekday === 6;
 
-  const startMinutes = parseTimeToMinutes(
-    isWeekend ? SLOT_CONFIG.weekendStart : SLOT_CONFIG.weekdayStart
-  );
-  const latestStart = parseTimeToMinutes(SLOT_CONFIG.dayEnd) - SLOT_CONFIG.minDurationMinutes;
+    const startMinutes = parseTimeToMinutes(
+        isWeekend ? SLOT_CONFIG.weekendStart : SLOT_CONFIG.weekdayStart
+    );
+    const latestStart = parseTimeToMinutes(SLOT_CONFIG.dayEnd) - SLOT_CONFIG.minDurationMinutes;
 
-  const starts = [];
-  for (let minutes = startMinutes; minutes <= latestStart; minutes += SLOT_CONFIG.slotStepMinutes) {
-    starts.push(minutesToTime(minutes));
-  }
+    const starts = [];
+    for (let minutes = startMinutes; minutes <= latestStart; minutes += SLOT_CONFIG.slotStepMinutes) {
+        starts.push(minutesToTime(minutes));
+    }
 
-  return starts;
+    return starts;
 }
 
 function getUnavailablePlayersForSlot(players, explicitEntries, rules, dateStr, slotStartAt, slotEndAt) {
-  const unavailable = [];
-  const available = [];
+    const unavailable = [];
+    const available = [];
 
-  for (const player of players) {
-    const playerEntries = explicitEntries.filter(entry => entry.player_id === player.id);
-    const playerRules = rules.filter(rule => rule.player_id === player.id);
+    for (const player of players) {
+        const playerEntries = explicitEntries.filter(entry => entry.player_id === player.id);
+        const playerRules = rules.filter(rule => rule.player_id === player.id);
 
-    let blocked = false;
+        let blocked = false;
 
-    for (const entry of playerEntries) {
-      if (overlaps(slotStartAt, slotEndAt, entry.start_at, entry.end_at)) {
-        blocked = true;
-        break;
-      }
-    }
-
-    if (!blocked) {
-      for (const rule of playerRules) {
-        const intervals = getRuleBlockedIntervalsForDate(rule, dateStr);
-        for (const interval of intervals) {
-          if (overlaps(slotStartAt, slotEndAt, interval.start_at, interval.end_at)) {
-            blocked = true;
-            break;
-          }
+        for (const entry of playerEntries) {
+            if (overlaps(slotStartAt, slotEndAt, entry.start_at, entry.end_at)) {
+                blocked = true;
+                break;
+            }
         }
-        if (blocked) break;
-      }
+
+        if (!blocked) {
+            for (const rule of playerRules) {
+                const intervals = getRuleBlockedIntervalsForDate(rule, dateStr);
+                for (const interval of intervals) {
+                    if (overlaps(slotStartAt, slotEndAt, interval.start_at, interval.end_at)) {
+                        blocked = true;
+                        break;
+                    }
+                }
+                if (blocked) break;
+            }
+        }
+
+        if (blocked) unavailable.push(playerDisplay(player));
+        else available.push(playerDisplay(player));
     }
 
-    if (blocked) unavailable.push(playerDisplay(player));
-    else available.push(playerDisplay(player));
-  }
-
-  return { unavailable, available };
+    return { unavailable, available };
 }
 
 function compressStartWindows(startTimes) {
-  if (!startTimes.length) return '-';
+    if (!startTimes.length) return '-';
 
-  const minutes = startTimes
-    .map(parseTimeToMinutes)
-    .sort((a, b) => a - b);
+    const minutes = startTimes
+        .map(parseTimeToMinutes)
+        .sort((a, b) => a - b);
 
-  const ranges = [];
-  let rangeStart = minutes[0];
-  let previous = minutes[0];
+    const ranges = [];
+    let rangeStart = minutes[0];
+    let previous = minutes[0];
 
-  for (let i = 1; i < minutes.length; i++) {
-    const current = minutes[i];
+    for (let i = 1; i < minutes.length; i++) {
+        const current = minutes[i];
 
-    if (current - previous === SLOT_CONFIG.slotStepMinutes) {
-      previous = current;
-      continue;
+        if (current - previous === SLOT_CONFIG.slotStepMinutes) {
+            previous = current;
+            continue;
+        }
+
+        ranges.push([rangeStart, previous]);
+        rangeStart = current;
+        previous = current;
     }
 
     ranges.push([rangeStart, previous]);
-    rangeStart = current;
-    previous = current;
-  }
 
-  ranges.push([rangeStart, previous]);
-
-  return ranges
-    .map(([start, end]) => {
-      const rangeEnd = end + SLOT_CONFIG.minDurationMinutes;
-      return `${minutesToTime(start)}–${minutesToTime(rangeEnd)} Uhr`;
-    })
-    .join(', ');
+    return ranges
+        .map(([start, end]) => {
+            const rangeEnd = end + SLOT_CONFIG.minDurationMinutes;
+            return `${minutesToTime(start)}–${minutesToTime(rangeEnd)} Uhr`;
+        })
+        .join(', ');
 }
 
 function buildDailySuggestion(players, explicitEntries, rules, dateStr) {
-  const startTimes = getCandidateStartTimesForDate(dateStr);
-  const slots = [];
+    const startTimes = getCandidateStartTimesForDate(dateStr);
+    const slots = [];
 
-  for (const startTime of startTimes) {
-    const endTime = addMinutesToTime(startTime, SLOT_CONFIG.minDurationMinutes);
-    const slotStartAt = buildDateTime(dateStr, startTime);
-    const slotEndAt = buildDateTime(dateStr, endTime);
+    for (const startTime of startTimes) {
+        const endTime = addMinutesToTime(startTime, SLOT_CONFIG.minDurationMinutes);
+        const slotStartAt = buildDateTime(dateStr, startTime);
+        const slotEndAt = buildDateTime(dateStr, endTime);
 
-    const { unavailable, available } = getUnavailablePlayersForSlot(
-      players,
-      explicitEntries,
-      rules,
-      dateStr,
-      slotStartAt,
-      slotEndAt
-    );
+        const { unavailable, available } = getUnavailablePlayersForSlot(
+            players,
+            explicitEntries,
+            rules,
+            dateStr,
+            slotStartAt,
+            slotEndAt
+        );
 
-    slots.push({
-      startTime,
-      endTime,
-      available,
-      unavailable,
-      signature: available.slice().sort((a, b) => a.localeCompare(b, 'de')).join('||'),
-      availableCount: available.length
-    });
-  }
-
-  if (!slots.length) return null;
-
-  const maxAvailable = Math.max(...slots.map(slot => slot.availableCount));
-  if (maxAvailable <= 0) return null;
-
-  const bestSlots = slots.filter(slot => slot.availableCount === maxAvailable);
-
-  const grouped = new Map();
-  for (const slot of bestSlots) {
-    if (!grouped.has(slot.signature)) {
-      grouped.set(slot.signature, []);
+        slots.push({
+            startTime,
+            endTime,
+            available,
+            unavailable,
+            signature: available.slice().sort((a, b) => a.localeCompare(b, 'de')).join('||'),
+            availableCount: available.length
+        });
     }
-    grouped.get(slot.signature).push(slot);
-  }
 
-  const chosenGroup = [...grouped.values()].sort((a, b) => {
-    if (b.length !== a.length) return b.length - a.length;
-    return a[0].startTime.localeCompare(b[0].startTime);
-  })[0];
+    if (!slots.length) return null;
 
-  const availablePlayers = chosenGroup[0].available;
-  const firstSlot = chosenGroup[0];
-  const lastSlot = chosenGroup[chosenGroup.length - 1];
+    const maxAvailable = Math.max(...slots.map(slot => slot.availableCount));
+    if (maxAvailable <= 0) return null;
 
-  return {
-    date: dateStr,
-    title: `Terminoption – ${formatDateLongDE(dateStr)}`,
-    earliestStart: firstSlot.startTime,
-    latestEnd: lastSlot.endTime,
-    startWindows: compressStartWindows(chosenGroup.map(slot => slot.startTime)),
-    availablePlayers,
-    availablePlayersText: availablePlayers.join(', '),
-    suggestionKey: `daily:${dateStr}`,
-    windowStartAt: `${dateStr} ${firstSlot.startTime}`,
-    windowEndAt: `${dateStr} ${lastSlot.endTime}`
-  };
+    const bestSlots = slots.filter(slot => slot.availableCount === maxAvailable);
+
+    const grouped = new Map();
+    for (const slot of bestSlots) {
+        if (!grouped.has(slot.signature)) {
+            grouped.set(slot.signature, []);
+        }
+        grouped.get(slot.signature).push(slot);
+    }
+
+    const chosenGroup = [...grouped.values()].sort((a, b) => {
+        if (b.length !== a.length) return b.length - a.length;
+        return a[0].startTime.localeCompare(b[0].startTime);
+    })[0];
+
+    const availablePlayers = chosenGroup[0].available;
+    const firstSlot = chosenGroup[0];
+    const lastSlot = chosenGroup[chosenGroup.length - 1];
+
+    return {
+        date: dateStr,
+        title: `Terminoption – ${formatDateLongDE(dateStr)}`,
+        earliestStart: firstSlot.startTime,
+        latestEnd: lastSlot.endTime,
+        startWindows: compressStartWindows(chosenGroup.map(slot => slot.startTime)),
+        availablePlayers,
+        availablePlayersText: availablePlayers.join(', '),
+        suggestionKey: `daily:${dateStr}`,
+        windowStartAt: `${dateStr} ${firstSlot.startTime}`,
+        windowEndAt: `${dateStr} ${lastSlot.endTime}`
+    };
 }
 
 function syncSuggestionEvent(suggestion) {
-  const now = new Date().toISOString();
+    const now = new Date().toISOString();
 
-  const existing = db.prepare(`
+    const existing = db.prepare(`
     SELECT *
     FROM team_calendar_events
     WHERE suggestion_key = ?
   `).get(suggestion.suggestionKey);
 
-  if (!existing) {
-    const result = db.prepare(`
-      INSERT INTO team_calendar_events (
-        title,
-        event_type,
-        status,
-        option_date,
-        window_start_at,
-        window_end_at,
-        scheduled_start_at,
-        scheduled_end_at,
-        meeting_scrim_at,
-        meeting_primeleague_at,
-        available_players_text,
-        opgg_url,
-        note,
-        suggestion_key,
-        is_auto_generated,
-        created_by_discord_user_id,
-        updated_by_discord_user_id,
-        created_at,
-        updated_at
-      )
-      VALUES (?, 'scrim', 'pending', ?, ?, ?, NULL, NULL, NULL, NULL, ?, NULL, NULL, ?, 1, 'system', 'system', ?, ?)
-    `).run(
-      suggestion.title,
-      suggestion.date,
-      suggestion.windowStartAt,
-      suggestion.windowEndAt,
-      suggestion.availablePlayersText,
-      suggestion.suggestionKey,
-      now,
-      now
-    );
+    if (!existing) {
+        const defaultStartAt = suggestion.windowStartAt;
+        const defaultEndAt = suggestion.windowEndAt;
+        const defaultMeetingAt = `${suggestion.date} ${addMinutesToTime(suggestion.earliestStart, -15)}`;
 
-    return Number(result.lastInsertRowid);
-  }
+        const result = db.prepare(`
+  INSERT INTO team_calendar_events (
+    title,
+    event_type,
+    status,
+    option_date,
+    window_start_at,
+    window_end_at,
+    scheduled_start_at,
+    scheduled_end_at,
+    meeting_scrim_at,
+    meeting_primeleague_at,
+    available_players_text,
+    opgg_url,
+    note,
+    suggestion_key,
+    is_auto_generated,
 
-  if (existing.is_auto_generated === 1 && existing.status === 'pending') {
-    db.prepare(`
-      UPDATE team_calendar_events
-      SET title = ?,
-          option_date = ?,
-          window_start_at = ?,
-          window_end_at = ?,
-          available_players_text = ?,
-          updated_by_discord_user_id = 'system',
-          updated_at = ?
-      WHERE id = ?
-    `).run(
-      suggestion.title,
-      suggestion.date,
-      suggestion.windowStartAt,
-      suggestion.windowEndAt,
-      suggestion.availablePlayersText,
-      now,
-      existing.id
-    );
-  }
+    start_at,
+    end_at,
+    meeting_at,
 
-  return existing.id;
+    created_by_discord_user_id,
+    updated_by_discord_user_id,
+    created_at,
+    updated_at
+  )
+  VALUES (
+    ?, 'scrim', 'pending',
+    ?, ?, ?, NULL, NULL, NULL, NULL,
+    ?, NULL, NULL, ?, 1,
+    ?, ?, ?,
+    'system', 'system', ?, ?
+  )
+`).run(
+            suggestion.title,
+            suggestion.date,
+            suggestion.windowStartAt,
+            suggestion.windowEndAt,
+            suggestion.availablePlayersText,
+            suggestion.suggestionKey,
+            defaultStartAt,
+            defaultEndAt,
+            defaultMeetingAt,
+            now,
+            now
+        );
+
+        return Number(result.lastInsertRowid);
+    }
+
+    if (existing.is_auto_generated === 1 && existing.status === 'pending') {
+        const defaultStartAt = suggestion.windowStartAt;
+        const defaultEndAt = suggestion.windowEndAt;
+        const defaultMeetingAt = `${suggestion.date} ${addMinutesToTime(suggestion.earliestStart, -15)}`;
+
+        const result = db.prepare(`
+  INSERT INTO team_calendar_events (
+    title,
+    event_type,
+    status,
+    option_date,
+    window_start_at,
+    window_end_at,
+    scheduled_start_at,
+    scheduled_end_at,
+    meeting_scrim_at,
+    meeting_primeleague_at,
+    available_players_text,
+    opgg_url,
+    note,
+    suggestion_key,
+    is_auto_generated,
+
+    start_at,
+    end_at,
+    meeting_at,
+
+    created_by_discord_user_id,
+    updated_by_discord_user_id,
+    created_at,
+    updated_at
+  )
+  VALUES (
+    ?, 'scrim', 'pending',
+    ?, ?, ?, NULL, NULL, NULL, NULL,
+    ?, NULL, NULL, ?, 1,
+    ?, ?, ?,
+    'system', 'system', ?, ?
+  )
+`).run(
+            suggestion.title,
+            suggestion.date,
+            suggestion.windowStartAt,
+            suggestion.windowEndAt,
+            suggestion.availablePlayersText,
+            suggestion.suggestionKey,
+            defaultStartAt,
+            defaultEndAt,
+            defaultMeetingAt,
+            now,
+            now
+        );
+    }
+
+    return existing.id;
 }
 
 function splitLongMessage(text, maxLength = 1900) {
-  if (text.length <= maxLength) return [text];
+    if (text.length <= maxLength) return [text];
 
-  const lines = text.split('\n');
-  const chunks = [];
-  let current = '';
+    const lines = text.split('\n');
+    const chunks = [];
+    let current = '';
 
-  for (const line of lines) {
-    const next = current ? `${current}\n${line}` : line;
+    for (const line of lines) {
+        const next = current ? `${current}\n${line}` : line;
 
-    if (next.length > maxLength) {
-      if (current) chunks.push(current);
-      current = line;
-    } else {
-      current = next;
+        if (next.length > maxLength) {
+            if (current) chunks.push(current);
+            current = line;
+        } else {
+            current = next;
+        }
     }
-  }
 
-  if (current) chunks.push(current);
+    if (current) chunks.push(current);
 
-  return chunks;
+    return chunks;
 }
 
 async function runSundayPlanner(client, options = {}) {
-  const { force = false } = options;
-  const runKey = getRunKey();
+    const { force = false } = options;
+    const runKey = getRunKey();
 
-  if (!force) {
-    const acquired = tryAcquireJobRun('sunday_planner', runKey);
-    if (!acquired) {
-      console.log(`[Planner] Bereits ausgeführt für ${runKey}`);
-      return { skipped: true, reason: 'already_ran_today' };
+    if (!force) {
+        const acquired = tryAcquireJobRun('sunday_planner', runKey);
+        if (!acquired) {
+            console.log(`[Planner] Bereits ausgeführt für ${runKey}`);
+            return { skipped: true, reason: 'already_ran_today' };
+        }
+    } else {
+        console.log(`[Planner] Force-Run aktiv für ${runKey}`);
     }
-  } else {
-    console.log(`[Planner] Force-Run aktiv für ${runKey}`);
-  }
 
-  const berlinToday = todayInBerlin();
-  const windowDates = getDateWindow(berlinToday, 7);
-  const windowStart = `${berlinToday} 00:00`;
-  const windowEndInclusive = `${addDaysIso(berlinToday, 6)} 23:59`;
+    const berlinToday = todayInBerlin();
+    const windowDates = getDateWindow(berlinToday, 7);
+    const windowStart = `${berlinToday} 00:00`;
+    const windowEndInclusive = `${addDaysIso(berlinToday, 6)} 23:59`;
 
-  const players = db.prepare(`
+    const players = db.prepare(`
     SELECT id, discord_user_id, username, global_name, alias
     FROM players
     ORDER BY id ASC
   `).all();
 
-  const upcomingEntries = db.prepare(`
+    const upcomingEntries = db.prepare(`
     SELECT
       e.id,
       e.player_id,
@@ -558,7 +608,7 @@ async function runSundayPlanner(client, options = {}) {
     ORDER BY e.start_at ASC
   `).all(windowStart, windowEndInclusive);
 
-  const rules = db.prepare(`
+    const rules = db.prepare(`
     SELECT
       r.id,
       r.player_id,
@@ -578,77 +628,77 @@ async function runSundayPlanner(client, options = {}) {
     ORDER BY p.id ASC, r.id ASC
   `).all();
 
-  const explicitItems = mapExplicitEntries(upcomingEntries);
-  const recurringItems = expandRecurringRules(rules, windowDates);
+    const explicitItems = mapExplicitEntries(upcomingEntries);
+    const recurringItems = expandRecurringRules(rules, windowDates);
 
-  const mergedAbsenceItems = [...explicitItems, ...recurringItems].sort((a, b) => {
-    if (a.sort_key < b.sort_key) return -1;
-    if (a.sort_key > b.sort_key) return 1;
-    return a.player_name.localeCompare(b.player_name, 'de');
-  });
+    const mergedAbsenceItems = [...explicitItems, ...recurringItems].sort((a, b) => {
+        if (a.sort_key < b.sort_key) return -1;
+        if (a.sort_key > b.sort_key) return 1;
+        return a.player_name.localeCompare(b.player_name, 'de');
+    });
 
-  const suggestions = [];
+    const suggestions = [];
 
-  for (const dateStr of windowDates) {
-    const suggestion = buildDailySuggestion(players, upcomingEntries, rules, dateStr);
-    if (!suggestion) continue;
+    for (const dateStr of windowDates) {
+        const suggestion = buildDailySuggestion(players, upcomingEntries, rules, dateStr);
+        if (!suggestion) continue;
 
-    const calendarId = syncSuggestionEvent(suggestion);
-    suggestions.push({ ...suggestion, calendarId });
-  }
-
-  const overviewLines = [];
-  overviewLines.push('📋 **Wochenplanung – Rohübersicht**');
-  overviewLines.push(`Erstellt am: **${new Date().toLocaleString('de-DE', { timeZone: 'Europe/Berlin' })}**`);
-  overviewLines.push('');
-
-  overviewLines.push('**Fehlzeiten (nächste 7 Tage)**');
-  if (mergedAbsenceItems.length === 0) {
-    overviewLines.push('- Keine eingetragenen einmaligen oder regelmäßigen Fehlzeiten.');
-  } else {
-    for (const item of mergedAbsenceItems) {
-      overviewLines.push(item.display_text);
+        const calendarId = syncSuggestionEvent(suggestion);
+        suggestions.push({ ...suggestion, calendarId });
     }
-  }
 
-  overviewLines.push('');
-  overviewLines.push('➡️ Nächster Schritt: Tagesoption prüfen, Kalender-ID merken und dann mit `/spieltermin bearbeiten` oder `/spieltermin lineup` weiterarbeiten.');
+    const overviewLines = [];
+    overviewLines.push('📋 **Wochenplanung – Rohübersicht**');
+    overviewLines.push(`Erstellt am: **${new Date().toLocaleString('de-DE', { timeZone: 'Europe/Berlin' })}**`);
+    overviewLines.push('');
 
-  const dayMessages = suggestions.map(item => [
-    `**${item.title}**`,
-    `Kalender-ID: **#${item.calendarId}**`,
-    `Mögliche Zeit: **${item.earliestStart}–${item.latestEnd} Uhr**`,
-    `Verfügbare Spieler: **${item.availablePlayersText || '-'}**`,
-    `Treffpunkt bei Terminstart: **15 Min vorher (Scrim) / 30 Min vorher (Prime League)**`,
-    `OPGG: **-**`,
-    `Hinweis: **-**`
-  ].join('\n'));
+    overviewLines.push('**Fehlzeiten (nächste 7 Tage)**');
+    if (mergedAbsenceItems.length === 0) {
+        overviewLines.push('- Keine eingetragenen einmaligen oder regelmäßigen Fehlzeiten.');
+    } else {
+        for (const item of mergedAbsenceItems) {
+            overviewLines.push(item.display_text);
+        }
+    }
 
-  if (dayMessages.length === 0) {
-    dayMessages.push('**Terminoptionen**\nKein passender Tagesvorschlag in den nächsten 7 Tagen gefunden.');
-  }
+    overviewLines.push('');
+    overviewLines.push('➡️ Nächster Schritt: Tagesoption prüfen, Kalender-ID merken und dann mit `/spieltermin bearbeiten` oder `/spieltermin lineup` weiterarbeiten.');
 
-  const adminChannel = await client.channels.fetch(process.env.ADMIN_CHANNEL_ID);
-  if (!adminChannel || !adminChannel.isTextBased()) {
-    return { skipped: false, sent: false, reason: 'invalid_admin_channel' };
-  }
+    const dayMessages = suggestions.map(item => [
+        `**${item.title}**`,
+        `Kalender-ID: **#${item.calendarId}**`,
+        `Mögliche Zeit: **${item.earliestStart}–${item.latestEnd} Uhr**`,
+        `Verfügbare Spieler: **${item.availablePlayersText || '-'}**`,
+        `Treffpunkt bei Terminstart: **15 Min vorher (Scrim) / 30 Min vorher (Prime League)**`,
+        `OPGG: **-**`,
+        `Hinweis: **-**`
+    ].join('\n'));
 
-  const messagesToSend = [
-    ...splitLongMessage(overviewLines.join('\n')),
-    ...dayMessages
-  ];
+    if (dayMessages.length === 0) {
+        dayMessages.push('**Terminoptionen**\nKein passender Tagesvorschlag in den nächsten 7 Tagen gefunden.');
+    }
 
-  for (const message of messagesToSend) {
-    await adminChannel.send(message);
-  }
+    const adminChannel = await client.channels.fetch(process.env.ADMIN_CHANNEL_ID);
+    if (!adminChannel || !adminChannel.isTextBased()) {
+        return { skipped: false, sent: false, reason: 'invalid_admin_channel' };
+    }
 
-  return {
-    skipped: false,
-    sent: true,
-    messages: messagesToSend.length,
-    absenceCount: mergedAbsenceItems.length,
-    suggestionCount: suggestions.length
-  };
+    const messagesToSend = [
+        ...splitLongMessage(overviewLines.join('\n')),
+        ...dayMessages
+    ];
+
+    for (const message of messagesToSend) {
+        await adminChannel.send(message);
+    }
+
+    return {
+        skipped: false,
+        sent: true,
+        messages: messagesToSend.length,
+        absenceCount: mergedAbsenceItems.length,
+        suggestionCount: suggestions.length
+    };
 }
 
 module.exports = { runSundayPlanner };

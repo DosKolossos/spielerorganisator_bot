@@ -95,6 +95,8 @@ db.exec(`
     title TEXT NOT NULL,
     event_type TEXT NOT NULL DEFAULT 'scrim',
     status TEXT NOT NULL DEFAULT 'pending',
+
+    -- neue Struktur
     option_date TEXT NOT NULL,
     window_start_at TEXT NOT NULL,
     window_end_at TEXT NOT NULL,
@@ -107,6 +109,12 @@ db.exec(`
     note TEXT,
     suggestion_key TEXT,
     is_auto_generated INTEGER NOT NULL DEFAULT 0,
+
+    -- Legacy-Kompatibilität
+    start_at TEXT,
+    end_at TEXT,
+    meeting_at TEXT,
+
     created_by_discord_user_id TEXT NOT NULL,
     updated_by_discord_user_id TEXT NOT NULL,
     created_at TEXT NOT NULL,
@@ -147,6 +155,10 @@ if (tableExists('team_calendar_events')) {
   addColumnIfMissing('team_calendar_events', 'note', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'suggestion_key', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'is_auto_generated', `INTEGER NOT NULL DEFAULT 0`);
+
+  addColumnIfMissing('team_calendar_events', 'start_at', `TEXT`);
+  addColumnIfMissing('team_calendar_events', 'end_at', `TEXT`);
+  addColumnIfMissing('team_calendar_events', 'meeting_at', `TEXT`);
 
   const hasOldStartAt = columnExists('team_calendar_events', 'start_at');
   const hasOldEndAt = columnExists('team_calendar_events', 'end_at');
