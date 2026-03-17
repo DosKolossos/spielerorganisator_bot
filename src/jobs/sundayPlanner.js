@@ -36,13 +36,18 @@ function playerDisplay(row) {
   return row.alias || row.global_name || row.username || row.discord_user_id;
 }
 
-async function runSundayPlanner(client) {
+async function runSundayPlanner(client, options = {}) {
+  const { force = false } = options;
   const runKey = getRunKey();
 
-  const acquired = tryAcquireJobRun('sunday_planner', runKey);
-  if (!acquired) {
-    console.log(`[Planner] Bereits ausgeführt für ${runKey}`);
-    return;
+  if (!force) {
+    const acquired = tryAcquireJobRun('sunday_planner', runKey);
+    if (!acquired) {
+      console.log(`[Planner] Bereits ausgeführt für ${runKey}`);
+      return { skipped: true, reason: 'already_ran_today' };
+    }
+  } else {
+    console.log(`[Planner] Force-Run aktiv für ${runKey}`);
   }
 
   const upcomingEntries = db.prepare(`
@@ -79,6 +84,9 @@ async function runSundayPlanner(client) {
     WHERE r.active = 1
     ORDER BY p.id ASC, r.id ASC
   `).all();
+
+  console.log(`[Planner] upcomingEntries=${upcomingEntries.length}, rules=${rules.length}`);
+  console.log(`[Planner] ADMIN_CHANNEL_ID=${process.env.ADMIN_CHANNEL_ID}`);
 
   const lines = [];
   lines.push('📋 **Wochenplanung – Rohübersicht**');
@@ -126,9 +134,10 @@ async function runSundayPlanner(client) {
 
   try {
     const adminChannel = await client.channels.fetch(process.env.ADMIN_CHANNEL_ID);
+
     if (!adminChannel || !adminChannel.isTextBased()) {
       console.error('[Planner] Adminkanal nicht gefunden oder nicht textbasiert.');
-      return;
+      return { skipped: false, sent: false, reason: 'invalid_admin_channel' };
     }
 
     const chunks = [];
@@ -151,8 +160,10 @@ async function runSundayPlanner(client) {
     }
 
     console.log('[Planner] Wochenübersicht in Adminkanal gesendet.');
+    return { skipped: false, sent: true, chunks: chunks.length };
   } catch (error) {
     console.error('[Planner] Fehler beim Senden der Wochenübersicht.', error);
+    throw error;
   }
 }
 

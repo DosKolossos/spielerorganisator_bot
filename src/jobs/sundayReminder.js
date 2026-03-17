@@ -15,13 +15,18 @@ function tryAcquireJobRun(jobName, runKey) {
   return result.changes > 0;
 }
 
-async function runSundayReminder(client) {
+async function runSundayReminder(client, options = {}) {
+  const { force = false } = options;
   const runKey = getRunKey();
 
-  const acquired = tryAcquireJobRun('sunday_reminder', runKey);
-  if (!acquired) {
-    console.log(`[Reminder] Bereits ausgeführt für ${runKey}`);
-    return;
+  if (!force) {
+    const acquired = tryAcquireJobRun('sunday_reminder', runKey);
+    if (!acquired) {
+      console.log(`[Reminder] Bereits ausgeführt für ${runKey}`);
+      return { skipped: true, reason: 'already_ran_today' };
+    }
+  } else {
+    console.log(`[Reminder] Force-Run aktiv für ${runKey}`);
   }
 
   const players = db.prepare(`
@@ -69,6 +74,7 @@ async function runSundayReminder(client) {
   }
 
   console.log(`[Reminder] Fertig. Erfolgreich: ${sent}, Fehlgeschlagen: ${failed}`);
+  return { skipped: false, sent, failed };
 }
 
 module.exports = {
