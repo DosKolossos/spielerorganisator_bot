@@ -5,8 +5,7 @@ const SLOT_CONFIG = {
   weekendStart: '15:00',
   dayEnd: '23:00',
   minDurationMinutes: 150,
-  slotStepMinutes: 30,
-  maxSuggestedSlots: 10
+  slotStepMinutes: 30
 };
 
 function getRunKey(date = new Date()) {
@@ -22,6 +21,16 @@ function tryAcquireJobRun(jobName, runKey) {
   `).run(jobName, `${jobName}:${runKey}`, now);
 
   return result.changes > 0;
+}
+
+function tableExists(tableName) {
+  const row = db.prepare(`
+    SELECT name
+    FROM sqlite_master
+    WHERE type = 'table' AND name = ?
+  `).get(tableName);
+
+  return !!row;
 }
 
 function playerDisplay(row) {
@@ -110,8 +119,9 @@ function parseTimeToMinutes(timeStr) {
 }
 
 function minutesToTime(minutes) {
-  const hours = String(Math.floor(minutes / 60)).padStart(2, '0');
-  const mins = String(minutes % 60).padStart(2, '0');
+  const safeMinutes = Math.max(0, minutes);
+  const hours = String(Math.floor(safeMinutes / 60)).padStart(2, '0');
+  const mins = String(safeMinutes % 60).padStart(2, '0');
   return `${hours}:${mins}`;
 }
 
@@ -125,24 +135,6 @@ function buildDateTime(dateStr, timeStr) {
 
 function overlaps(startA, endA, startB, endB) {
   return startA < endB && startB < endA;
-}
-
-function weekdayMaskToLabel(mask) {
-  if (mask === (2 | 4 | 8 | 16 | 32)) return 'Werktage';
-  if (mask === (1 | 64)) return 'Wochenende';
-  if (mask === (1 | 2 | 4 | 8 | 16 | 32 | 64)) return 'Alle Tage';
-  if (mask === 0) return '-';
-
-  const labels = [];
-  if (mask & 1) labels.push('Sonntag');
-  if (mask & 2) labels.push('Montag');
-  if (mask & 4) labels.push('Dienstag');
-  if (mask & 8) labels.push('Mittwoch');
-  if (mask & 16) labels.push('Donnerstag');
-  if (mask & 32) labels.push('Freitag');
-  if (mask & 64) labels.push('Samstag');
-
-  return labels.join(', ');
 }
 
 function getWeekdayIndexFromIsoDate(dateStr) {
@@ -410,12 +402,48 @@ function getUnavailablePlayersForSlot(players, explicitEntries, rules, dateStr, 
   return unavailable;
 }
 
-function buildSuggestedSlots(players, explicitEntries, rules, windowDates) {
-  const fullTeamSlots = [];
-  const fallbackSlots = [];
+function compressStartWindows(startTimes) {
+  if (!startTimes.length) return '-';
+
+  const minutes = startTimes
+    .map(parseTimeToMinutes)
+    .sort((a, b) => a - b);
+
+  const ranges = [];
+  let rangeStart = minutes[0];
+  let previous = minutes[0];
+
+  for (let i = 1; i < minutes.length; i++) {
+    const current = minutes[i];
+
+    if (current - previous === SLOT_CONFIG.slotStepMinutes) {
+      previous = current;
+      continue;
+    }
+
+    ranges.push([rangeStart, previous]);
+    rangeStart = current;
+    previous = current;
+  }
+
+  ranges.push([rangeStart, previous]);
+
+  return ranges
+    .map(([start, end]) => {
+      if (start === end) {
+        return `${minutesToTime(start)} Uhr`;
+      }
+      return `${minutesToTime(start)}–${minutesToTime(end)} Uhr`;
+    })
+    .join(', ');
+}
+
+function buildDailySuggestionPosts(players, explicitEntries, rules, windowDates) {
+  const dayPosts = [];
 
   for (const dateStr of windowDates) {
     const startTimes = getCandidateStartTimesForDate(dateStr);
+    const validSlots = [];
 
     for (const startTime of startTimes) {
       const endTime = addMinutesToTime(startTime, SLOT_CONFIG.minDurationMinutes);
@@ -431,49 +459,61 @@ function buildSuggestedSlots(players, explicitEntries, rules, windowDates) {
         slotEndAt
       );
 
-      const slot = {
-        date: dateStr,
-        start_time: startTime,
-        end_time: endTime,
-        meeting_scrim: addMinutesToTime(startTime, -15),
-        meeting_primeleague: addMinutesToTime(startTime, -30),
-        unavailable_players: unavailablePlayers,
-        available_count: players.length - unavailablePlayers.length,
-        player_count: players.length
-      };
-
       if (unavailablePlayers.length === 0) {
-        fullTeamSlots.push(slot);
-      } else if (unavailablePlayers.length <= 2) {
-        fallbackSlots.push(slot);
+        validSlots.push({
+          start_time: startTime,
+          end_time: endTime
+        });
       }
+    }
+
+    if (validSlots.length === 0) {
+      continue;
+    }
+
+    const earliestStart = validSlots[0].start_time;
+    const latestStart = validSlots[validSlots.length - 1].start_time;
+    const latestEnd = validSlots[validSlots.length - 1].end_time;
+    const startWindows = compressStartWindows(validSlots.map(slot => slot.start_time));
+
+    const lines = [];
+    lines.push(`**Terminoption – ${formatDateLongDE(dateStr)}**`);
+    lines.push(`Frühestmöglicher Beginn: **${earliestStart} Uhr**`);
+    lines.push(`Spätestmöglicher Beginn: **${latestStart} Uhr**`);
+    lines.push(`Spätestmögliches Ende: **${latestEnd} Uhr**`);
+    lines.push(`Mögliche Startfenster: **${startWindows}**`);
+    lines.push(`Treffpunkt: **15 Min vorher (Scrim) / 30 Min vorher (Prime League)**`);
+    lines.push(`Hinweis: **-**`);
+
+    dayPosts.push(lines.join('\n'));
+  }
+
+  return dayPosts;
+}
+
+function splitLongMessage(text, maxLength = 1900) {
+  if (text.length <= maxLength) {
+    return [text];
+  }
+
+  const lines = text.split('\n');
+  const chunks = [];
+  let current = '';
+
+  for (const line of lines) {
+    const next = current ? `${current}\n${line}` : line;
+
+    if (next.length > maxLength) {
+      if (current) chunks.push(current);
+      current = line;
+    } else {
+      current = next;
     }
   }
 
-  if (fullTeamSlots.length > 0) {
-    return fullTeamSlots.slice(0, SLOT_CONFIG.maxSuggestedSlots);
-  }
+  if (current) chunks.push(current);
 
-  return fallbackSlots
-    .sort((a, b) => b.available_count - a.available_count || a.date.localeCompare(b.date) || a.start_time.localeCompare(b.start_time))
-    .slice(0, SLOT_CONFIG.maxSuggestedSlots);
-}
-
-function formatSuggestedSlot(slot, index) {
-  const missingText =
-    slot.unavailable_players.length === 0
-      ? 'Alle verfügbar'
-      : `Fehlen: ${slot.unavailable_players.join(', ')}`;
-
-  return [
-    `- [Pending] Vorschlag ${index + 1}`,
-    `  ${formatDateLongDE(slot.date)}`,
-    `  ${slot.start_time}–${slot.end_time} Uhr`,
-    `  Treffen: ${slot.meeting_scrim} Uhr (Scrim) / ${slot.meeting_primeleague} Uhr (Prime League)`,
-    `  Verfügbar: ${slot.available_count}/${slot.player_count}`,
-    `  ${missingText}`,
-    `  Hinweis: -`
-  ].join('\n');
+  return chunks;
 }
 
 async function runSundayPlanner(client, options = {}) {
@@ -493,7 +533,7 @@ async function runSundayPlanner(client, options = {}) {
   const berlinToday = todayInBerlin();
   const windowDates = getDateWindow(berlinToday, 7);
   const windowStart = `${berlinToday} 00:00`;
-  const windowEndExclusive = `${addDaysIso(berlinToday, 7)} 23:59`;
+  const windowEndInclusive = `${addDaysIso(berlinToday, 6)} 23:59`;
 
   const players = getPlayers();
 
@@ -514,7 +554,7 @@ async function runSundayPlanner(client, options = {}) {
     WHERE e.end_at >= ?
       AND e.start_at <= ?
     ORDER BY e.start_at ASC
-  `).all(windowStart, windowEndExclusive);
+  `).all(windowStart, windowEndInclusive);
 
   const rules = db.prepare(`
     SELECT
@@ -536,21 +576,24 @@ async function runSundayPlanner(client, options = {}) {
     ORDER BY p.id ASC, r.id ASC
   `).all();
 
-  const calendarEvents = db.prepare(`
-    SELECT
-      id,
-      title,
-      event_type,
-      status,
-      start_at,
-      end_at,
-      meeting_at,
-      note
-    FROM team_calendar_events
-    WHERE start_at >= ?
-      AND start_at <= ?
-    ORDER BY start_at ASC
-  `).all(windowStart, windowEndExclusive);
+  let calendarEvents = [];
+  if (tableExists('team_calendar_events')) {
+    calendarEvents = db.prepare(`
+      SELECT
+        id,
+        title,
+        event_type,
+        status,
+        start_at,
+        end_at,
+        meeting_at,
+        note
+      FROM team_calendar_events
+      WHERE start_at >= ?
+        AND start_at <= ?
+      ORDER BY start_at ASC
+    `).all(windowStart, windowEndInclusive);
+  }
 
   const explicitItems = mapExplicitEntries(upcomingEntries);
   const recurringItems = expandRecurringRules(rules, windowDates);
@@ -561,85 +604,62 @@ async function runSundayPlanner(client, options = {}) {
     return a.player_name.localeCompare(b.player_name, 'de');
   });
 
-  const suggestedSlots = buildSuggestedSlots(players, upcomingEntries, rules, windowDates);
+  const dayPosts = buildDailySuggestionPosts(players, upcomingEntries, rules, windowDates);
 
-  const lines = [];
-  lines.push('📋 **Wochenplanung – Rohübersicht**');
-  lines.push(`Erstellt am: **${new Date().toLocaleString('de-DE', { timeZone: 'Europe/Berlin' })}**`);
-  lines.push('');
+  const overviewLines = [];
+  overviewLines.push('📋 **Wochenplanung – Rohübersicht**');
+  overviewLines.push(`Erstellt am: **${new Date().toLocaleString('de-DE', { timeZone: 'Europe/Berlin' })}**`);
+  overviewLines.push('');
 
-  lines.push('**Fehlzeiten (nächste 7 Tage)**');
+  overviewLines.push('**Fehlzeiten (nächste 7 Tage)**');
   if (mergedAbsenceItems.length === 0) {
-    lines.push('- Keine eingetragenen einmaligen oder regelmäßigen Fehlzeiten.');
+    overviewLines.push('- Keine eingetragenen einmaligen oder regelmäßigen Fehlzeiten.');
   } else {
     for (const item of mergedAbsenceItems) {
-      lines.push(item.display_text);
+      overviewLines.push(item.display_text);
     }
   }
 
-  lines.push('');
-  lines.push('**Spielerkalender (nächste 7 Tage)**');
+  overviewLines.push('');
+  overviewLines.push('**Spielerkalender (nächste 7 Tage)**');
   if (calendarEvents.length === 0) {
-    lines.push('- Keine gespeicherten Teamtermine.');
+    overviewLines.push('- Keine gespeicherten Teamtermine.');
   } else {
     for (const event of calendarEvents) {
-      lines.push(formatCalendarEvent(event));
+      overviewLines.push(formatCalendarEvent(event));
     }
   }
 
-  lines.push('');
-  lines.push('**Mögliche Termine**');
-  if (players.length === 0) {
-    lines.push('- Es sind noch keine Spielerprofile vorhanden.');
-  } else if (suggestedSlots.length === 0) {
-    lines.push('- Keine passenden Slots gefunden.');
-  } else {
-    lines.push(`- Rahmen: Werktags ab ${SLOT_CONFIG.weekdayStart} Uhr, Wochenende ab ${SLOT_CONFIG.weekendStart} Uhr, Ende spätestens ${SLOT_CONFIG.dayEnd} Uhr, Dauer mindestens 2,5h.`);
-    lines.push('');
-    for (const [index, slot] of suggestedSlots.entries()) {
-      lines.push(formatSuggestedSlot(slot, index));
-      lines.push('');
-    }
-    if (lines[lines.length - 1] === '') {
-      lines.pop();
-    }
-  }
-
-  lines.push('');
-  lines.push('➡️ Nächster Schritt: Gewünschte Vorschläge als Teamtermine übernehmen und an den Spielerkalender weiterleiten.');
+  overviewLines.push('');
+  overviewLines.push('➡️ Nächster Schritt: Passende Tagesoptionen prüfen und gewünschte Termine in den Spielerkalender übernehmen.');
 
   const adminChannel = await client.channels.fetch(process.env.ADMIN_CHANNEL_ID);
   if (!adminChannel || !adminChannel.isTextBased()) {
     return { skipped: false, sent: false, reason: 'invalid_admin_channel' };
   }
 
-  const chunks = [];
-  let current = '';
+  const overviewText = overviewLines.join('\n');
+  const messagesToSend = [
+    ...splitLongMessage(overviewText),
+    ...dayPosts
+  ];
 
-  for (const line of lines) {
-    const next = current ? `${current}\n${line}` : line;
-    if (next.length > 1900) {
-      chunks.push(current);
-      current = line;
-    } else {
-      current = next;
-    }
+  if (dayPosts.length === 0) {
+    messagesToSend.push('**Terminoptionen**\nKein gemeinsamer Teamtermin mit allen Spielern in den nächsten 7 Tagen möglich.');
   }
 
-  if (current) chunks.push(current);
-
-  for (const chunk of chunks) {
-    await adminChannel.send(chunk);
+  for (const message of messagesToSend) {
+    await adminChannel.send(message);
   }
 
   return {
     skipped: false,
     sent: true,
-    chunks: chunks.length,
+    messages: messagesToSend.length,
     explicitCount: explicitItems.length,
     recurringCount: recurringItems.length,
     eventCount: calendarEvents.length,
-    suggestedCount: suggestedSlots.length
+    dayOptionCount: dayPosts.length
   };
 }
 
