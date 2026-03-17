@@ -1,24 +1,21 @@
 const { SlashCommandBuilder } = require('discord.js');
 const db = require('../db/database');
 
-const weekdayMap = {
-  montag: 1,
-  dienstag: 2,
-  mittwoch: 3,
-  donnerstag: 4,
-  freitag: 5,
-  samstag: 6,
-  sonntag: 0
-};
-
-const weekdayLabelMap = {
-  0: 'Sonntag',
-  1: 'Montag',
-  2: 'Dienstag',
-  3: 'Mittwoch',
-  4: 'Donnerstag',
-  5: 'Freitag',
-  6: 'Samstag'
+const DAY_BITS = {
+  sonntag: 1,
+  montag: 2,
+  dienstag: 4,
+  mittwoch: 8,
+  donnerstag: 16,
+  freitag: 32,
+  samstag: 64,
+  so: 1,
+  mo: 2,
+  di: 4,
+  mi: 8,
+  do: 16,
+  fr: 32,
+  sa: 64
 };
 
 const ruleLabelMap = {
@@ -86,6 +83,43 @@ function isValidTime(value) {
   return hours >= 0 && hours <= 23 && minutes >= 0 && minutes <= 59;
 }
 
+function parseWeekdayMask(input) {
+  const normalized = input.toLowerCase().replace(/\s+/g, '');
+
+  if (normalized === 'werktage') return 2 | 4 | 8 | 16 | 32;
+  if (normalized === 'wochenende') return 1 | 64;
+  if (normalized === 'alle') return 1 | 2 | 4 | 8 | 16 | 32 | 64;
+
+  const parts = normalized.split(',').filter(Boolean);
+  if (!parts.length) return null;
+
+  let mask = 0;
+
+  for (const part of parts) {
+    if (!DAY_BITS[part]) return null;
+    mask |= DAY_BITS[part];
+  }
+
+  return mask;
+}
+
+function weekdayMaskToLabel(mask) {
+  if (mask === (2 | 4 | 8 | 16 | 32)) return 'Werktage';
+  if (mask === (1 | 64)) return 'Wochenende';
+  if (mask === (1 | 2 | 4 | 8 | 16 | 32 | 64)) return 'Alle Tage';
+
+  const labels = [];
+  if (mask & 1) labels.push('Sonntag');
+  if (mask & 2) labels.push('Montag');
+  if (mask & 4) labels.push('Dienstag');
+  if (mask & 8) labels.push('Mittwoch');
+  if (mask & 16) labels.push('Donnerstag');
+  if (mask & 32) labels.push('Freitag');
+  if (mask & 64) labels.push('Samstag');
+
+  return labels.join(', ');
+}
+
 module.exports = {
   data: new SlashCommandBuilder()
     .setName('regel')
@@ -96,18 +130,9 @@ module.exports = {
         .setDescription('Fügt eine neue Regel hinzu.')
         .addStringOption(option =>
           option
-            .setName('wochentag')
-            .setDescription('Für welchen Wochentag gilt die Regel?')
+            .setName('tage')
+            .setDescription('Z. B. werktage, wochenende, alle oder montag,dienstag')
             .setRequired(true)
-            .addChoices(
-              { name: 'Montag', value: 'montag' },
-              { name: 'Dienstag', value: 'dienstag' },
-              { name: 'Mittwoch', value: 'mittwoch' },
-              { name: 'Donnerstag', value: 'donnerstag' },
-              { name: 'Freitag', value: 'freitag' },
-              { name: 'Samstag', value: 'samstag' },
-              { name: 'Sonntag', value: 'sonntag' }
-            )
         )
         .addStringOption(option =>
           option
@@ -155,16 +180,16 @@ module.exports = {
     const player = ensurePlayer(interaction.user);
 
     if (subcommand === 'hinzufuegen') {
-      const weekdayKey = interaction.options.getString('wochentag', true);
+      const tageInput = interaction.options.getString('tage', true).trim();
       const ruleType = interaction.options.getString('typ', true);
       const timeValue = interaction.options.getString('uhrzeit')?.trim() ?? null;
       const note = interaction.options.getString('notiz')?.trim() ?? null;
 
-      const weekday = weekdayMap[weekdayKey];
+      const weekdayMask = parseWeekdayMask(tageInput);
 
-      if (weekday === undefined) {
+      if (weekdayMask === null) {
         return interaction.reply({
-          content: 'Ungültiger Wochentag.',
+          content: 'Ungültige Tage. Nutze z. B. werktage, wochenende, alle oder montag,dienstag.',
           ephemeral: true
         });
       }
@@ -188,7 +213,7 @@ module.exports = {
       const result = db.prepare(`
         INSERT INTO availability_rules (
           player_id,
-          weekday,
+          weekday_mask,
           rule_type,
           time_value,
           note,
@@ -199,7 +224,7 @@ module.exports = {
         VALUES (?, ?, ?, ?, ?, 1, ?, ?)
       `).run(
         player.id,
-        weekday,
+        weekdayMask,
         ruleType,
         timeValue,
         note,
@@ -216,7 +241,7 @@ module.exports = {
         content:
           `Regel gespeichert.\n` +
           `ID: **${result.lastInsertRowid}**\n` +
-          `Tag: **${weekdayLabelMap[weekday]}**\n` +
+          `Tage: **${weekdayMaskToLabel(weekdayMask)}**\n` +
           `Regel: **${readable}**\n` +
           `Notiz: **${note ?? '-'}**`,
         ephemeral: true
@@ -225,11 +250,11 @@ module.exports = {
 
     if (subcommand === 'anzeigen') {
       const rows = db.prepare(`
-        SELECT id, weekday, rule_type, time_value, note
+        SELECT id, weekday_mask, rule_type, time_value, note
         FROM availability_rules
         WHERE player_id = ?
           AND active = 1
-        ORDER BY weekday ASC, id ASC
+        ORDER BY id ASC
       `).all(player.id);
 
       if (rows.length === 0) {
@@ -246,7 +271,7 @@ module.exports = {
           detail += ` ${row.time_value}`;
         }
 
-        return `**#${row.id}** • ${weekdayLabelMap[row.weekday]} • ${detail} • Notiz: ${row.note ?? '-'}`;
+        return `**#${row.id}** • ${weekdayMaskToLabel(row.weekday_mask)} • ${detail} • Notiz: ${row.note ?? '-'}`;
       });
 
       return interaction.reply({
