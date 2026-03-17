@@ -11,6 +11,15 @@ const dbPath = path.join(dataDir, 'spielerorganisator.db');
 const db = new Database(dbPath);
 
 db.pragma('journal_mode = WAL');
+db.pragma('foreign_keys = ON');
+
+function quoteIdentifier(value) {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
+    throw new Error(`Ungültiger SQL-Identifier: ${value}`);
+  }
+
+  return `"${value}"`;
+}
 
 function tableExists(tableName) {
   const row = db.prepare(`
@@ -25,14 +34,17 @@ function tableExists(tableName) {
 function columnExists(tableName, columnName) {
   if (!tableExists(tableName)) return false;
 
-  const columns = db.prepare(`PRAGMA table_info(${tableName})`).all();
+  const safeTableName = quoteIdentifier(tableName);
+  const columns = db.prepare(`PRAGMA table_info(${safeTableName})`).all();
   return columns.some(column => column.name === columnName);
 }
 
 function addColumnIfMissing(tableName, columnName, definitionSql) {
-  if (!columnExists(tableName, columnName)) {
-    db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definitionSql};`);
-  }
+  if (columnExists(tableName, columnName)) return;
+
+  const safeTableName = quoteIdentifier(tableName);
+  const safeColumnName = quoteIdentifier(columnName);
+  db.exec(`ALTER TABLE ${safeTableName} ADD COLUMN ${safeColumnName} ${definitionSql};`);
 }
 
 db.exec(`
@@ -96,7 +108,6 @@ db.exec(`
     event_type TEXT NOT NULL DEFAULT 'scrim',
     status TEXT NOT NULL DEFAULT 'pending',
 
-    -- neue Struktur
     option_date TEXT NOT NULL,
     window_start_at TEXT NOT NULL,
     window_end_at TEXT NOT NULL,
@@ -110,7 +121,6 @@ db.exec(`
     suggestion_key TEXT,
     is_auto_generated INTEGER NOT NULL DEFAULT 0,
 
-    -- Legacy-Kompatibilität
     start_at TEXT,
     end_at TEXT,
     meeting_at TEXT,
@@ -136,13 +146,15 @@ db.exec(`
   );
 `);
 
-// ---- Migrationen zuerst ----
+function migrateAvailabilityRules() {
+  addColumnIfMissing('availability_rules', 'recurrence_type', `TEXT NOT NULL DEFAULT 'weekly'`);
+  addColumnIfMissing('availability_rules', 'anchor_date', `TEXT`);
+  addColumnIfMissing('availability_rules', 'active', `INTEGER NOT NULL DEFAULT 1`);
+}
 
-addColumnIfMissing('availability_rules', 'recurrence_type', `TEXT NOT NULL DEFAULT 'weekly'`);
-addColumnIfMissing('availability_rules', 'anchor_date', `TEXT`);
-addColumnIfMissing('availability_rules', 'active', `INTEGER NOT NULL DEFAULT 1`);
+function migrateTeamCalendarEvents() {
+  if (!tableExists('team_calendar_events')) return;
 
-if (tableExists('team_calendar_events')) {
   addColumnIfMissing('team_calendar_events', 'option_date', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'window_start_at', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'window_end_at', `TEXT`);
@@ -160,64 +172,105 @@ if (tableExists('team_calendar_events')) {
   addColumnIfMissing('team_calendar_events', 'end_at', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'meeting_at', `TEXT`);
 
-  const hasOldStartAt = columnExists('team_calendar_events', 'start_at');
-  const hasOldEndAt = columnExists('team_calendar_events', 'end_at');
-  const hasOldMeetingAt = columnExists('team_calendar_events', 'meeting_at');
-
-  if (hasOldStartAt && hasOldEndAt) {
-    db.exec(`
-      UPDATE team_calendar_events
-      SET
-        option_date = COALESCE(option_date, substr(start_at, 1, 10)),
-        window_start_at = COALESCE(window_start_at, start_at),
-        window_end_at = COALESCE(window_end_at, end_at),
-        scheduled_start_at = COALESCE(scheduled_start_at, start_at),
-        scheduled_end_at = COALESCE(scheduled_end_at, end_at)
-      WHERE
-        option_date IS NULL
-        OR window_start_at IS NULL
-        OR window_end_at IS NULL
-        OR scheduled_start_at IS NULL
-        OR scheduled_end_at IS NULL;
-    `);
-  }
-
-  if (hasOldMeetingAt) {
-    db.exec(`
-      UPDATE team_calendar_events
-      SET
-        meeting_scrim_at = COALESCE(meeting_scrim_at, meeting_at),
-        meeting_primeleague_at = COALESCE(meeting_primeleague_at, meeting_at)
-      WHERE
-        meeting_scrim_at IS NULL
-        OR meeting_primeleague_at IS NULL;
-    `);
-  }
-
-  // Fallback für halb migrierte Datensätze ohne alte Spalten
   db.exec(`
     UPDATE team_calendar_events
-    SET option_date = substr(window_start_at, 1, 10)
-    WHERE option_date IS NULL
-      AND window_start_at IS NOT NULL;
-  `);
-
-  db.exec(`
-    UPDATE team_calendar_events
-    SET scheduled_start_at = window_start_at
-    WHERE scheduled_start_at IS NULL
-      AND window_start_at IS NOT NULL;
-  `);
-
-  db.exec(`
-    UPDATE team_calendar_events
-    SET scheduled_end_at = window_end_at
-    WHERE scheduled_end_at IS NULL
-      AND window_end_at IS NOT NULL;
+    SET
+      option_date = COALESCE(
+        NULLIF(option_date, ''),
+        substr(COALESCE(window_start_at, start_at, scheduled_start_at), 1, 10)
+      ),
+      window_start_at = COALESCE(
+        NULLIF(window_start_at, ''),
+        start_at,
+        scheduled_start_at
+      ),
+      window_end_at = COALESCE(
+        NULLIF(window_end_at, ''),
+        end_at,
+        scheduled_end_at
+      ),
+      scheduled_start_at = CASE
+        WHEN scheduled_start_at IS NULL OR scheduled_start_at = '' THEN
+          CASE
+            WHEN window_start_at IS NULL OR window_start_at = '' THEN start_at
+            ELSE NULL
+          END
+        ELSE scheduled_start_at
+      END,
+      scheduled_end_at = CASE
+        WHEN scheduled_end_at IS NULL OR scheduled_end_at = '' THEN
+          CASE
+            WHEN window_end_at IS NULL OR window_end_at = '' THEN end_at
+            ELSE NULL
+          END
+        ELSE scheduled_end_at
+      END,
+      meeting_scrim_at = COALESCE(NULLIF(meeting_scrim_at, ''), meeting_at),
+      meeting_primeleague_at = COALESCE(NULLIF(meeting_primeleague_at, ''), meeting_at)
+    WHERE
+      option_date IS NULL OR option_date = ''
+      OR window_start_at IS NULL OR window_start_at = ''
+      OR window_end_at IS NULL OR window_end_at = ''
+      OR meeting_scrim_at IS NULL OR meeting_scrim_at = ''
+      OR meeting_primeleague_at IS NULL OR meeting_primeleague_at = '';
   `);
 }
 
-// ---- Indexe erst nach Migrationen ----
+function dedupeSuggestionKeys() {
+  if (!tableExists('team_calendar_events') || !columnExists('team_calendar_events', 'suggestion_key')) {
+    return;
+  }
+
+  const duplicateGroups = db.prepare(`
+    SELECT suggestion_key
+    FROM team_calendar_events
+    WHERE suggestion_key IS NOT NULL
+      AND suggestion_key <> ''
+    GROUP BY suggestion_key
+    HAVING COUNT(*) > 1
+  `).all();
+
+  if (duplicateGroups.length === 0) return;
+
+  const selectRows = db.prepare(`
+    SELECT
+      id,
+      status,
+      is_auto_generated,
+      updated_at,
+      created_at
+    FROM team_calendar_events
+    WHERE suggestion_key = ?
+    ORDER BY
+      CASE WHEN is_auto_generated = 0 THEN 0 ELSE 1 END ASC,
+      CASE WHEN status <> 'pending' THEN 0 ELSE 1 END ASC,
+      COALESCE(NULLIF(updated_at, ''), NULLIF(created_at, ''), '') DESC,
+      id DESC
+  `);
+
+  const clearSuggestionKey = db.prepare(`
+    UPDATE team_calendar_events
+    SET suggestion_key = NULL
+    WHERE id = ?
+  `);
+
+  const tx = db.transaction(groups => {
+    for (const group of groups) {
+      const rows = selectRows.all(group.suggestion_key);
+      const [, ...duplicates] = rows;
+
+      for (const row of duplicates) {
+        clearSuggestionKey.run(row.id);
+      }
+    }
+  });
+
+  tx(duplicateGroups);
+}
+
+migrateAvailabilityRules();
+migrateTeamCalendarEvents();
+dedupeSuggestionKeys();
 
 db.exec(`
   CREATE INDEX IF NOT EXISTS idx_availability_entries_player_time
