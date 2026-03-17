@@ -25,14 +25,15 @@ db.exec(`
 `);
 
 db.exec(`
-  CREATE TABLE IF NOT EXISTS availability_rules (
+  CREATE TABLE IF NOT EXISTS availability_entries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     player_id INTEGER NOT NULL,
-    weekday_mask INTEGER NOT NULL,
-    rule_type TEXT NOT NULL,
-    time_value TEXT,
-    note TEXT,
-    active INTEGER NOT NULL DEFAULT 1,
+    entry_type TEXT NOT NULL DEFAULT 'absence',
+    start_at TEXT NOT NULL,
+    end_at TEXT NOT NULL,
+    reason TEXT,
+    created_by_discord_user_id TEXT NOT NULL,
+    updated_by_discord_user_id TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY(player_id) REFERENCES players(id)
@@ -51,6 +52,15 @@ db.exec(`
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY(player_id) REFERENCES players(id)
+  );
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS job_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_name TEXT NOT NULL,
+    run_key TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL
   );
 `);
 

@@ -7,12 +7,16 @@ const {
   Routes,
   Collection
 } = require('discord.js');
+const cron = require('node-cron');
 
 const pingCommand = require('./commands/ping');
 const profilCommand = require('./commands/profil');
 const abwesenheitCommand = require('./commands/abwesenheit');
 const regelCommand = require('./commands/regel');
 const urlaubCommand = require('./commands/urlaub');
+
+const { runSundayReminder } = require('./jobs/sundayReminder');
+const { runSundayPlanner } = require('./jobs/sundayPlanner');
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds]
@@ -47,9 +51,32 @@ async function registerCommands() {
   console.log('Slash-Commands registriert.');
 }
 
+function registerCronJobs(client) {
+  cron.schedule(
+    '30 18 * * 0',
+    async () => {
+      console.log('[Cron] Starte Sunday Reminder...');
+      await runSundayReminder(client);
+    },
+    { timezone: 'Europe/Berlin' }
+  );
+
+  cron.schedule(
+    '0 20 * * 0',
+    async () => {
+      console.log('[Cron] Starte Sunday Planner...');
+      await runSundayPlanner(client);
+    },
+    { timezone: 'Europe/Berlin' }
+  );
+
+  console.log('Cronjobs registriert.');
+}
+
 client.once('clientReady', async () => {
   console.log(`Eingeloggt als ${client.user.tag}`);
   await registerCommands();
+  registerCronJobs(client);
 });
 
 client.on('interactionCreate', async interaction => {
