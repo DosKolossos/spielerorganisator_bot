@@ -1,5 +1,14 @@
 const db = require('../db/database');
 
+const SLOT_CONFIG = {
+  weekdayStart: '17:00',
+  weekendStart: '15:00',
+  dayEnd: '23:00',
+  minDurationMinutes: 150,
+  slotStepMinutes: 30,
+  maxSuggestedSlots: 10
+};
+
 function getRunKey(date = new Date()) {
   return date.toISOString().slice(0, 10);
 }
@@ -39,9 +48,9 @@ function addDaysIso(dateStr, daysToAdd) {
   return `${y}-${m}-${d}`;
 }
 
-function getDateWindow(startDate, daysAheadInclusive = 7) {
+function getDateWindow(startDate, numberOfDays = 7) {
   const dates = [];
-  for (let i = 0; i <= daysAheadInclusive; i++) {
+  for (let i = 0; i < numberOfDays; i++) {
     dates.push(addDaysIso(startDate, i));
   }
   return dates;
@@ -58,6 +67,17 @@ function extractTimePart(dateTime) {
 function formatDateDE(dateStr) {
   const [year, month, day] = dateStr.split('-');
   return `${day}.${month}.${year}`;
+}
+
+function formatDateLongDE(dateStr) {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  return new Intl.DateTimeFormat('de-DE', {
+    timeZone: 'UTC',
+    weekday: 'long',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric'
+  }).format(new Date(Date.UTC(year, month - 1, day)));
 }
 
 function formatDateTimeDE(dateTime) {
@@ -82,6 +102,29 @@ function formatEntryRange(startAt, endAt) {
   }
 
   return `${formatDateTimeDE(startAt)} → ${formatDateTimeDE(endAt)}`;
+}
+
+function parseTimeToMinutes(timeStr) {
+  const [hours, minutes] = timeStr.split(':').map(Number);
+  return hours * 60 + minutes;
+}
+
+function minutesToTime(minutes) {
+  const hours = String(Math.floor(minutes / 60)).padStart(2, '0');
+  const mins = String(minutes % 60).padStart(2, '0');
+  return `${hours}:${mins}`;
+}
+
+function addMinutesToTime(timeStr, minutesToAdd) {
+  return minutesToTime(parseTimeToMinutes(timeStr) + minutesToAdd);
+}
+
+function buildDateTime(dateStr, timeStr) {
+  return `${dateStr} ${timeStr}`;
+}
+
+function overlaps(startA, endA, startB, endB) {
+  return startA < endB && startB < endA;
 }
 
 function weekdayMaskToLabel(mask) {
@@ -115,7 +158,7 @@ function getWeekdayBitFromIsoDate(dateStr) {
 function startOfWeekMonday(dateStr) {
   const [year, month, day] = dateStr.split('-').map(Number);
   const date = new Date(Date.UTC(year, month - 1, day));
-  const weekday = date.getUTCDay(); // 0=So, 1=Mo, ...
+  const weekday = date.getUTCDay();
   const diffToMonday = weekday === 0 ? 6 : weekday - 1;
   date.setUTCDate(date.getUTCDate() - diffToMonday);
 
@@ -177,6 +220,35 @@ function matchesRuleOnDate(rule, dateStr) {
     default:
       return false;
   }
+}
+
+function getRuleBlockedIntervalsForDate(rule, dateStr) {
+  if (!matchesRuleOnDate(rule, dateStr)) {
+    return [];
+  }
+
+  if (rule.rule_type === 'nicht_verfuegbar') {
+    return [{
+      start_at: `${dateStr} 00:00`,
+      end_at: `${dateStr} 23:59`
+    }];
+  }
+
+  if (rule.rule_type === 'erst_ab' && rule.time_value) {
+    return [{
+      start_at: `${dateStr} 00:00`,
+      end_at: `${dateStr} ${rule.time_value}`
+    }];
+  }
+
+  if (rule.rule_type === 'bis' && rule.time_value) {
+    return [{
+      start_at: `${dateStr} ${rule.time_value}`,
+      end_at: `${dateStr} 23:59`
+    }];
+  }
+
+  return [];
 }
 
 function recurringDetail(rule) {
@@ -243,6 +315,167 @@ function mapExplicitEntries(entries) {
   });
 }
 
+function statusLabel(status) {
+  switch (status) {
+    case 'fixed':
+      return 'Fixed';
+    case 'cancelled':
+      return 'Cancelled';
+    default:
+      return 'Pending';
+  }
+}
+
+function eventTypeLabel(type) {
+  switch (type) {
+    case 'primeleague':
+      return 'Prime League';
+    case 'scrim':
+      return 'Scrim';
+    default:
+      return 'Termin';
+  }
+}
+
+function formatCalendarEvent(event) {
+  return [
+    `- [${statusLabel(event.status)}] ${event.title}`,
+    `  ${formatDateLongDE(extractDatePart(event.start_at))}`,
+    `  ${extractTimePart(event.start_at)}–${extractTimePart(event.end_at)} Uhr`,
+    `  Treffen: ${extractTimePart(event.meeting_at)} Uhr`,
+    `  Typ: ${eventTypeLabel(event.event_type)}`,
+    `  Hinweis: ${event.note ?? '-'}`
+  ].join('\n');
+}
+
+function getCandidateStartTimesForDate(dateStr) {
+  const weekday = getWeekdayIndexFromIsoDate(dateStr);
+  const isWeekend = weekday === 0 || weekday === 6;
+
+  const startMinutes = parseTimeToMinutes(
+    isWeekend ? SLOT_CONFIG.weekendStart : SLOT_CONFIG.weekdayStart
+  );
+  const latestStart = parseTimeToMinutes(SLOT_CONFIG.dayEnd) - SLOT_CONFIG.minDurationMinutes;
+
+  const starts = [];
+  for (let minutes = startMinutes; minutes <= latestStart; minutes += SLOT_CONFIG.slotStepMinutes) {
+    starts.push(minutesToTime(minutes));
+  }
+
+  return starts;
+}
+
+function getPlayers() {
+  return db.prepare(`
+    SELECT id, discord_user_id, username, global_name, alias
+    FROM players
+    ORDER BY id ASC
+  `).all();
+}
+
+function getUnavailablePlayersForSlot(players, explicitEntries, rules, dateStr, slotStartAt, slotEndAt) {
+  const unavailable = [];
+
+  for (const player of players) {
+    const playerEntries = explicitEntries.filter(entry => entry.player_id === player.id);
+    const playerRules = rules.filter(rule => rule.player_id === player.id);
+
+    let blocked = false;
+
+    for (const entry of playerEntries) {
+      if (overlaps(slotStartAt, slotEndAt, entry.start_at, entry.end_at)) {
+        blocked = true;
+        break;
+      }
+    }
+
+    if (!blocked) {
+      for (const rule of playerRules) {
+        const intervals = getRuleBlockedIntervalsForDate(rule, dateStr);
+        for (const interval of intervals) {
+          if (overlaps(slotStartAt, slotEndAt, interval.start_at, interval.end_at)) {
+            blocked = true;
+            break;
+          }
+        }
+        if (blocked) break;
+      }
+    }
+
+    if (blocked) {
+      unavailable.push(playerDisplay(player));
+    }
+  }
+
+  return unavailable;
+}
+
+function buildSuggestedSlots(players, explicitEntries, rules, windowDates) {
+  const fullTeamSlots = [];
+  const fallbackSlots = [];
+
+  for (const dateStr of windowDates) {
+    const startTimes = getCandidateStartTimesForDate(dateStr);
+
+    for (const startTime of startTimes) {
+      const endTime = addMinutesToTime(startTime, SLOT_CONFIG.minDurationMinutes);
+      const slotStartAt = buildDateTime(dateStr, startTime);
+      const slotEndAt = buildDateTime(dateStr, endTime);
+
+      const unavailablePlayers = getUnavailablePlayersForSlot(
+        players,
+        explicitEntries,
+        rules,
+        dateStr,
+        slotStartAt,
+        slotEndAt
+      );
+
+      const slot = {
+        date: dateStr,
+        start_time: startTime,
+        end_time: endTime,
+        meeting_scrim: addMinutesToTime(startTime, -15),
+        meeting_primeleague: addMinutesToTime(startTime, -30),
+        unavailable_players: unavailablePlayers,
+        available_count: players.length - unavailablePlayers.length,
+        player_count: players.length
+      };
+
+      if (unavailablePlayers.length === 0) {
+        fullTeamSlots.push(slot);
+      } else if (unavailablePlayers.length <= 2) {
+        fallbackSlots.push(slot);
+      }
+    }
+  }
+
+  if (fullTeamSlots.length > 0) {
+    return fullTeamSlots.slice(0, SLOT_CONFIG.maxSuggestedSlots);
+  }
+
+  return fallbackSlots
+    .sort((a, b) => b.available_count - a.available_count || a.date.localeCompare(b.date) || a.start_time.localeCompare(b.start_time))
+    .slice(0, SLOT_CONFIG.maxSuggestedSlots);
+}
+
+function formatSuggestedSlot(slot, index) {
+  const missingText =
+    slot.unavailable_players.length === 0
+      ? 'Alle verfügbar'
+      : `Fehlen: ${slot.unavailable_players.join(', ')}`;
+
+  return [
+    `- [Pending] Vorschlag ${index + 1}`,
+    `  ${formatDateLongDE(slot.date)}`,
+    `  ${slot.start_time}–${slot.end_time} Uhr`,
+    `  Treffen: ${slot.meeting_scrim} Uhr (Scrim) / ${slot.meeting_primeleague} Uhr (Prime League)`,
+    `  Verfügbar: ${slot.available_count}/${slot.player_count}`,
+    `  ${missingText}`,
+    `  Hinweis: -`
+  ].join('\n');
+}
+
 async function runSundayPlanner(client, options = {}) {
   const { force = false } = options;
   const runKey = getRunKey();
@@ -259,11 +492,15 @@ async function runSundayPlanner(client, options = {}) {
 
   const berlinToday = todayInBerlin();
   const windowDates = getDateWindow(berlinToday, 7);
-  const windowEndExclusive = `${addDaysIso(berlinToday, 8)} 00:00`;
+  const windowStart = `${berlinToday} 00:00`;
+  const windowEndExclusive = `${addDaysIso(berlinToday, 7)} 23:59`;
+
+  const players = getPlayers();
 
   const upcomingEntries = db.prepare(`
     SELECT
       e.id,
+      e.player_id,
       e.entry_type,
       e.start_at,
       e.end_at,
@@ -275,13 +512,14 @@ async function runSundayPlanner(client, options = {}) {
     FROM availability_entries e
     INNER JOIN players p ON p.id = e.player_id
     WHERE e.end_at >= ?
-      AND e.start_at < ?
+      AND e.start_at <= ?
     ORDER BY e.start_at ASC
-  `).all(`${berlinToday} 00:00`, windowEndExclusive);
+  `).all(windowStart, windowEndExclusive);
 
   const rules = db.prepare(`
     SELECT
       r.id,
+      r.player_id,
       r.weekday_mask,
       r.rule_type,
       r.time_value,
@@ -298,14 +536,32 @@ async function runSundayPlanner(client, options = {}) {
     ORDER BY p.id ASC, r.id ASC
   `).all();
 
+  const calendarEvents = db.prepare(`
+    SELECT
+      id,
+      title,
+      event_type,
+      status,
+      start_at,
+      end_at,
+      meeting_at,
+      note
+    FROM team_calendar_events
+    WHERE start_at >= ?
+      AND start_at <= ?
+    ORDER BY start_at ASC
+  `).all(windowStart, windowEndExclusive);
+
   const explicitItems = mapExplicitEntries(upcomingEntries);
   const recurringItems = expandRecurringRules(rules, windowDates);
 
-  const mergedItems = [...explicitItems, ...recurringItems].sort((a, b) => {
+  const mergedAbsenceItems = [...explicitItems, ...recurringItems].sort((a, b) => {
     if (a.sort_key < b.sort_key) return -1;
     if (a.sort_key > b.sort_key) return 1;
     return a.player_name.localeCompare(b.player_name, 'de');
   });
+
+  const suggestedSlots = buildSuggestedSlots(players, upcomingEntries, rules, windowDates);
 
   const lines = [];
   lines.push('📋 **Wochenplanung – Rohübersicht**');
@@ -313,16 +569,44 @@ async function runSundayPlanner(client, options = {}) {
   lines.push('');
 
   lines.push('**Fehlzeiten (nächste 7 Tage)**');
-  if (mergedItems.length === 0) {
+  if (mergedAbsenceItems.length === 0) {
     lines.push('- Keine eingetragenen einmaligen oder regelmäßigen Fehlzeiten.');
   } else {
-    for (const item of mergedItems) {
+    for (const item of mergedAbsenceItems) {
       lines.push(item.display_text);
     }
   }
 
   lines.push('');
-  lines.push('➡️ Nächster Schritt: Termine im Adminkanal anlegen und vervollständigen.');
+  lines.push('**Spielerkalender (nächste 7 Tage)**');
+  if (calendarEvents.length === 0) {
+    lines.push('- Keine gespeicherten Teamtermine.');
+  } else {
+    for (const event of calendarEvents) {
+      lines.push(formatCalendarEvent(event));
+    }
+  }
+
+  lines.push('');
+  lines.push('**Mögliche Termine**');
+  if (players.length === 0) {
+    lines.push('- Es sind noch keine Spielerprofile vorhanden.');
+  } else if (suggestedSlots.length === 0) {
+    lines.push('- Keine passenden Slots gefunden.');
+  } else {
+    lines.push(`- Rahmen: Werktags ab ${SLOT_CONFIG.weekdayStart} Uhr, Wochenende ab ${SLOT_CONFIG.weekendStart} Uhr, Ende spätestens ${SLOT_CONFIG.dayEnd} Uhr, Dauer mindestens 2,5h.`);
+    lines.push('');
+    for (const [index, slot] of suggestedSlots.entries()) {
+      lines.push(formatSuggestedSlot(slot, index));
+      lines.push('');
+    }
+    if (lines[lines.length - 1] === '') {
+      lines.pop();
+    }
+  }
+
+  lines.push('');
+  lines.push('➡️ Nächster Schritt: Gewünschte Vorschläge als Teamtermine übernehmen und an den Spielerkalender weiterleiten.');
 
   const adminChannel = await client.channels.fetch(process.env.ADMIN_CHANNEL_ID);
   if (!adminChannel || !adminChannel.isTextBased()) {
@@ -353,7 +637,9 @@ async function runSundayPlanner(client, options = {}) {
     sent: true,
     chunks: chunks.length,
     explicitCount: explicitItems.length,
-    recurringCount: recurringItems.length
+    recurringCount: recurringItems.length,
+    eventCount: calendarEvents.length,
+    suggestedCount: suggestedSlots.length
   };
 }
 

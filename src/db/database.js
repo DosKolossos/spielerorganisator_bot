@@ -66,6 +66,38 @@ db.exec(`
   );
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS team_calendar_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    event_type TEXT NOT NULL DEFAULT 'scrim',
+    status TEXT NOT NULL DEFAULT 'pending',
+    start_at TEXT NOT NULL,
+    end_at TEXT NOT NULL,
+    meeting_at TEXT NOT NULL,
+    note TEXT,
+    created_by_discord_user_id TEXT NOT NULL,
+    updated_by_discord_user_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+`);
+
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_availability_entries_player_time
+  ON availability_entries (player_id, start_at, end_at);
+`);
+
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_availability_rules_player_active
+  ON availability_rules (player_id, active);
+`);
+
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_team_calendar_events_time
+  ON team_calendar_events (start_at, status);
+`);
+
 function columnExists(tableName, columnName) {
   const columns = db.prepare(`PRAGMA table_info(${tableName})`).all();
   return columns.some(column => column.name === columnName);
@@ -82,6 +114,20 @@ if (!columnExists('availability_rules', 'anchor_date')) {
   db.exec(`
     ALTER TABLE availability_rules
     ADD COLUMN anchor_date TEXT;
+  `);
+}
+
+if (!columnExists('availability_rules', 'active')) {
+  db.exec(`
+    ALTER TABLE availability_rules
+    ADD COLUMN active INTEGER NOT NULL DEFAULT 1;
+  `);
+}
+
+if (!columnExists('team_calendar_events', 'note')) {
+  db.exec(`
+    ALTER TABLE team_calendar_events
+    ADD COLUMN note TEXT;
   `);
 }
 
