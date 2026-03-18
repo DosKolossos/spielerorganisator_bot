@@ -683,59 +683,86 @@ function buildTypeSelectRow(eventId, messageId, currentType) {
   );
 }
 
-function buildRoleSelectRow(eventId, messageId) {
-  return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId(`spieltermin:lineuprole:${eventId}:${messageId}`)
-      .setPlaceholder('Rolle auswählen')
-      .addOptions(
-        ROLE_ORDER.map(role => ({
-          label: role,
-          value: role,
-          description: `Bearbeite ${role}`
-        }))
-      )
-  );
-}
 
-function buildPlayerSelectRow(eventId, messageId, roleLabel) {
-  const players = db.prepare(`
-    SELECT id, discord_user_id, username, global_name, alias
-    FROM players
-    WHERE is_archived = 0
-    ORDER BY COALESCE(alias, global_name, username) COLLATE NOCASE ASC
-  `).all();
 
-  const options = [
-    {
-      label: '— Rolle leeren —',
-      value: '__clear__',
-      description: `${roleLabel} entfernen`
-    },
-    ...players.slice(0, 24).map(player => ({
-      label: truncateField(playerDisplay(player), 100),
-      value: String(player.id),
-      description: truncateField(`Discord: ${player.username}`, 100)
-    }))
-  ];
-
-  return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId(`spieltermin:lineupplayer:${eventId}:${messageId}:${roleLabel}`)
-      .setPlaceholder(`${roleLabel} setzen`)
-      .addOptions(options)
-  );
-}
-
-function buildLineupManagerPayload(eventId, messageId, infoText = null) {
+function buildLineupModalValue(eventId) {
   const assignments = getAssignments(eventId);
-  return {
-    content:
-      `${infoText ? `${infoText}\n` : ''}` +
-      `Aktuelles Lineup: **${buildLineupText(assignments)}**\n` +
-      `Wähle zuerst eine Rolle aus.`,
-    components: [buildRoleSelectRow(eventId, messageId)]
-  };
+  const byRole = new Map(assignments.map(item => [item.role_label, item.player_label]));
+
+  return ROLE_ORDER
+    .map(role => `${role}: ${byRole.get(role) || '-'}`)
+    .join('\n');
+}
+
+function parseLineupModalText(raw) {
+  const lines = String(raw || '')
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean);
+
+  const recognized = new Map();
+  const rolePattern = /^(Top|Jgl|Mid|ADC|Supp|Sub1|Sub2)\s*:\s*(.*)$/i;
+
+  for (const line of lines) {
+    const match = line.match(rolePattern);
+    if (!match) continue;
+
+    const normalizedRole = ROLE_ORDER.find(role => role.toLowerCase() === match[1].toLowerCase());
+    if (!normalizedRole) continue;
+
+    recognized.set(normalizedRole, (match[2] || '').trim());
+  }
+
+  return recognized;
+}
+
+async function applyLineupChanges(eventId, roleMap) {
+  const now = new Date().toISOString();
+  let changed = 0;
+
+  for (const [roleLabel, rawValue] of roleMap.entries()) {
+    const trimmed = String(rawValue || '').trim();
+
+    if (trimmed === '' || trimmed === '-' || trimmed === '—') {
+      db.prepare(`
+        DELETE FROM team_calendar_assignments
+        WHERE event_id = ?
+          AND role_label = ?
+      `).run(eventId, roleLabel);
+      changed++;
+      continue;
+    }
+
+    const matchedPlayer = findPlayerByLabel(trimmed);
+
+    db.prepare(`
+      INSERT INTO team_calendar_assignments (
+        event_id,
+        role_label,
+        player_label,
+        player_id,
+        note,
+        created_at,
+        updated_at
+      )
+      VALUES (?, ?, ?, ?, NULL, ?, ?)
+      ON CONFLICT(event_id, role_label)
+      DO UPDATE SET
+        player_label = excluded.player_label,
+        player_id = excluded.player_id,
+        updated_at = excluded.updated_at
+    `).run(
+      eventId,
+      roleLabel,
+      matchedPlayer ? playerDisplay(matchedPlayer) : trimmed,
+      matchedPlayer?.id ?? null,
+      now,
+      now
+    );
+    changed++;
+  }
+
+  return changed;
 }
 
 function buildEventCardPayload(eventId) {
@@ -1020,12 +1047,21 @@ async function handleButtonInteraction(interaction, parts) {
 
     return interaction.showModal(modal);
   }
-
   if (action === 'lineup') {
-    return interaction.reply({
-      ...buildLineupManagerPayload(eventId, messageId),
-      flags: MessageFlags.Ephemeral
-    });
+    const modal = new ModalBuilder()
+      .setCustomId(`spieltermin:lineupmodal:${eventId}:${messageId}`)
+      .setTitle(`Aufstellung – #${eventId}`);
+
+    const input = new TextInputBuilder()
+      .setCustomId('lineup_text')
+      .setLabel('Lineup (eine Rolle pro Zeile)')
+      .setStyle(TextInputStyle.Paragraph)
+      .setRequired(true)
+      .setPlaceholder('Top: ...\nJgl: ...\nMid: ...\nADC: ...\nSupp: ...\nSub1: ...\nSub2: ...')
+      .setValue(buildLineupModalValue(eventId));
+
+    modal.addComponents(new ActionRowBuilder().addComponents(input));
+    return interaction.showModal(modal);
   }
 
   if (action === 'enemyopgg') {
@@ -1395,6 +1431,32 @@ async function handleModalSubmitInteraction(interaction, parts) {
       flags: MessageFlags.Ephemeral
     });
   }
+  if (action === 'lineupmodal') {
+    const parsedLineup = parseLineupModalText(interaction.fields.getTextInputValue('lineup_text'));
+
+    if (parsedLineup.size === 0) {
+      return interaction.reply({
+        content:
+          'Ich konnte keine Rollen erkennen. Bitte nutze pro Zeile das Format `Top: Name`.',
+        flags: MessageFlags.Ephemeral
+      });
+    }
+
+    const changed = await applyLineupChanges(eventId, parsedLineup);
+    const assignments = getAssignments(eventId);
+
+    await refreshSpecificCard(interaction.channel, messageId, eventId);
+
+    return interaction.reply({
+      content:
+        (changed === 0
+          ? 'Es wurden keine Rollen geändert.\n'
+          : `Lineup für **#${eventId}** wurde aktualisiert.\n`) +
+        `Aktuell: **${buildLineupText(assignments)}**`,
+      flags: MessageFlags.Ephemeral
+    });
+  }
+
   if (action === 'enemyopggmodal') {
     const raw = interaction.fields.getTextInputValue('opgg_url').trim();
     const nextValue = raw === '' || raw === '-' ? null : raw;
