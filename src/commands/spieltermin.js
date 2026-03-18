@@ -1977,6 +1977,14 @@ const command = {
 
   async execute(interaction) {
     const subcommand = interaction.options.getSubcommand();
+    const adminOnlySubcommands = new Set(['pruefen', 'bearbeiten', 'lineup', 'erstellen']);
+
+    if (adminOnlySubcommands.has(subcommand) && !ensureAdminPermission(interaction)) {
+      return interaction.reply({
+        content: 'Dafür fehlen dir die Rechte.',
+        flags: MessageFlags.Ephemeral
+      });
+    }
 
     if (subcommand === 'anzeigen') {
       const today = new Date().toISOString().slice(0, 10);
@@ -2021,74 +2029,6 @@ const command = {
 
       return interaction.reply({
         content: lines.join('\n\n'),
-        flags: MessageFlags.Ephemeral
-      });
-    }
-
-    if (subcommand === 'pruefen') {
-      if (!ensureAdminPermission(interaction)) {
-        return interaction.reply({
-          content: 'Dafür fehlen dir die Rechte.',
-          flags: MessageFlags.Ephemeral
-        });
-      }
-
-      const datumInput = interaction.options.getString('datum', true);
-      const startzeit = interaction.options.getString('startzeit', true).trim();
-      const dauerMinuten = interaction.options.getInteger('dauer_minuten') ?? 150;
-      const typ = interaction.options.getString('typ') ?? 'open';
-
-      const parsedDate = parseDateInput(datumInput);
-      if (!parsedDate) {
-        return interaction.reply({
-          content: 'Datum ungültig. Nutze TT.MM.JJJJ oder YYYY-MM-DD.',
-          flags: MessageFlags.Ephemeral
-        });
-      }
-
-      if (!isValidTime(startzeit)) {
-        return interaction.reply({
-          content: 'Startzeit ungültig. Bitte nutze HH:MM, z. B. 18:30.',
-          flags: MessageFlags.Ephemeral
-        });
-      }
-
-      const snapshot = getAvailabilitySnapshot(parsedDate, startzeit, dauerMinuten);
-      const unavailableText = snapshot.unavailable.length
-        ? snapshot.unavailable.map(item => `• ${item.name} — ${item.reason}`).join('\n')
-        : 'Niemand ist laut aktueller Daten blockiert.';
-
-      const embed = new EmbedBuilder()
-        .setColor(snapshot.allAvailable ? 0x57f287 : 0xfee75c)
-        .setTitle(`Verfügbarkeitscheck – ${formatDateLongDE(parsedDate)}`)
-        .setDescription(
-          `**Typ:** ${eventTypeLabel(typ)}
-` +
-          `**Zeitfenster:** ${formatDateTimeDE(snapshot.slotStartAt)} → ${formatDateTimeDE(snapshot.slotEndAt)}
-` +
-          `**Dauer:** ${dauerMinuten} Minuten
-` +
-          `**Ergebnis:** ${snapshot.allAvailable ? 'Alle eingetragenen Spieler sind verfügbar.' : `${snapshot.available.length}/${snapshot.playersTotal} verfügbar`}`
-        )
-        .addFields(
-          {
-            name: `Verfügbar (${snapshot.available.length})`,
-            value: snapshot.available.length ? truncateField(snapshot.available.join(', '), 1024) : '-',
-            inline: false
-          },
-          {
-            name: `Nicht verfügbar (${snapshot.unavailable.length})`,
-            value: truncateField(unavailableText, 1024),
-            inline: false
-          }
-        )
-        .setFooter({
-          text: 'Prüfung basiert auf eingetragenen Abwesenheiten und Regeln.'
-        })
-        .setTimestamp();
-
-      return interaction.reply({
-        embeds: [embed],
         flags: MessageFlags.Ephemeral
       });
     }
