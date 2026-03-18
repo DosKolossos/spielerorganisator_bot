@@ -1,4 +1,5 @@
 const db = require('../db/database');
+const { upsertAdminCardMessage } = require('../commands/spieltermin');
 
 const SLOT_CONFIG = {
   weekdayStart: '17:00',
@@ -203,6 +204,10 @@ function getRuleBlockedIntervalsForDate(rule, dateStr) {
     return [];
   }
 
+  if (rule.suspended_from && dateStr >= rule.suspended_from && (!rule.suspended_until || dateStr <= rule.suspended_until)) {
+    return [];
+  }
+
   if (rule.rule_type === 'nicht_verfuegbar') {
     return [{ start_at: `${dateStr} 00:00`, end_at: `${dateStr} 23:59` }];
   }
@@ -254,13 +259,14 @@ function expandRecurringRules(rules, windowDates) {
 function mapExplicitEntries(entries) {
   return entries.map(entry => {
     const typeLabel = entry.entry_type === 'vacation' ? 'Urlaub' : 'Abwesenheit';
+    const statusLabel = entry.approval_status === 'pending_admin' ? ' • Status: wartet auf Freigabe' : '';
 
     return {
       sort_key: entry.start_at,
       player_name: playerDisplay(entry),
       display_text:
         `- ${playerDisplay(entry)} • [Einmalig • ${typeLabel}] ${formatEntryRange(entry.start_at, entry.end_at)} • ` +
-        `Grund: ${entry.reason ?? '-'}`
+        `Grund: ${entry.reason ?? '-'}${statusLabel}`
     };
   });
 }
@@ -457,7 +463,7 @@ function syncSuggestionEvent(suggestion) {
         updated_at
       )
       VALUES (
-        ?, 'scrim', 'pending',
+        ?, 'open', 'pending',
         ?, ?, ?, NULL, NULL, NULL, NULL,
         ?, NULL, NULL, ?, 1,
         ?, ?, ?,
@@ -481,10 +487,16 @@ function syncSuggestionEvent(suggestion) {
   }
 
   if (existing.is_auto_generated === 1 && existing.status === 'pending') {
+    const nextEventType =
+      existing.updated_by_discord_user_id === 'system' && (!existing.event_type || existing.event_type === 'scrim')
+        ? 'open'
+        : existing.event_type;
+
     db.prepare(`
       UPDATE team_calendar_events
       SET
         title = ?,
+        event_type = ?,
         option_date = ?,
         window_start_at = ?,
         window_end_at = ?,
@@ -500,6 +512,7 @@ function syncSuggestionEvent(suggestion) {
       WHERE id = ?
     `).run(
       suggestion.title,
+      nextEventType,
       suggestion.date,
       suggestion.windowStartAt,
       suggestion.windowEndAt,
@@ -562,6 +575,7 @@ async function runSundayPlanner(client, options = {}) {
   const players = db.prepare(`
     SELECT id, discord_user_id, username, global_name, alias
     FROM players
+    WHERE is_archived = 0
     ORDER BY id ASC
   `).all();
 
@@ -573,6 +587,7 @@ async function runSundayPlanner(client, options = {}) {
       e.start_at,
       e.end_at,
       e.reason,
+      e.approval_status,
       p.discord_user_id,
       p.username,
       p.global_name,
@@ -581,6 +596,8 @@ async function runSundayPlanner(client, options = {}) {
     INNER JOIN players p ON p.id = e.player_id
     WHERE e.end_at >= ?
       AND e.start_at <= ?
+      AND e.approval_status <> 'rejected'
+      AND p.is_archived = 0
     ORDER BY e.start_at ASC
   `).all(windowStart, windowEndInclusive);
 
@@ -594,6 +611,8 @@ async function runSundayPlanner(client, options = {}) {
       r.note,
       r.recurrence_type,
       r.anchor_date,
+      r.suspended_from,
+      r.suspended_until,
       p.discord_user_id,
       p.username,
       p.global_name,
@@ -601,6 +620,7 @@ async function runSundayPlanner(client, options = {}) {
     FROM availability_rules r
     INNER JOIN players p ON p.id = r.player_id
     WHERE r.active = 1
+      AND p.is_archived = 0
     ORDER BY p.id ASC, r.id ASC
   `).all();
 
@@ -638,40 +658,30 @@ async function runSundayPlanner(client, options = {}) {
   }
 
   overviewLines.push('');
-  overviewLines.push('➡️ Nächster Schritt: Tagesoption prüfen, Kalender-ID merken und dann mit `/spieltermin bearbeiten` oder `/spieltermin lineup` weiterarbeiten.');
-
-  const dayMessages = suggestions.map(item => [
-    `**${item.title}**`,
-    `Kalender-ID: **#${item.calendarId}**`,
-    `Mögliche Zeit: **${item.earliestStart}–${item.latestEnd} Uhr**`,
-    `Verfügbare Spieler: **${item.availablePlayersText || '-'}**`,
-    `Treffpunkt bei Terminstart: **15 Min vorher (Scrim) / 30 Min vorher (Prime League)**`,
-    `OPGG: **-**`,
-    `Hinweis: **-**`
-  ].join('\n'));
-
-  if (dayMessages.length === 0) {
-    dayMessages.push('**Terminoptionen**\nKein passender Tagesvorschlag in den nächsten 7 Tagen gefunden.');
-  }
+  overviewLines.push('➡️ Nächster Schritt: Karte prüfen und dann direkt über die Buttons Status, Aufstellung, Gegner-OPGG oder Hinweis bearbeiten.');
 
   const adminChannel = await client.channels.fetch(process.env.ADMIN_CHANNEL_ID);
   if (!adminChannel || !adminChannel.isTextBased()) {
     return { skipped: false, sent: false, reason: 'invalid_admin_channel' };
   }
 
-  const messagesToSend = [
-    ...splitLongMessage(overviewLines.join('\n')),
-    ...dayMessages
-  ];
-
-  for (const message of messagesToSend) {
+  const overviewMessages = splitLongMessage(overviewLines.join('\n'));
+  for (const message of overviewMessages) {
     await adminChannel.send(message);
+  }
+
+  if (suggestions.length === 0) {
+    await adminChannel.send('**Terminoptionen**\nKein passender Tagesvorschlag in den nächsten 7 Tagen gefunden.');
+  } else {
+    for (const item of suggestions) {
+      await upsertAdminCardMessage(adminChannel, item.calendarId);
+    }
   }
 
   return {
     skipped: false,
     sent: true,
-    messages: messagesToSend.length,
+    messages: overviewMessages.length + suggestions.length,
     absenceCount: mergedAbsenceItems.length,
     suggestionCount: suggestions.length
   };

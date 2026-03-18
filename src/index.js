@@ -5,8 +5,7 @@ const {
   GatewayIntentBits,
   REST,
   Routes,
-  Collection,
-  MessageFlags
+  Collection
 } = require('discord.js');
 const cron = require('node-cron');
 
@@ -100,10 +99,10 @@ client.on('interactionCreate', async interaction => {
   } catch (error) {
     console.error(error);
 
-const payload = {
-  content: 'Beim Ausführen der Aktion ist ein Fehler aufgetreten.',
-  flags: MessageFlags.Ephemeral
-};
+    const payload = {
+      content: 'Beim Ausführen der Aktion ist ein Fehler aufgetreten.',
+      ephemeral: true
+    };
 
     if (interaction.replied || interaction.deferred) {
       await interaction.followUp(payload).catch(() => null);

@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, MessageFlags } = require('discord.js');
+const { SlashCommandBuilder } = require('discord.js');
 const db = require('../db/database');
 
 function ensurePlayer(user) {
@@ -200,14 +200,14 @@ module.exports = {
       if (startdatumInput && !parsedStartDate) {
         return interaction.reply({
           content: 'Startdatum ungültig. Nutze TT.MM.JJJJ oder YYYY-MM-DD, z. B. 11.04.2026.',
-          flags: MessageFlags.Ephemeral
+          ephemeral: true
         });
       }
 
       if (enddatumInput && !parsedEndDate) {
         return interaction.reply({
           content: 'Enddatum ungültig. Nutze TT.MM.JJJJ oder YYYY-MM-DD, z. B. 11.04.2026.',
-          flags: MessageFlags.Ephemeral
+          ephemeral: true
         });
       }
 
@@ -220,7 +220,7 @@ module.exports = {
       if (startAt > endAt) {
         return interaction.reply({
           content: 'Der Start darf nicht nach dem Ende liegen.',
-          flags: MessageFlags.Ephemeral
+          ephemeral: true
         });
       }
 
@@ -257,7 +257,7 @@ module.exports = {
           `ID: **${result.lastInsertRowid}**\n` +
           `Zeitraum: **${formatVacationRange(startAt, endAt)}**\n` +
           `Grund: **${grund ?? '-'}**`,
-        flags: MessageFlags.Ephemeral
+        ephemeral: true
       });
     }
 
@@ -277,7 +277,7 @@ module.exports = {
       if (rows.length === 0) {
         return interaction.reply({
           content: 'Du hast aktuell keine kommenden Urlaube eingetragen.',
-          flags: MessageFlags.Ephemeral
+          ephemeral: true
         });
       }
 
@@ -287,7 +287,7 @@ module.exports = {
 
       return interaction.reply({
         content: `**Deine kommenden Urlaube**\n${lines.join('\n')}`,
-        flags: MessageFlags.Ephemeral
+        ephemeral: true
       });
     }
 
@@ -308,7 +308,7 @@ module.exports = {
       if (!existing) {
         return interaction.reply({
           content: 'Ich habe keinen eigenen Urlaub mit dieser ID gefunden.',
-          flags: MessageFlags.Ephemeral
+          ephemeral: true
         });
       }
 
@@ -318,14 +318,14 @@ module.exports = {
       if (startdatumInput && !parsedStartDate) {
         return interaction.reply({
           content: 'Startdatum ungültig. Nutze TT.MM.JJJJ oder YYYY-MM-DD, z. B. 11.04.2026.',
-          flags: MessageFlags.Ephemeral
+          ephemeral: true
         });
       }
 
       if (enddatumInput && !parsedEndDate) {
         return interaction.reply({
           content: 'Enddatum ungültig. Nutze TT.MM.JJJJ oder YYYY-MM-DD, z. B. 11.04.2026.',
-          flags: MessageFlags.Ephemeral
+          ephemeral: true
         });
       }
 
@@ -338,7 +338,7 @@ module.exports = {
       if (startAt > endAt) {
         return interaction.reply({
           content: 'Der Start darf nicht nach dem Ende liegen.',
-          flags: MessageFlags.Ephemeral
+          ephemeral: true
         });
       }
 
@@ -369,7 +369,7 @@ module.exports = {
           `Urlaub **#${id}** wurde aktualisiert.\n` +
           `Zeitraum: **${formatVacationRange(startAt, endAt)}**\n` +
           `Grund: **${grund ?? '-'}**`,
-        flags: MessageFlags.Ephemeral
+        ephemeral: true
       });
     }
 
@@ -387,7 +387,7 @@ module.exports = {
       if (!existing) {
         return interaction.reply({
           content: 'Ich habe keinen eigenen Urlaub mit dieser ID gefunden.',
-          flags: MessageFlags.Ephemeral
+          ephemeral: true
         });
       }
 
@@ -400,7 +400,7 @@ module.exports = {
 
       return interaction.reply({
         content: `Urlaub **#${id}** wurde gelöscht.`,
-        flags: MessageFlags.Ephemeral
+        ephemeral: true
       });
     }
   }
