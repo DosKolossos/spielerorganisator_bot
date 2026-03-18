@@ -13,7 +13,6 @@ const pingCommand = require('./commands/ping');
 const profilCommand = require('./commands/profil');
 const abwesenheitCommand = require('./commands/abwesenheit');
 const regelCommand = require('./commands/regel');
-const urlaubCommand = require('./commands/urlaub');
 const spielterminCommand = require('./commands/spieltermin');
 const adminCommand = require('./commands/admin');
 
@@ -29,7 +28,6 @@ client.commands.set(pingCommand.data.name, pingCommand);
 client.commands.set(profilCommand.data.name, profilCommand);
 client.commands.set(abwesenheitCommand.data.name, abwesenheitCommand);
 client.commands.set(regelCommand.data.name, regelCommand);
-client.commands.set(urlaubCommand.data.name, urlaubCommand);
 client.commands.set(spielterminCommand.data.name, spielterminCommand);
 client.commands.set(adminCommand.data.name, adminCommand);
 
@@ -39,7 +37,6 @@ async function registerCommands() {
     profilCommand.data.toJSON(),
     abwesenheitCommand.data.toJSON(),
     regelCommand.data.toJSON(),
-    urlaubCommand.data.toJSON(),
     spielterminCommand.data.toJSON(),
     adminCommand.data.toJSON()
   ];

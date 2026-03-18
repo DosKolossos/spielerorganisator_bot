@@ -57,6 +57,9 @@ db.exec(`
     riot_game_name TEXT,
     riot_tag TEXT,
     riot_region TEXT,
+    is_archived INTEGER NOT NULL DEFAULT 0,
+    archived_at TEXT,
+    archived_by_discord_user_id TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -70,6 +73,10 @@ db.exec(`
     start_at TEXT NOT NULL,
     end_at TEXT NOT NULL,
     reason TEXT,
+    approval_status TEXT NOT NULL DEFAULT 'approved',
+    reviewed_by_discord_user_id TEXT,
+    reviewed_at TEXT,
+    review_note TEXT,
     created_by_discord_user_id TEXT NOT NULL,
     updated_by_discord_user_id TEXT NOT NULL,
     created_at TEXT NOT NULL,
@@ -89,9 +96,29 @@ db.exec(`
     recurrence_type TEXT NOT NULL DEFAULT 'weekly',
     anchor_date TEXT,
     active INTEGER NOT NULL DEFAULT 1,
+    suspended_from TEXT,
+    suspended_until TEXT,
+    suspension_note TEXT,
+    suspended_by_discord_user_id TEXT,
+    suspended_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY(player_id) REFERENCES players(id)
+  );
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS admin_audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor_discord_user_id TEXT NOT NULL,
+    actor_label TEXT NOT NULL,
+    target_discord_user_id TEXT,
+    target_label TEXT,
+    entity_type TEXT NOT NULL,
+    entity_id INTEGER,
+    action_type TEXT NOT NULL,
+    details TEXT,
+    created_at TEXT NOT NULL
   );
 `);
 
@@ -159,6 +186,9 @@ function migratePlayers() {
   addColumnIfMissing('players', 'riot_game_name', 'TEXT');
   addColumnIfMissing('players', 'riot_tag', 'TEXT');
   addColumnIfMissing('players', 'riot_region', 'TEXT');
+  addColumnIfMissing('players', 'is_archived', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing('players', 'archived_at', 'TEXT');
+  addColumnIfMissing('players', 'archived_by_discord_user_id', 'TEXT');
 
   db.exec(`
     UPDATE players
@@ -167,10 +197,32 @@ function migratePlayers() {
   `);
 }
 
+function migrateAvailabilityEntries() {
+  if (!tableExists('availability_entries')) return;
+
+  addColumnIfMissing('availability_entries', 'approval_status', `TEXT NOT NULL DEFAULT 'approved'`);
+  addColumnIfMissing('availability_entries', 'reviewed_by_discord_user_id', `TEXT`);
+  addColumnIfMissing('availability_entries', 'reviewed_at', `TEXT`);
+  addColumnIfMissing('availability_entries', 'review_note', `TEXT`);
+
+  db.exec(`
+    UPDATE availability_entries
+    SET approval_status = 'approved'
+    WHERE approval_status IS NULL OR trim(approval_status) = '';
+  `);
+}
+
 function migrateAvailabilityRules() {
+  if (!tableExists('availability_rules')) return;
+
   addColumnIfMissing('availability_rules', 'recurrence_type', `TEXT NOT NULL DEFAULT 'weekly'`);
   addColumnIfMissing('availability_rules', 'anchor_date', `TEXT`);
   addColumnIfMissing('availability_rules', 'active', `INTEGER NOT NULL DEFAULT 1`);
+  addColumnIfMissing('availability_rules', 'suspended_from', `TEXT`);
+  addColumnIfMissing('availability_rules', 'suspended_until', `TEXT`);
+  addColumnIfMissing('availability_rules', 'suspension_note', `TEXT`);
+  addColumnIfMissing('availability_rules', 'suspended_by_discord_user_id', `TEXT`);
+  addColumnIfMissing('availability_rules', 'suspended_at', `TEXT`);
 }
 
 function migrateTeamCalendarEvents() {
@@ -237,15 +289,64 @@ function migrateTeamCalendarEvents() {
       OR meeting_scrim_at IS NULL OR meeting_scrim_at = ''
       OR meeting_primeleague_at IS NULL OR meeting_primeleague_at = '';
   `);
+
   db.exec(`
     UPDATE team_calendar_events
     SET event_type = 'open'
-    WHERE is_auto_generated = 1
-      AND status = 'pending'
-      AND suggestion_key IS NOT NULL
-      AND (updated_by_discord_user_id IS NULL OR updated_by_discord_user_id = 'system')
-      AND (event_type IS NULL OR trim(event_type) = '' OR event_type = 'scrim');
+    WHERE event_type IS NULL OR trim(event_type) = '' OR event_type = 'scrim';
   `);
+}
+
+function dedupeSuggestionKeys() {
+  if (!tableExists('team_calendar_events') || !columnExists('team_calendar_events', 'suggestion_key')) {
+    return;
+  }
+
+  const duplicateGroups = db.prepare(`
+    SELECT suggestion_key
+    FROM team_calendar_events
+    WHERE suggestion_key IS NOT NULL
+      AND suggestion_key <> ''
+    GROUP BY suggestion_key
+    HAVING COUNT(*) > 1
+  `).all();
+
+  if (duplicateGroups.length === 0) return;
+
+  const selectRows = db.prepare(`
+    SELECT
+      id,
+      status,
+      is_auto_generated,
+      updated_at,
+      created_at
+    FROM team_calendar_events
+    WHERE suggestion_key = ?
+    ORDER BY
+      CASE WHEN is_auto_generated = 0 THEN 0 ELSE 1 END ASC,
+      CASE WHEN status <> 'pending' THEN 0 ELSE 1 END ASC,
+      COALESCE(NULLIF(updated_at, ''), NULLIF(created_at, ''), '') DESC,
+      id DESC
+  `);
+
+  const clearSuggestionKey = db.prepare(`
+    UPDATE team_calendar_events
+    SET suggestion_key = NULL
+    WHERE id = ?
+  `);
+
+  const tx = db.transaction(groups => {
+    for (const group of groups) {
+      const rows = selectRows.all(group.suggestion_key);
+      const [, ...duplicates] = rows;
+
+      for (const row of duplicates) {
+        clearSuggestionKey.run(row.id);
+      }
+    }
+  });
+
+  tx(duplicateGroups);
 }
 
 function migrateTeamCalendarAssignments() {
@@ -310,63 +411,17 @@ function migrateTeamCalendarAssignments() {
   `);
 }
 
-function dedupeSuggestionKeys() {
-  if (!tableExists('team_calendar_events') || !columnExists('team_calendar_events', 'suggestion_key')) {
-    return;
-  }
-
-  const duplicateGroups = db.prepare(`
-    SELECT suggestion_key
-    FROM team_calendar_events
-    WHERE suggestion_key IS NOT NULL
-      AND suggestion_key <> ''
-    GROUP BY suggestion_key
-    HAVING COUNT(*) > 1
-  `).all();
-
-  if (duplicateGroups.length === 0) return;
-
-  const selectRows = db.prepare(`
-    SELECT
-      id,
-      status,
-      is_auto_generated,
-      updated_at,
-      created_at
-    FROM team_calendar_events
-    WHERE suggestion_key = ?
-    ORDER BY
-      CASE WHEN is_auto_generated = 0 THEN 0 ELSE 1 END ASC,
-      CASE WHEN status <> 'pending' THEN 0 ELSE 1 END ASC,
-      COALESCE(NULLIF(updated_at, ''), NULLIF(created_at, ''), '') DESC,
-      id DESC
-  `);
-
-  const clearSuggestionKey = db.prepare(`
-    UPDATE team_calendar_events
-    SET suggestion_key = NULL
-    WHERE id = ?
-  `);
-
-  const tx = db.transaction(groups => {
-    for (const group of groups) {
-      const rows = selectRows.all(group.suggestion_key);
-      const [, ...duplicates] = rows;
-
-      for (const row of duplicates) {
-        clearSuggestionKey.run(row.id);
-      }
-    }
-  });
-
-  tx(duplicateGroups);
-}
-
 migratePlayers();
+migrateAvailabilityEntries();
 migrateAvailabilityRules();
 migrateTeamCalendarEvents();
-migrateTeamCalendarAssignments();
 dedupeSuggestionKeys();
+migrateTeamCalendarAssignments();
+
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_players_archived
+  ON players (is_archived);
+`);
 
 db.exec(`
   CREATE INDEX IF NOT EXISTS idx_availability_entries_player_time
@@ -374,8 +429,18 @@ db.exec(`
 `);
 
 db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_availability_entries_status
+  ON availability_entries (approval_status, start_at, end_at);
+`);
+
+db.exec(`
   CREATE INDEX IF NOT EXISTS idx_availability_rules_player_active
   ON availability_rules (player_id, active);
+`);
+
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_admin_audit_log_created
+  ON admin_audit_log (created_at DESC);
 `);
 
 db.exec(`

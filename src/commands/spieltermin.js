@@ -7,10 +7,10 @@ const {
   StringSelectMenuBuilder,
   ModalBuilder,
   TextInputBuilder,
-  TextInputStyle,
-  PermissionFlagsBits
+  TextInputStyle
 } = require('discord.js');
 const db = require('../db/database');
+const { isAdminInteraction } = require('../utils/permissions');
 
 const ROLE_ORDER = ['Top', 'Jgl', 'Mid', 'ADC', 'Supp', 'Sub1', 'Sub2'];
 const STATUS_VALUES = ['pending', 'fixed', 'cancelled'];
@@ -170,6 +170,7 @@ function findPlayerByLabel(label) {
   const players = db.prepare(`
     SELECT *
     FROM players
+    WHERE is_archived = 0
     ORDER BY id ASC
   `).all();
 
@@ -359,6 +360,10 @@ function getRuleBlockedIntervalsForDate(rule, dateStr) {
     return [];
   }
 
+  if (rule.suspended_from && dateStr >= rule.suspended_from && (!rule.suspended_until || dateStr <= rule.suspended_until)) {
+    return [];
+  }
+
   if (rule.rule_type === 'nicht_verfuegbar') {
     return [{ start_at: `${dateStr} 00:00`, end_at: `${dateStr} 23:59` }];
   }
@@ -403,6 +408,7 @@ function getAvailabilitySnapshot(dateStr, startTime, durationMinutes) {
   const players = db.prepare(`
     SELECT id, discord_user_id, username, global_name, alias
     FROM players
+    WHERE is_archived = 0
     ORDER BY COALESCE(alias, global_name, username) COLLATE NOCASE ASC
   `).all();
 
@@ -416,10 +422,12 @@ function getAvailabilitySnapshot(dateStr, startTime, durationMinutes) {
       e.entry_type,
       e.start_at,
       e.end_at,
-      e.reason
+      e.reason,
+      e.approval_status
     FROM availability_entries e
     WHERE e.end_at >= ?
       AND e.start_at <= ?
+      AND e.approval_status <> 'rejected'
     ORDER BY e.start_at ASC
   `).all(slotStartAt, slotEndAt);
 
@@ -433,7 +441,9 @@ function getAvailabilitySnapshot(dateStr, startTime, durationMinutes) {
       r.note,
       r.recurrence_type,
       r.anchor_date,
-      r.active
+      r.active,
+      r.suspended_from,
+      r.suspended_until
     FROM availability_rules r
     WHERE r.active = 1
     ORDER BY r.player_id ASC, r.id ASC
@@ -452,7 +462,8 @@ function getAvailabilitySnapshot(dateStr, startTime, durationMinutes) {
     for (const entry of playerEntries) {
       if (!overlaps(slotStartAt, slotEndAt, entry.start_at, entry.end_at)) continue;
       const typeLabel = entry.entry_type === 'vacation' ? 'Urlaub' : 'Abwesenheit';
-      reason = `[${typeLabel}] ${formatEntryRange(entry.start_at, entry.end_at)} • Grund: ${entry.reason ?? '-'}`;
+      const statusNote = entry.approval_status === 'pending_admin' ? ' • Status: wartet auf Freigabe' : '';
+      reason = `[${typeLabel}] ${formatEntryRange(entry.start_at, entry.end_at)} • Grund: ${entry.reason ?? '-'}${statusNote}`;
       break;
     }
 
@@ -598,6 +609,7 @@ function buildPlayerSelectRow(eventId, messageId, roleLabel) {
   const players = db.prepare(`
     SELECT id, discord_user_id, username, global_name, alias
     FROM players
+    WHERE is_archived = 0
     ORDER BY COALESCE(alias, global_name, username) COLLATE NOCASE ASC
   `).all();
 
@@ -786,7 +798,7 @@ async function upsertAdminCardMessage(channel, eventId) {
 }
 
 function ensureAdminPermission(interaction) {
-  return interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
+  return isAdminInteraction(interaction);
 }
 
 function parsePlannerCustomId(customId) {

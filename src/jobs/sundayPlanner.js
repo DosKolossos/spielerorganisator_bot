@@ -204,6 +204,10 @@ function getRuleBlockedIntervalsForDate(rule, dateStr) {
     return [];
   }
 
+  if (rule.suspended_from && dateStr >= rule.suspended_from && (!rule.suspended_until || dateStr <= rule.suspended_until)) {
+    return [];
+  }
+
   if (rule.rule_type === 'nicht_verfuegbar') {
     return [{ start_at: `${dateStr} 00:00`, end_at: `${dateStr} 23:59` }];
   }
@@ -255,13 +259,14 @@ function expandRecurringRules(rules, windowDates) {
 function mapExplicitEntries(entries) {
   return entries.map(entry => {
     const typeLabel = entry.entry_type === 'vacation' ? 'Urlaub' : 'Abwesenheit';
+    const statusLabel = entry.approval_status === 'pending_admin' ? ' • Status: wartet auf Freigabe' : '';
 
     return {
       sort_key: entry.start_at,
       player_name: playerDisplay(entry),
       display_text:
         `- ${playerDisplay(entry)} • [Einmalig • ${typeLabel}] ${formatEntryRange(entry.start_at, entry.end_at)} • ` +
-        `Grund: ${entry.reason ?? '-'}`
+        `Grund: ${entry.reason ?? '-'}${statusLabel}`
     };
   });
 }
@@ -570,6 +575,7 @@ async function runSundayPlanner(client, options = {}) {
   const players = db.prepare(`
     SELECT id, discord_user_id, username, global_name, alias
     FROM players
+    WHERE is_archived = 0
     ORDER BY id ASC
   `).all();
 
@@ -581,6 +587,7 @@ async function runSundayPlanner(client, options = {}) {
       e.start_at,
       e.end_at,
       e.reason,
+      e.approval_status,
       p.discord_user_id,
       p.username,
       p.global_name,
@@ -589,6 +596,8 @@ async function runSundayPlanner(client, options = {}) {
     INNER JOIN players p ON p.id = e.player_id
     WHERE e.end_at >= ?
       AND e.start_at <= ?
+      AND e.approval_status <> 'rejected'
+      AND p.is_archived = 0
     ORDER BY e.start_at ASC
   `).all(windowStart, windowEndInclusive);
 
@@ -602,6 +611,8 @@ async function runSundayPlanner(client, options = {}) {
       r.note,
       r.recurrence_type,
       r.anchor_date,
+      r.suspended_from,
+      r.suspended_until,
       p.discord_user_id,
       p.username,
       p.global_name,
@@ -609,6 +620,7 @@ async function runSundayPlanner(client, options = {}) {
     FROM availability_rules r
     INNER JOIN players p ON p.id = r.player_id
     WHERE r.active = 1
+      AND p.is_archived = 0
     ORDER BY p.id ASC, r.id ASC
   `).all();
 
