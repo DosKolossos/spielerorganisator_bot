@@ -54,6 +54,9 @@ db.exec(`
     username TEXT NOT NULL,
     global_name TEXT,
     alias TEXT,
+    riot_game_name TEXT,
+    riot_tag TEXT,
+    riot_region TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -120,6 +123,8 @@ db.exec(`
     note TEXT,
     suggestion_key TEXT,
     is_auto_generated INTEGER NOT NULL DEFAULT 0,
+    admin_channel_id TEXT,
+    admin_message_id TEXT,
 
     start_at TEXT,
     end_at TEXT,
@@ -138,13 +143,29 @@ db.exec(`
     event_id INTEGER NOT NULL,
     role_label TEXT NOT NULL,
     player_label TEXT NOT NULL,
+    player_id INTEGER,
     note TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE(event_id, role_label),
-    FOREIGN KEY(event_id) REFERENCES team_calendar_events(id)
+    FOREIGN KEY(event_id) REFERENCES team_calendar_events(id),
+    FOREIGN KEY(player_id) REFERENCES players(id)
   );
 `);
+
+function migratePlayers() {
+  if (!tableExists('players')) return;
+
+  addColumnIfMissing('players', 'riot_game_name', 'TEXT');
+  addColumnIfMissing('players', 'riot_tag', 'TEXT');
+  addColumnIfMissing('players', 'riot_region', 'TEXT');
+
+  db.exec(`
+    UPDATE players
+    SET riot_region = 'euw'
+    WHERE riot_region IS NULL OR trim(riot_region) = '';
+  `);
+}
 
 function migrateAvailabilityRules() {
   addColumnIfMissing('availability_rules', 'recurrence_type', `TEXT NOT NULL DEFAULT 'weekly'`);
@@ -167,6 +188,8 @@ function migrateTeamCalendarEvents() {
   addColumnIfMissing('team_calendar_events', 'note', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'suggestion_key', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'is_auto_generated', `INTEGER NOT NULL DEFAULT 0`);
+  addColumnIfMissing('team_calendar_events', 'admin_channel_id', `TEXT`);
+  addColumnIfMissing('team_calendar_events', 'admin_message_id', `TEXT`);
 
   addColumnIfMissing('team_calendar_events', 'start_at', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'end_at', `TEXT`);
@@ -213,6 +236,35 @@ function migrateTeamCalendarEvents() {
       OR window_end_at IS NULL OR window_end_at = ''
       OR meeting_scrim_at IS NULL OR meeting_scrim_at = ''
       OR meeting_primeleague_at IS NULL OR meeting_primeleague_at = '';
+  `);
+}
+
+function migrateTeamCalendarAssignments() {
+  if (!tableExists('team_calendar_assignments')) return;
+
+  addColumnIfMissing('team_calendar_assignments', 'player_id', `INTEGER`);
+
+  db.exec(`
+    UPDATE team_calendar_assignments AS a
+    SET player_id = (
+      SELECT p.id
+      FROM players p
+      WHERE
+        (p.alias IS NOT NULL AND lower(trim(p.alias)) = lower(trim(a.player_label)))
+        OR (p.global_name IS NOT NULL AND lower(trim(p.global_name)) = lower(trim(a.player_label)))
+        OR lower(trim(p.username)) = lower(trim(a.player_label))
+        OR p.discord_user_id = a.player_label
+      ORDER BY
+        CASE
+          WHEN p.alias IS NOT NULL AND lower(trim(p.alias)) = lower(trim(a.player_label)) THEN 0
+          WHEN p.global_name IS NOT NULL AND lower(trim(p.global_name)) = lower(trim(a.player_label)) THEN 1
+          WHEN lower(trim(p.username)) = lower(trim(a.player_label)) THEN 2
+          ELSE 3
+        END,
+        p.id ASC
+      LIMIT 1
+    )
+    WHERE player_id IS NULL;
   `);
 }
 
@@ -268,8 +320,10 @@ function dedupeSuggestionKeys() {
   tx(duplicateGroups);
 }
 
+migratePlayers();
 migrateAvailabilityRules();
 migrateTeamCalendarEvents();
+migrateTeamCalendarAssignments();
 dedupeSuggestionKeys();
 
 db.exec(`
@@ -296,6 +350,11 @@ db.exec(`
 db.exec(`
   CREATE INDEX IF NOT EXISTS idx_team_calendar_assignments_event
   ON team_calendar_assignments (event_id);
+`);
+
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_team_calendar_assignments_player
+  ON team_calendar_assignments (player_id);
 `);
 
 module.exports = db;

@@ -86,26 +86,31 @@ client.once('clientReady', async () => {
 });
 
 client.on('interactionCreate', async interaction => {
-  if (!interaction.isChatInputCommand()) return;
-
-  const command = client.commands.get(interaction.commandName);
-  if (!command) return;
-
   try {
-    await command.execute(interaction);
+    if (interaction.isChatInputCommand()) {
+      const command = client.commands.get(interaction.commandName);
+      if (!command) return;
+      await command.execute(interaction);
+      return;
+    }
+
+    if (interaction.isButton() || interaction.isStringSelectMenu() || interaction.isModalSubmit()) {
+      if (spielterminCommand.canHandleInteraction?.(interaction)) {
+        await spielterminCommand.handleInteraction(interaction);
+      }
+    }
   } catch (error) {
     console.error(error);
 
+    const payload = {
+      content: 'Beim Ausführen der Aktion ist ein Fehler aufgetreten.',
+      ephemeral: true
+    };
+
     if (interaction.replied || interaction.deferred) {
-      await interaction.followUp({
-        content: 'Beim Ausführen des Commands ist ein Fehler aufgetreten.',
-        ephemeral: true
-      });
-    } else {
-      await interaction.reply({
-        content: 'Beim Ausführen des Commands ist ein Fehler aufgetreten.',
-        ephemeral: true
-      });
+      await interaction.followUp(payload).catch(() => null);
+    } else if (interaction.isRepliable()) {
+      await interaction.reply(payload).catch(() => null);
     }
   }
 });

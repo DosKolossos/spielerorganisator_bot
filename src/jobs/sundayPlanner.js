@@ -1,4 +1,5 @@
 const db = require('../db/database');
+const { upsertAdminCardMessage } = require('../commands/spieltermin');
 
 const SLOT_CONFIG = {
   weekdayStart: '17:00',
@@ -638,40 +639,30 @@ async function runSundayPlanner(client, options = {}) {
   }
 
   overviewLines.push('');
-  overviewLines.push('➡️ Nächster Schritt: Tagesoption prüfen, Kalender-ID merken und dann mit `/spieltermin bearbeiten` oder `/spieltermin lineup` weiterarbeiten.');
-
-  const dayMessages = suggestions.map(item => [
-    `**${item.title}**`,
-    `Kalender-ID: **#${item.calendarId}**`,
-    `Mögliche Zeit: **${item.earliestStart}–${item.latestEnd} Uhr**`,
-    `Verfügbare Spieler: **${item.availablePlayersText || '-'}**`,
-    `Treffpunkt bei Terminstart: **15 Min vorher (Scrim) / 30 Min vorher (Prime League)**`,
-    `OPGG: **-**`,
-    `Hinweis: **-**`
-  ].join('\n'));
-
-  if (dayMessages.length === 0) {
-    dayMessages.push('**Terminoptionen**\nKein passender Tagesvorschlag in den nächsten 7 Tagen gefunden.');
-  }
+  overviewLines.push('➡️ Nächster Schritt: Karte prüfen und dann direkt über die Buttons Status, Aufstellung, Gegner-OPGG oder Hinweis bearbeiten.');
 
   const adminChannel = await client.channels.fetch(process.env.ADMIN_CHANNEL_ID);
   if (!adminChannel || !adminChannel.isTextBased()) {
     return { skipped: false, sent: false, reason: 'invalid_admin_channel' };
   }
 
-  const messagesToSend = [
-    ...splitLongMessage(overviewLines.join('\n')),
-    ...dayMessages
-  ];
-
-  for (const message of messagesToSend) {
+  const overviewMessages = splitLongMessage(overviewLines.join('\n'));
+  for (const message of overviewMessages) {
     await adminChannel.send(message);
+  }
+
+  if (suggestions.length === 0) {
+    await adminChannel.send('**Terminoptionen**\nKein passender Tagesvorschlag in den nächsten 7 Tagen gefunden.');
+  } else {
+    for (const item of suggestions) {
+      await upsertAdminCardMessage(adminChannel, item.calendarId);
+    }
   }
 
   return {
     skipped: false,
     sent: true,
-    messages: messagesToSend.length,
+    messages: overviewMessages.length + suggestions.length,
     absenceCount: mergedAbsenceItems.length,
     suggestionCount: suggestions.length
   };
