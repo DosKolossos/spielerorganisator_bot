@@ -108,7 +108,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS team_calendar_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT NOT NULL,
-    event_type TEXT NOT NULL DEFAULT 'scrim',
+    event_type TEXT NOT NULL DEFAULT 'open',
     status TEXT NOT NULL DEFAULT 'pending',
 
     option_date TEXT NOT NULL,
@@ -236,6 +236,15 @@ function migrateTeamCalendarEvents() {
       OR window_end_at IS NULL OR window_end_at = ''
       OR meeting_scrim_at IS NULL OR meeting_scrim_at = ''
       OR meeting_primeleague_at IS NULL OR meeting_primeleague_at = '';
+  `);
+  db.exec(`
+    UPDATE team_calendar_events
+    SET event_type = 'open'
+    WHERE is_auto_generated = 1
+      AND status = 'pending'
+      AND suggestion_key IS NOT NULL
+      AND (updated_by_discord_user_id IS NULL OR updated_by_discord_user_id = 'system')
+      AND (event_type IS NULL OR trim(event_type) = '' OR event_type = 'scrim');
   `);
 }
 

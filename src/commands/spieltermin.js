@@ -14,6 +14,7 @@ const db = require('../db/database');
 
 const ROLE_ORDER = ['Top', 'Jgl', 'Mid', 'ADC', 'Supp', 'Sub1', 'Sub2'];
 const STATUS_VALUES = ['pending', 'fixed', 'cancelled'];
+const EVENT_TYPE_VALUES = ['open', 'scrim', 'primeleague', 'other'];
 
 function isValidTime(value) {
   if (!/^\d{2}:\d{2}$/.test(value)) return false;
@@ -125,6 +126,8 @@ function statusColor(status) {
 
 function eventTypeLabel(type) {
   switch (type) {
+    case 'open':
+      return 'Offen / Noch unklar';
     case 'primeleague':
       return 'Prime League';
     case 'scrim':
@@ -272,12 +275,225 @@ function buildTeamOpggInfo(assignments) {
   };
 }
 
+function buildDateTime(dateStr, timeStr) {
+  return `${dateStr} ${timeStr}`;
+}
+
+function overlaps(startA, endA, startB, endB) {
+  return startA < endB && startB < endA;
+}
+
+function getWeekdayIndexFromIsoDate(dateStr) {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+}
+
+function getWeekdayBitFromIsoDate(dateStr) {
+  const bits = [1, 2, 4, 8, 16, 32, 64];
+  return bits[getWeekdayIndexFromIsoDate(dateStr)];
+}
+
+function startOfWeekMonday(dateStr) {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  const weekday = date.getUTCDay();
+  const diffToMonday = weekday === 0 ? 6 : weekday - 1;
+  date.setUTCDate(date.getUTCDate() - diffToMonday);
+
+  const y = date.getUTCFullYear();
+  const m = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(date.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function daysBetweenIso(startDate, endDate) {
+  const [sy, sm, sd] = startDate.split('-').map(Number);
+  const [ey, em, ed] = endDate.split('-').map(Number);
+
+  const start = Date.UTC(sy, sm - 1, sd);
+  const end = Date.UTC(ey, em - 1, ed);
+
+  return Math.floor((end - start) / (1000 * 60 * 60 * 24));
+}
+
+function weeksBetweenAnchorWeeks(anchorDate, targetDate) {
+  const anchorWeekStart = startOfWeekMonday(anchorDate);
+  const targetWeekStart = startOfWeekMonday(targetDate);
+  return Math.floor(daysBetweenIso(anchorWeekStart, targetWeekStart) / 7);
+}
+
+function matchesRuleOnDate(rule, dateStr) {
+  const recurrenceType = rule.recurrence_type ?? 'weekly';
+  const anchorDate = rule.anchor_date ?? dateStr;
+
+  if (dateStr < anchorDate) {
+    return false;
+  }
+
+  switch (recurrenceType) {
+    case 'weekly':
+      return (rule.weekday_mask & getWeekdayBitFromIsoDate(dateStr)) !== 0;
+
+    case 'biweekly': {
+      if ((rule.weekday_mask & getWeekdayBitFromIsoDate(dateStr)) === 0) {
+        return false;
+      }
+
+      const weekDiff = weeksBetweenAnchorWeeks(anchorDate, dateStr);
+      return weekDiff >= 0 && weekDiff % 2 === 0;
+    }
+
+    case 'monthly':
+      return Number(dateStr.slice(8, 10)) === Number(anchorDate.slice(8, 10));
+
+    case 'yearly':
+      return dateStr.slice(5, 10) === anchorDate.slice(5, 10);
+
+    default:
+      return false;
+  }
+}
+
+function getRuleBlockedIntervalsForDate(rule, dateStr) {
+  if (!matchesRuleOnDate(rule, dateStr)) {
+    return [];
+  }
+
+  if (rule.rule_type === 'nicht_verfuegbar') {
+    return [{ start_at: `${dateStr} 00:00`, end_at: `${dateStr} 23:59` }];
+  }
+
+  if (rule.rule_type === 'erst_ab' && rule.time_value) {
+    return [{ start_at: `${dateStr} 00:00`, end_at: `${dateStr} ${rule.time_value}` }];
+  }
+
+  if (rule.rule_type === 'bis' && rule.time_value) {
+    return [{ start_at: `${dateStr} ${rule.time_value}`, end_at: `${dateStr} 23:59` }];
+  }
+
+  return [];
+}
+
+function formatEntryRange(startAt, endAt) {
+  const startDate = startAt.slice(0, 10);
+  const endDate = endAt.slice(0, 10);
+  const startTime = startAt.slice(11, 16);
+  const endTime = endAt.slice(11, 16);
+  const isAllDay = startTime === '00:00' && endTime === '23:59';
+
+  if (isAllDay && startDate === endDate) {
+    return `${formatDateDE(startDate)} (ganztägig)`;
+  }
+
+  if (isAllDay) {
+    return `${formatDateDE(startDate)} → ${formatDateDE(endDate)} (ganztägig)`;
+  }
+
+  return `${formatDateTimeDE(startAt)} → ${formatDateTimeDE(endAt)}`;
+}
+
+function recurringDetail(rule) {
+  if (rule.rule_type === 'nicht_verfuegbar') return 'ganztägig nicht verfügbar';
+  if (rule.rule_type === 'erst_ab') return `bis ${rule.time_value} nicht verfügbar`;
+  if (rule.rule_type === 'bis') return `ab ${rule.time_value} nicht verfügbar`;
+  return rule.rule_type;
+}
+
+function getAvailabilitySnapshot(dateStr, startTime, durationMinutes) {
+  const players = db.prepare(`
+    SELECT id, discord_user_id, username, global_name, alias
+    FROM players
+    ORDER BY COALESCE(alias, global_name, username) COLLATE NOCASE ASC
+  `).all();
+
+  const slotStartAt = buildDateTime(dateStr, startTime);
+  const slotEndAt = buildDateTime(dateStr, addMinutesToTime(startTime, durationMinutes));
+
+  const entries = db.prepare(`
+    SELECT
+      e.id,
+      e.player_id,
+      e.entry_type,
+      e.start_at,
+      e.end_at,
+      e.reason
+    FROM availability_entries e
+    WHERE e.end_at >= ?
+      AND e.start_at <= ?
+    ORDER BY e.start_at ASC
+  `).all(slotStartAt, slotEndAt);
+
+  const rules = db.prepare(`
+    SELECT
+      r.id,
+      r.player_id,
+      r.weekday_mask,
+      r.rule_type,
+      r.time_value,
+      r.note,
+      r.recurrence_type,
+      r.anchor_date,
+      r.active
+    FROM availability_rules r
+    WHERE r.active = 1
+    ORDER BY r.player_id ASC, r.id ASC
+  `).all();
+
+  const available = [];
+  const unavailable = [];
+
+  for (const player of players) {
+    const name = playerDisplay(player);
+    const playerEntries = entries.filter(entry => entry.player_id === player.id);
+    const playerRules = rules.filter(rule => rule.player_id === player.id);
+
+    let reason = null;
+
+    for (const entry of playerEntries) {
+      if (!overlaps(slotStartAt, slotEndAt, entry.start_at, entry.end_at)) continue;
+      const typeLabel = entry.entry_type === 'vacation' ? 'Urlaub' : 'Abwesenheit';
+      reason = `[${typeLabel}] ${formatEntryRange(entry.start_at, entry.end_at)} • Grund: ${entry.reason ?? '-'}`;
+      break;
+    }
+
+    if (!reason) {
+      for (const rule of playerRules) {
+        const intervals = getRuleBlockedIntervalsForDate(rule, dateStr);
+        const blocked = intervals.some(interval => overlaps(slotStartAt, slotEndAt, interval.start_at, interval.end_at));
+        if (!blocked) continue;
+        reason = `[Regelmäßig] ${recurringDetail(rule)} • Start: ${formatDateDE(rule.anchor_date ?? dateStr)} • Notiz: ${rule.note ?? '-'}`;
+        break;
+      }
+    }
+
+    if (reason) unavailable.push({ name, reason });
+    else available.push(name);
+  }
+
+  return {
+    dateStr,
+    startTime,
+    durationMinutes,
+    endTime: addMinutesToTime(startTime, durationMinutes),
+    slotStartAt,
+    slotEndAt,
+    playersTotal: players.length,
+    available,
+    unavailable,
+    allAvailable: unavailable.length === 0 && players.length > 0
+  };
+}
+
 function buildEventActionRows(eventId) {
   return [
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`spieltermin:status:${eventId}`)
         .setLabel('Status')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`spieltermin:type:${eventId}`)
+        .setLabel('Typ')
         .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
         .setCustomId(`spieltermin:lineup:${eventId}`)
@@ -290,7 +506,9 @@ function buildEventActionRows(eventId) {
       new ButtonBuilder()
         .setCustomId(`spieltermin:teamopgg:${eventId}`)
         .setLabel('Team OPGG')
-        .setStyle(ButtonStyle.Success),
+        .setStyle(ButtonStyle.Success)
+    ),
+    new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`spieltermin:note:${eventId}`)
         .setLabel('Hinweis')
@@ -322,6 +540,40 @@ function buildStatusSelectRow(eventId, messageId, currentStatus) {
           value: 'cancelled',
           description: 'Termin wurde abgesagt',
           default: currentStatus === 'cancelled'
+        }
+      )
+  );
+}
+
+function buildTypeSelectRow(eventId, messageId, currentType) {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(`spieltermin:typeselect:${eventId}:${messageId}`)
+      .setPlaceholder('Neuen Typ auswählen')
+      .addOptions(
+        {
+          label: 'Offen / Noch unklar',
+          value: 'open',
+          description: 'Noch nicht entschieden, ob Scrim oder Prime League',
+          default: (currentType || 'open') === 'open'
+        },
+        {
+          label: 'Scrim',
+          value: 'scrim',
+          description: 'Scrim / Trainingsspiel',
+          default: currentType === 'scrim'
+        },
+        {
+          label: 'Prime League',
+          value: 'primeleague',
+          description: 'Prime-League-Spiel',
+          default: currentType === 'primeleague'
+        },
+        {
+          label: 'Sonstiges',
+          value: 'other',
+          description: 'Anderer Termin',
+          default: currentType === 'other'
         }
       )
   );
@@ -571,6 +823,14 @@ async function handleButtonInteraction(interaction, parts) {
     });
   }
 
+  if (action === 'type') {
+    return interaction.reply({
+      content: `Wähle den neuen Typ für **#${eventId}**.`,
+      components: [buildTypeSelectRow(eventId, messageId, event.event_type)],
+      ephemeral: true
+    });
+  }
+
   if (action === 'lineup') {
     return interaction.reply({
       ...buildLineupManagerPayload(eventId, messageId),
@@ -668,6 +928,32 @@ async function handleStringSelectInteraction(interaction, parts) {
 
     return interaction.update({
       content: `Status für **#${eventId}** wurde auf **${statusLabel(nextStatus)}** gesetzt.`,
+      components: []
+    });
+  }
+
+  if (action === 'typeselect') {
+    const nextType = interaction.values[0];
+
+    if (!EVENT_TYPE_VALUES.includes(nextType)) {
+      return interaction.update({
+        content: 'Ungültiger Typ.',
+        components: []
+      });
+    }
+
+    db.prepare(`
+      UPDATE team_calendar_events
+      SET event_type = ?,
+          updated_by_discord_user_id = ?,
+          updated_at = ?
+      WHERE id = ?
+    `).run(nextType, interaction.user.id, new Date().toISOString(), eventId);
+
+    await refreshSpecificCard(interaction.channel, messageId, eventId);
+
+    return interaction.update({
+      content: `Typ für **#${eventId}** wurde auf **${eventTypeLabel(nextType)}** gesetzt.`,
       components: []
     });
   }
@@ -823,6 +1109,43 @@ const command = {
     )
     .addSubcommand(sub =>
       sub
+        .setName('pruefen')
+        .setDescription('Prüft ein konkretes Datum und eine Uhrzeit auf Verfügbarkeit.')
+        .addStringOption(option =>
+          option
+            .setName('datum')
+            .setDescription('Datum als TT.MM.JJJJ oder YYYY-MM-DD')
+            .setRequired(true)
+        )
+        .addStringOption(option =>
+          option
+            .setName('startzeit')
+            .setDescription('Startzeit im Format HH:MM')
+            .setRequired(true)
+        )
+        .addIntegerOption(option =>
+          option
+            .setName('dauer_minuten')
+            .setDescription('Dauer in Minuten, Standard: 150')
+            .setRequired(false)
+            .setMinValue(30)
+            .setMaxValue(720)
+        )
+        .addStringOption(option =>
+          option
+            .setName('typ')
+            .setDescription('Optionaler Termin-Typ für die Vorschau')
+            .setRequired(false)
+            .addChoices(
+              { name: 'Offen / Noch unklar', value: 'open' },
+              { name: 'Scrim', value: 'scrim' },
+              { name: 'Prime League', value: 'primeleague' },
+              { name: 'Sonstiges', value: 'other' }
+            )
+        )
+    )
+    .addSubcommand(sub =>
+      sub
         .setName('bearbeiten')
         .setDescription('Bearbeitet einen Kalendereintrag anhand der ID.')
         .addIntegerOption(option =>
@@ -855,6 +1178,7 @@ const command = {
             .setDescription('Optional: neuer Typ')
             .setRequired(false)
             .addChoices(
+              { name: 'Offen / Noch unklar', value: 'open' },
               { name: 'Scrim', value: 'scrim' },
               { name: 'Prime League', value: 'primeleague' },
               { name: 'Sonstiges', value: 'other' }
@@ -949,6 +1273,74 @@ const command = {
 
       return interaction.reply({
         content: lines.join('\n\n'),
+        ephemeral: true
+      });
+    }
+
+    if (subcommand === 'pruefen') {
+      if (!ensureAdminPermission(interaction)) {
+        return interaction.reply({
+          content: 'Dafür fehlen dir die Rechte.',
+          ephemeral: true
+        });
+      }
+
+      const datumInput = interaction.options.getString('datum', true);
+      const startzeit = interaction.options.getString('startzeit', true).trim();
+      const dauerMinuten = interaction.options.getInteger('dauer_minuten') ?? 150;
+      const typ = interaction.options.getString('typ') ?? 'open';
+
+      const parsedDate = parseDateInput(datumInput);
+      if (!parsedDate) {
+        return interaction.reply({
+          content: 'Datum ungültig. Nutze TT.MM.JJJJ oder YYYY-MM-DD.',
+          ephemeral: true
+        });
+      }
+
+      if (!isValidTime(startzeit)) {
+        return interaction.reply({
+          content: 'Startzeit ungültig. Bitte nutze HH:MM, z. B. 18:30.',
+          ephemeral: true
+        });
+      }
+
+      const snapshot = getAvailabilitySnapshot(parsedDate, startzeit, dauerMinuten);
+      const unavailableText = snapshot.unavailable.length
+        ? snapshot.unavailable.map(item => `• ${item.name} — ${item.reason}`).join('\n')
+        : 'Niemand ist laut aktueller Daten blockiert.';
+
+      const embed = new EmbedBuilder()
+        .setColor(snapshot.allAvailable ? 0x57f287 : 0xfee75c)
+        .setTitle(`Verfügbarkeitscheck – ${formatDateLongDE(parsedDate)}`)
+        .setDescription(
+          `**Typ:** ${eventTypeLabel(typ)}
+` +
+          `**Zeitfenster:** ${formatDateTimeDE(snapshot.slotStartAt)} → ${formatDateTimeDE(snapshot.slotEndAt)}
+` +
+          `**Dauer:** ${dauerMinuten} Minuten
+` +
+          `**Ergebnis:** ${snapshot.allAvailable ? 'Alle eingetragenen Spieler sind verfügbar.' : `${snapshot.available.length}/${snapshot.playersTotal} verfügbar`}`
+        )
+        .addFields(
+          {
+            name: `Verfügbar (${snapshot.available.length})`,
+            value: snapshot.available.length ? truncateField(snapshot.available.join(', '), 1024) : '-',
+            inline: false
+          },
+          {
+            name: `Nicht verfügbar (${snapshot.unavailable.length})`,
+            value: truncateField(unavailableText, 1024),
+            inline: false
+          }
+        )
+        .setFooter({
+          text: 'Prüfung basiert auf eingetragenen Abwesenheiten und Regeln.'
+        })
+        .setTimestamp();
+
+      return interaction.reply({
+        embeds: [embed],
         ephemeral: true
       });
     }

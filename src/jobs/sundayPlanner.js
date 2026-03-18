@@ -458,7 +458,7 @@ function syncSuggestionEvent(suggestion) {
         updated_at
       )
       VALUES (
-        ?, 'scrim', 'pending',
+        ?, 'open', 'pending',
         ?, ?, ?, NULL, NULL, NULL, NULL,
         ?, NULL, NULL, ?, 1,
         ?, ?, ?,
@@ -482,10 +482,16 @@ function syncSuggestionEvent(suggestion) {
   }
 
   if (existing.is_auto_generated === 1 && existing.status === 'pending') {
+    const nextEventType =
+      existing.updated_by_discord_user_id === 'system' && (!existing.event_type || existing.event_type === 'scrim')
+        ? 'open'
+        : existing.event_type;
+
     db.prepare(`
       UPDATE team_calendar_events
       SET
         title = ?,
+        event_type = ?,
         option_date = ?,
         window_start_at = ?,
         window_end_at = ?,
@@ -501,6 +507,7 @@ function syncSuggestionEvent(suggestion) {
       WHERE id = ?
     `).run(
       suggestion.title,
+      nextEventType,
       suggestion.date,
       suggestion.windowStartAt,
       suggestion.windowEndAt,
