@@ -244,27 +244,60 @@ function migrateTeamCalendarAssignments() {
 
   addColumnIfMissing('team_calendar_assignments', 'player_id', `INTEGER`);
 
+  if (!columnExists('team_calendar_assignments', 'player_label')) return;
+
   db.exec(`
-    UPDATE team_calendar_assignments AS a
+    UPDATE team_calendar_assignments
     SET player_id = (
       SELECT p.id
       FROM players p
-      WHERE
-        (p.alias IS NOT NULL AND lower(trim(p.alias)) = lower(trim(a.player_label)))
-        OR (p.global_name IS NOT NULL AND lower(trim(p.global_name)) = lower(trim(a.player_label)))
-        OR lower(trim(p.username)) = lower(trim(a.player_label))
-        OR p.discord_user_id = a.player_label
-      ORDER BY
-        CASE
-          WHEN p.alias IS NOT NULL AND lower(trim(p.alias)) = lower(trim(a.player_label)) THEN 0
-          WHEN p.global_name IS NOT NULL AND lower(trim(p.global_name)) = lower(trim(a.player_label)) THEN 1
-          WHEN lower(trim(p.username)) = lower(trim(a.player_label)) THEN 2
-          ELSE 3
-        END,
-        p.id ASC
+      WHERE p.alias IS NOT NULL
+        AND lower(trim(p.alias)) = lower(trim(team_calendar_assignments.player_label))
+      ORDER BY p.id ASC
       LIMIT 1
     )
-    WHERE player_id IS NULL;
+    WHERE player_id IS NULL
+      AND player_label IS NOT NULL;
+  `);
+
+  db.exec(`
+    UPDATE team_calendar_assignments
+    SET player_id = (
+      SELECT p.id
+      FROM players p
+      WHERE p.global_name IS NOT NULL
+        AND lower(trim(p.global_name)) = lower(trim(team_calendar_assignments.player_label))
+      ORDER BY p.id ASC
+      LIMIT 1
+    )
+    WHERE player_id IS NULL
+      AND player_label IS NOT NULL;
+  `);
+
+  db.exec(`
+    UPDATE team_calendar_assignments
+    SET player_id = (
+      SELECT p.id
+      FROM players p
+      WHERE lower(trim(p.username)) = lower(trim(team_calendar_assignments.player_label))
+      ORDER BY p.id ASC
+      LIMIT 1
+    )
+    WHERE player_id IS NULL
+      AND player_label IS NOT NULL;
+  `);
+
+  db.exec(`
+    UPDATE team_calendar_assignments
+    SET player_id = (
+      SELECT p.id
+      FROM players p
+      WHERE p.discord_user_id = team_calendar_assignments.player_label
+      ORDER BY p.id ASC
+      LIMIT 1
+    )
+    WHERE player_id IS NULL
+      AND player_label IS NOT NULL;
   `);
 }
 
