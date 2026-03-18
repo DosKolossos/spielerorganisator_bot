@@ -262,8 +262,8 @@ function buildStarterLineupText(assignments) {
   const byRole = new Map(assignments.map(item => [item.role_label, item.player_label]));
 
   return starterRoles
-    .map(role => `${role}: ${byRole.get(role) || '-'}`)
-    .join(', ');
+    .map(role => `**${role}:** ${byRole.get(role) || '-'}`)
+    .join('\n');
 }
 
 function getDisplayStartAt(event) {
