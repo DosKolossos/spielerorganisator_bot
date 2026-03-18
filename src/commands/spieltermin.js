@@ -765,6 +765,98 @@ async function applyLineupChanges(eventId, roleMap) {
   return changed;
 }
 
+function playerCalendarTypeLabel(event) {
+  switch (event.event_type) {
+    case 'primeleague':
+      return 'PRM';
+    case 'scrim':
+      return 'Scrim';
+    case 'open':
+      return 'Offen';
+    case 'other':
+      return event.title || 'Sonstiges';
+    default:
+      return eventTypeLabel(event.event_type);
+  }
+}
+
+function buildPlayerDateAndTimesValue(event) {
+  const meetingAt =
+    event.event_type === 'scrim' || event.event_type === 'primeleague'
+      ? formatDateTimeDE(getEffectiveMeetingAt(event, event.event_type))
+      : '-';
+
+  const eventTime =
+    event.scheduled_start_at && event.scheduled_end_at
+      ? `${formatDateTimeDE(event.scheduled_start_at)} → ${formatDateTimeDE(event.scheduled_end_at)}`
+      : `${formatDateTimeDE(event.window_start_at)} → ${formatDateTimeDE(event.window_end_at)}`;
+
+  return (
+    `Datum: ${formatDateLongDE(event.option_date)}\n` +
+    `Treffpunkt: ${meetingAt}\n` +
+    `Termin: ${eventTime}`
+  );
+}
+
+function buildPlayerCalendarPayload(eventId) {
+  const event = getEventById(eventId);
+  if (!event) return null;
+
+  const assignments = getAssignments(eventId);
+  const teamOpgg = buildTeamOpggInfo(assignments);
+  const ownOpggField = teamOpgg.ok ? `[OP.GG öffnen](${teamOpgg.url})` : '-';
+
+  const fields = [
+    {
+      name: 'Datum & Uhrzeiten',
+      value: truncateField(buildPlayerDateAndTimesValue(event)),
+      inline: false
+    }
+  ];
+
+  if (event.event_type === 'scrim' || event.event_type === 'primeleague') {
+    fields.push({
+      name: 'Gegner',
+      value: truncateField(event.title || '-'),
+      inline: false
+    });
+  }
+
+  fields.push(
+    {
+      name: 'Art des Termins',
+      value: truncateField(playerCalendarTypeLabel(event)),
+      inline: false
+    },
+    {
+      name: 'Unser OPGG',
+      value: truncateField(ownOpggField),
+      inline: false
+    },
+    {
+      name: 'Gegner OPGG',
+      value: truncateField(event.opgg_url ?? '-'),
+      inline: false
+    },
+    {
+      name: 'Hinweis',
+      value: truncateField(event.note ?? '-'),
+      inline: false
+    }
+  );
+
+  const embed = new EmbedBuilder()
+    .setColor(statusColor(event.status))
+    .setTitle('📅 Spieltermin')
+    .addFields(fields)
+    .setTimestamp(new Date(event.updated_at || event.created_at || Date.now()));
+
+  return {
+    embeds: [embed],
+    components: []
+  };
+}
+
 function buildEventCardPayload(eventId) {
   const event = getEventById(eventId);
   if (!event) return null;
@@ -860,6 +952,9 @@ async function refreshSpecificCard(channel, messageId, eventId) {
     const message = await channel.messages.fetch(messageId);
     if (!message) return false;
     await message.edit(payload);
+
+    await refreshStoredPlayerCard(channel.client, eventId);
+
     return true;
   } catch (error) {
     console.error(`[Spieltermin] Konnte Karte ${messageId} für Event #${eventId} nicht aktualisieren:`, error);
@@ -867,20 +962,101 @@ async function refreshSpecificCard(channel, messageId, eventId) {
   }
 }
 
-async function refreshStoredEventCard(client, eventId) {
+async function refreshStoredPlayerCard(client, eventId) {
+  const playerChannelId = process.env.PLAYER_CALENDAR_CHANNEL_ID;
+  if (!playerChannelId) return false;
+
   const event = getEventById(eventId);
-  if (!event?.admin_channel_id || !event?.admin_message_id) {
-    return false;
-  }
+  if (!event) return false;
 
   try {
-    const channel = await client.channels.fetch(event.admin_channel_id);
+    const channel = await client.channels.fetch(playerChannelId);
     if (!channel || !channel.isTextBased()) return false;
-    return await refreshSpecificCard(channel, event.admin_message_id, eventId);
+
+    const payload = buildPlayerCalendarPayload(eventId);
+    if (!payload) return false;
+
+    if (!event.player_message_id || event.player_channel_id !== channel.id) {
+      const message = await upsertPlayerCardMessage(channel, eventId);
+      return !!message;
+    }
+
+    const message = await channel.messages.fetch(event.player_message_id);
+    if (!message) return false;
+
+    await message.edit(payload);
+    return true;
   } catch (error) {
-    console.error(`[Spieltermin] Konnte gespeicherte Karte für Event #${eventId} nicht laden:`, error);
+    console.error(`[Spieltermin] Konnte Player-Karte für Event #${eventId} nicht aktualisieren:`, error);
     return false;
   }
+}
+
+async function refreshStoredEventCard(client, eventId) {
+  let refreshed = false;
+  const event = getEventById(eventId);
+
+  if (event?.admin_channel_id && event?.admin_message_id) {
+    try {
+      const adminChannel = await client.channels.fetch(event.admin_channel_id);
+      if (adminChannel && adminChannel.isTextBased()) {
+        const payload = buildEventCardPayload(eventId);
+        if (payload) {
+          const message = await adminChannel.messages.fetch(event.admin_message_id);
+          if (message) {
+            await message.edit(payload);
+            refreshed = true;
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`[Spieltermin] Konnte gespeicherte Admin-Karte für Event #${eventId} nicht laden:`, error);
+    }
+  }
+
+  const mirrored = await refreshStoredPlayerCard(client, eventId);
+  return refreshed || mirrored;
+}
+
+async function upsertPlayerCardMessage(channel, eventId) {
+  const event = getEventById(eventId);
+  if (!event) return null;
+
+  const payload = buildPlayerCalendarPayload(eventId);
+  if (!payload) return null;
+
+  if (event.player_message_id) {
+    try {
+      const existingMessage = await channel.messages.fetch(event.player_message_id);
+      if (existingMessage) {
+        await existingMessage.edit(payload);
+
+        if (event.player_channel_id !== channel.id) {
+          db.prepare(`
+            UPDATE team_calendar_events
+            SET player_channel_id = ?, updated_at = ?
+            WHERE id = ?
+          `).run(channel.id, new Date().toISOString(), eventId);
+        }
+
+        return existingMessage;
+      }
+    } catch (error) {
+      console.warn(`[Spieltermin] Gespeicherte Player-Karte für Event #${eventId} nicht gefunden, sende neu.`);
+    }
+  }
+
+  const sentMessage = await channel.send(payload);
+
+  db.prepare(`
+    UPDATE team_calendar_events
+    SET player_channel_id = ?,
+        player_message_id = ?,
+        updated_at = ?
+    WHERE id = ?
+  `).run(channel.id, sentMessage.id, new Date().toISOString(), eventId);
+
+  return sentMessage;
 }
 
 async function upsertAdminCardMessage(channel, eventId) {
@@ -890,11 +1066,14 @@ async function upsertAdminCardMessage(channel, eventId) {
   const payload = buildEventCardPayload(eventId);
   if (!payload) return null;
 
+  let adminMessage = null;
+
   if (event.admin_message_id) {
     try {
       const existingMessage = await channel.messages.fetch(event.admin_message_id);
       if (existingMessage) {
         await existingMessage.edit(payload);
+
         if (event.admin_channel_id !== channel.id) {
           db.prepare(`
             UPDATE team_calendar_events
@@ -902,24 +1081,39 @@ async function upsertAdminCardMessage(channel, eventId) {
             WHERE id = ?
           `).run(channel.id, new Date().toISOString(), eventId);
         }
-        return existingMessage;
+
+        adminMessage = existingMessage;
       }
     } catch (error) {
       console.warn(`[Spieltermin] Gespeicherte Karten-Nachricht für Event #${eventId} nicht gefunden, sende neu.`);
     }
   }
 
-  const sentMessage = await channel.send(payload);
+  if (!adminMessage) {
+    adminMessage = await channel.send(payload);
 
-  db.prepare(`
-    UPDATE team_calendar_events
-    SET admin_channel_id = ?,
-        admin_message_id = ?,
-        updated_at = ?
-    WHERE id = ?
-  `).run(channel.id, sentMessage.id, new Date().toISOString(), eventId);
+    db.prepare(`
+      UPDATE team_calendar_events
+      SET admin_channel_id = ?,
+          admin_message_id = ?,
+          updated_at = ?
+      WHERE id = ?
+    `).run(channel.id, adminMessage.id, new Date().toISOString(), eventId);
+  }
 
-  return sentMessage;
+  const playerChannelId = process.env.PLAYER_CALENDAR_CHANNEL_ID;
+  if (playerChannelId) {
+    try {
+      const playerChannel = await channel.client.channels.fetch(playerChannelId);
+      if (playerChannel && playerChannel.isTextBased()) {
+        await upsertPlayerCardMessage(playerChannel, eventId);
+      }
+    } catch (error) {
+      console.error(`[Spieltermin] Konnte Player-Kanal für Event #${eventId} nicht laden:`, error);
+    }
+  }
+
+  return adminMessage;
 }
 
 function ensureAdminPermission(interaction) {

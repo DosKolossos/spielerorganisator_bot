@@ -152,6 +152,8 @@ db.exec(`
     is_auto_generated INTEGER NOT NULL DEFAULT 0,
     admin_channel_id TEXT,
     admin_message_id TEXT,
+    player_channel_id TEXT,
+    player_message_id TEXT,
 
     start_at TEXT,
     end_at TEXT,
@@ -242,6 +244,8 @@ function migrateTeamCalendarEvents() {
   addColumnIfMissing('team_calendar_events', 'is_auto_generated', `INTEGER NOT NULL DEFAULT 0`);
   addColumnIfMissing('team_calendar_events', 'admin_channel_id', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'admin_message_id', `TEXT`);
+  addColumnIfMissing('team_calendar_events', 'player_channel_id', `TEXT`);
+  addColumnIfMissing('team_calendar_events', 'player_message_id', `TEXT`);
 
   addColumnIfMissing('team_calendar_events', 'start_at', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'end_at', `TEXT`);
