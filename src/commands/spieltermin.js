@@ -580,43 +580,49 @@ function getAvailabilitySnapshot(dateStr, startTime, durationMinutes) {
   };
 }
 
-function buildEventActionRows(eventId) {
+function buildEventActionRows(event) {
+  const publishEnabled = Number(event.show_in_player_calendar) === 1;
+
   return [
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
-        .setCustomId(`spieltermin:status:${eventId}`)
+        .setCustomId(`spieltermin:status:${event.id}`)
         .setLabel('Status')
         .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
-        .setCustomId(`spieltermin:type:${eventId}`)
+        .setCustomId(`spieltermin:type:${event.id}`)
         .setLabel('Typ')
         .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
-        .setCustomId(`spieltermin:fixedtime:${eventId}`)
+        .setCustomId(`spieltermin:fixedtime:${event.id}`)
         .setLabel('Fixe Zeit')
         .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
-        .setCustomId(`spieltermin:meeting:${eventId}`)
+        .setCustomId(`spieltermin:meeting:${event.id}`)
         .setLabel('Treffpunkt')
         .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
-        .setCustomId(`spieltermin:lineup:${eventId}`)
+        .setCustomId(`spieltermin:lineup:${event.id}`)
         .setLabel('Aufstellung')
         .setStyle(ButtonStyle.Primary)
     ),
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
-        .setCustomId(`spieltermin:enemyopgg:${eventId}`)
+        .setCustomId(`spieltermin:enemyopgg:${event.id}`)
         .setLabel('Gegner OPGG')
         .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
-        .setCustomId(`spieltermin:teamopgg:${eventId}`)
+        .setCustomId(`spieltermin:teamopgg:${event.id}`)
         .setLabel('Team OPGG')
         .setStyle(ButtonStyle.Success),
       new ButtonBuilder()
-        .setCustomId(`spieltermin:note:${eventId}`)
+        .setCustomId(`spieltermin:note:${event.id}`)
         .setLabel('Hinweis')
-        .setStyle(ButtonStyle.Secondary)
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`spieltermin:playervisibility:${event.id}`)
+        .setLabel(publishEnabled ? 'Spielerkalender: AN' : 'Spielerkalender: AUS')
+        .setStyle(publishEnabled ? ButtonStyle.Success : ButtonStyle.Secondary)
     )
   ];
 }
@@ -857,6 +863,89 @@ function buildPlayerCalendarPayload(eventId) {
   };
 }
 
+async function deleteStoredPlayerCard(client, eventId) {
+  const event = getEventById(eventId);
+  if (!event?.player_channel_id || !event?.player_message_id) {
+    return false;
+  }
+
+  try {
+    const channel = await client.channels.fetch(event.player_channel_id);
+    if (channel && channel.isTextBased()) {
+      try {
+        const message = await channel.messages.fetch(event.player_message_id);
+        if (message) {
+          await message.delete().catch(() => null);
+        }
+      } catch (_) {
+        // Nachricht existiert evtl. schon nicht mehr
+      }
+    }
+  } catch (_) {
+    // Kanal evtl. nicht mehr erreichbar
+  }
+
+  db.prepare(`
+    UPDATE team_calendar_events
+    SET player_channel_id = NULL,
+        player_message_id = NULL,
+        updated_at = ?
+    WHERE id = ?
+  `).run(new Date().toISOString(), eventId);
+
+  return true;
+}
+
+async function syncPlayerCalendarCard(client, eventId) {
+  const event = getEventById(eventId);
+  if (!event) return false;
+
+  const shouldShow = Number(event.show_in_player_calendar) === 1;
+
+  if (!shouldShow) {
+    await deleteStoredPlayerCard(client, eventId);
+    return false;
+  }
+
+  const playerChannelId = process.env.PLAYER_CALENDAR_CHANNEL_ID;
+  if (!playerChannelId) return false;
+
+  try {
+    const channel = await client.channels.fetch(playerChannelId);
+    if (!channel || !channel.isTextBased()) return false;
+
+    const payload = buildPlayerCalendarPayload(eventId);
+    if (!payload) return false;
+
+    if (event.player_message_id && event.player_channel_id === channel.id) {
+      try {
+        const existingMessage = await channel.messages.fetch(event.player_message_id);
+        if (existingMessage) {
+          await existingMessage.edit(payload);
+          return true;
+        }
+      } catch (_) {
+        // fällt unten auf Neu-Senden zurück
+      }
+    }
+
+    const sentMessage = await channel.send(payload);
+
+    db.prepare(`
+      UPDATE team_calendar_events
+      SET player_channel_id = ?,
+          player_message_id = ?,
+          updated_at = ?
+      WHERE id = ?
+    `).run(channel.id, sentMessage.id, new Date().toISOString(), eventId);
+
+    return true;
+  } catch (error) {
+    console.error(`[Spieltermin] Konnte Player-Karte für Event #${eventId} nicht synchronisieren:`, error);
+    return false;
+  }
+}
+
 function buildEventCardPayload(eventId) {
   const event = getEventById(eventId);
   if (!event) return null;
@@ -940,7 +1029,7 @@ function buildEventCardPayload(eventId) {
 
   return {
     embeds: [embed],
-    components: buildEventActionRows(event.id)
+    components: buildEventActionRows(event)
   };
 }
 
@@ -953,7 +1042,7 @@ async function refreshSpecificCard(channel, messageId, eventId) {
     if (!message) return false;
     await message.edit(payload);
 
-    await refreshStoredPlayerCard(channel.client, eventId);
+    await syncPlayerCalendarCard(channel.client, eventId);
 
     return true;
   } catch (error) {
@@ -1101,18 +1190,7 @@ async function upsertAdminCardMessage(channel, eventId) {
     `).run(channel.id, adminMessage.id, new Date().toISOString(), eventId);
   }
 
-  const playerChannelId = process.env.PLAYER_CALENDAR_CHANNEL_ID;
-  if (playerChannelId) {
-    try {
-      const playerChannel = await channel.client.channels.fetch(playerChannelId);
-      if (playerChannel && playerChannel.isTextBased()) {
-        await upsertPlayerCardMessage(playerChannel, eventId);
-      }
-    } catch (error) {
-      console.error(`[Spieltermin] Konnte Player-Kanal für Event #${eventId} nicht laden:`, error);
-    }
-  }
-
+  await syncPlayerCalendarCard(channel.client, eventId);
   return adminMessage;
 }
 
@@ -1256,6 +1334,28 @@ async function handleButtonInteraction(interaction, parts) {
 
     modal.addComponents(new ActionRowBuilder().addComponents(input));
     return interaction.showModal(modal);
+  }
+
+  if (action === 'playervisibility') {
+    const nextValue = Number(event.show_in_player_calendar) === 1 ? 0 : 1;
+
+    db.prepare(`
+    UPDATE team_calendar_events
+    SET show_in_player_calendar = ?,
+        updated_by_discord_user_id = ?,
+        updated_at = ?
+    WHERE id = ?
+  `).run(nextValue, interaction.user.id, new Date().toISOString(), eventId);
+
+    await refreshSpecificCard(interaction.channel, messageId, eventId);
+
+    return interaction.reply({
+      content:
+        nextValue === 1
+          ? `Karte **#${eventId}** wird jetzt im Spielerkalender angezeigt.`
+          : `Karte **#${eventId}** wurde aus dem Spielerkalender entfernt.`,
+      flags: MessageFlags.Ephemeral
+    });
   }
 
   if (action === 'enemyopgg') {
