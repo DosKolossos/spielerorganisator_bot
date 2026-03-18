@@ -135,6 +135,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS team_calendar_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT NOT NULL,
+    opponent_name TEXT,
     event_type TEXT NOT NULL DEFAULT 'open',
     status TEXT NOT NULL DEFAULT 'pending',
 
@@ -239,6 +240,8 @@ function migrateTeamCalendarEvents() {
   addColumnIfMissing('team_calendar_events', 'meeting_scrim_at', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'meeting_primeleague_at', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'available_players_text', `TEXT`);
+  addColumnIfMissing('team_calendar_events', 'opponent_name', `TEXT`);
+
   addColumnIfMissing('team_calendar_events', 'opgg_url', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'note', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'suggestion_key', `TEXT`);

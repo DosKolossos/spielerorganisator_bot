@@ -247,6 +247,64 @@ function buildLineupText(assignments) {
     .join(' | ');
 }
 
+function formatTimeOnly(dateTime) {
+  if (!dateTime) return '-';
+  return dateTime.slice(11, 16);
+}
+
+function formatTimeOnlyLabel(dateTime) {
+  const time = formatTimeOnly(dateTime);
+  return time === '-' ? '-' : `${time} Uhr`;
+}
+
+function buildStarterLineupText(assignments) {
+  const starterRoles = ['Top', 'Jgl', 'Mid', 'ADC', 'Supp'];
+  const byRole = new Map(assignments.map(item => [item.role_label, item.player_label]));
+
+  return starterRoles
+    .map(role => `${role}: ${byRole.get(role) || '-'}`)
+    .join(', ');
+}
+
+function getDisplayStartAt(event) {
+  return event.scheduled_start_at || event.window_start_at || null;
+}
+
+function getDisplayMeetingAt(event) {
+  if (event.event_type === 'scrim' || event.event_type === 'primeleague') {
+    return getEffectiveMeetingAt(event, event.event_type);
+  }
+
+  return null;
+}
+
+function buildPlayerCalendarTitle(event) {
+  const typeLabel = playerCalendarTypeLabel(event);
+  const opponent = event.opponent_name?.trim();
+
+  return `📅 Termin ${formatDateLongDE(event.option_date)} ${typeLabel}${opponent ? ` vs ${opponent}` : ''}`;
+}
+
+function buildPlayerCalendarDescription(event, assignments) {
+  const startAt = getDisplayStartAt(event);
+  const meetingAt = getDisplayMeetingAt(event);
+  const teamOpgg = buildTeamOpggInfo(assignments);
+
+  return [
+    `Zeit: ${formatTimeOnlyLabel(startAt)}`,
+    `Treffpunkt: ${formatTimeOnlyLabel(meetingAt)}`,
+    '',
+    buildStarterLineupText(assignments),
+    '',
+    teamOpgg.ok ? `[OP.GG öffnen](${teamOpgg.url})` : 'OP.GG öffnen: -',
+    '',
+    event.opgg_url ? `[Gegner OP.GG](${event.opgg_url})` : 'Gegner OP.GG: -',
+    '',
+    'Hinweis',
+    event.note?.trim() || '-'
+  ].join('\n');
+}
+
 function findPlayerByLabel(label) {
   if (!label) return null;
   const trimmed = label.trim();
@@ -608,6 +666,10 @@ function buildEventActionRows(event) {
     ),
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
+        .setCustomId(`spieltermin:opponent:${event.id}`)
+        .setLabel('Gegner')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
         .setCustomId(`spieltermin:enemyopgg:${event.id}`)
         .setLabel('Gegner OPGG')
         .setStyle(ButtonStyle.Secondary),
@@ -776,7 +838,7 @@ function playerCalendarTypeLabel(event) {
     case 'primeleague':
       return 'PRM';
     case 'scrim':
-      return 'Scrim';
+      return 'Scrims';
     case 'open':
       return 'Offen';
     case 'other':
@@ -786,75 +848,16 @@ function playerCalendarTypeLabel(event) {
   }
 }
 
-function buildPlayerDateAndTimesValue(event) {
-  const meetingAt =
-    event.event_type === 'scrim' || event.event_type === 'primeleague'
-      ? formatDateTimeDE(getEffectiveMeetingAt(event, event.event_type))
-      : '-';
-
-  const eventTime =
-    event.scheduled_start_at && event.scheduled_end_at
-      ? `${formatDateTimeDE(event.scheduled_start_at)} → ${formatDateTimeDE(event.scheduled_end_at)}`
-      : `${formatDateTimeDE(event.window_start_at)} → ${formatDateTimeDE(event.window_end_at)}`;
-
-  return (
-    `Datum: ${formatDateLongDE(event.option_date)}\n` +
-    `Treffpunkt: ${meetingAt}\n` +
-    `Termin: ${eventTime}`
-  );
-}
-
 function buildPlayerCalendarPayload(eventId) {
   const event = getEventById(eventId);
   if (!event) return null;
 
   const assignments = getAssignments(eventId);
-  const teamOpgg = buildTeamOpggInfo(assignments);
-  const ownOpggField = teamOpgg.ok ? `[OP.GG öffnen](${teamOpgg.url})` : '-';
-
-  const fields = [
-    {
-      name: 'Datum & Uhrzeiten',
-      value: truncateField(buildPlayerDateAndTimesValue(event)),
-      inline: false
-    }
-  ];
-
-  if (event.event_type === 'scrim' || event.event_type === 'primeleague') {
-    fields.push({
-      name: 'Gegner',
-      value: truncateField(event.title || '-'),
-      inline: false
-    });
-  }
-
-  fields.push(
-    {
-      name: 'Art des Termins',
-      value: truncateField(playerCalendarTypeLabel(event)),
-      inline: false
-    },
-    {
-      name: 'Unser OPGG',
-      value: truncateField(ownOpggField),
-      inline: false
-    },
-    {
-      name: 'Gegner OPGG',
-      value: truncateField(event.opgg_url ?? '-'),
-      inline: false
-    },
-    {
-      name: 'Hinweis',
-      value: truncateField(event.note ?? '-'),
-      inline: false
-    }
-  );
 
   const embed = new EmbedBuilder()
     .setColor(statusColor(event.status))
-    .setTitle('📅 Spieltermin')
-    .addFields(fields)
+    .setTitle(buildPlayerCalendarTitle(event))
+    .setDescription(buildPlayerCalendarDescription(event, assignments))
     .setTimestamp(new Date(event.updated_at || event.created_at || Date.now()));
 
   return {
@@ -974,6 +977,11 @@ function buildEventCardPayload(eventId) {
       {
         name: 'Typ',
         value: eventTypeLabel(event.event_type),
+        inline: true
+      },
+      {
+        name: 'Gegner',
+        value: truncateField(event.opponent_name ?? '-'),
         inline: true
       },
       {
@@ -1356,6 +1364,24 @@ async function handleButtonInteraction(interaction, parts) {
           : `Karte **#${eventId}** wurde aus dem Spielerkalender entfernt.`,
       flags: MessageFlags.Ephemeral
     });
+  }
+
+  if (action === 'opponent') {
+    const modal = new ModalBuilder()
+      .setCustomId(`spieltermin:opponentmodal:${eventId}:${messageId}`)
+      .setTitle(`Gegner – #${eventId}`);
+
+    const input = new TextInputBuilder()
+      .setCustomId('opponent_name')
+      .setLabel('Gegnername')
+      .setStyle(TextInputStyle.Short)
+      .setRequired(false)
+      .setPlaceholder('Leer lassen oder - eingeben, um zu löschen');
+
+    if (event.opponent_name) input.setValue(event.opponent_name);
+
+    modal.addComponents(new ActionRowBuilder().addComponents(input));
+    return interaction.showModal(modal);
   }
 
   if (action === 'enemyopgg') {
@@ -1751,6 +1777,28 @@ async function handleModalSubmitInteraction(interaction, parts) {
     });
   }
 
+  if (action === 'opponentmodal') {
+    const raw = interaction.fields.getTextInputValue('opponent_name').trim();
+    const nextValue = raw === '' || raw === '-' ? null : raw;
+
+    db.prepare(`
+    UPDATE team_calendar_events
+    SET opponent_name = ?,
+        updated_by_discord_user_id = ?,
+        updated_at = ?
+    WHERE id = ?
+  `).run(nextValue, interaction.user.id, new Date().toISOString(), eventId);
+
+    await refreshSpecificCard(interaction.channel, messageId, eventId);
+
+    return interaction.reply({
+      content: nextValue
+        ? `Gegner für **#${eventId}** wurde auf **${nextValue}** gesetzt.`
+        : `Gegner für **#${eventId}** wurde gelöscht.`,
+      flags: MessageFlags.Ephemeral
+    });
+  }
+
   if (action === 'enemyopggmodal') {
     const raw = interaction.fields.getTextInputValue('opgg_url').trim();
     const nextValue = raw === '' || raw === '-' ? null : raw;
@@ -1864,6 +1912,12 @@ const command = {
           option
             .setName('titel')
             .setDescription('Optional: neuer Titel')
+            .setRequired(false)
+        )
+        .addStringOption(option =>
+          option
+            .setName('gegner')
+            .setDescription('Optional: Gegnername, mit "-" wird gelöscht')
             .setRequired(false)
         )
         .addStringOption(option =>
@@ -2044,6 +2098,7 @@ const command = {
       const datumInput = interaction.options.getString('datum');
       const startzeit = interaction.options.getString('startzeit');
       const titel = interaction.options.getString('titel');
+      const gegner = interaction.options.getString('gegner');
       const typ = interaction.options.getString('typ');
       const status = interaction.options.getString('status');
       const hinweis = interaction.options.getString('hinweis');
@@ -2074,6 +2129,10 @@ const command = {
       }
 
       const nextTitle = titel?.trim() || event.title;
+      const nextOpponent =
+        gegner === null
+          ? event.opponent_name
+          : (gegner.trim() === '-' ? null : gegner.trim());
       const nextType = typ ?? event.event_type;
       const nextStatus = status ?? event.status;
       const nextDate = parsedDate;
@@ -2139,6 +2198,7 @@ const command = {
       db.prepare(`
         UPDATE team_calendar_events
         SET title = ?,
+            opponent_name = ?,
             event_type = ?,
             status = ?,
             option_date = ?,
@@ -2155,6 +2215,7 @@ const command = {
         WHERE id = ?
       `).run(
         nextTitle,
+        nextOpponent,
         nextType,
         nextStatus,
         nextDate,
@@ -2177,6 +2238,7 @@ const command = {
         content:
           `Spieltermin **#${id}** wurde aktualisiert.\n` +
           `Titel: **${nextTitle}**\n` +
+          `Gegner: **${nextOpponent ?? '-'}**\n` +
           `Status: **${statusLabel(nextStatus)}**\n` +
           `Typ: **${eventTypeLabel(nextType)}**\n` +
           `Fenster: **${formatDateTimeDE(nextWindowStartAt)} → ${formatDateTimeDE(nextWindowEndAt)}**\n` +
