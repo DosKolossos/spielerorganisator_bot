@@ -1888,6 +1888,78 @@ const command = {
     )
     .addSubcommand(sub =>
       sub
+        .setName('erstellen')
+        .setDescription('Erstellt einen neuen Spieltermin oder eine Vormerkung.')
+        .addStringOption(option =>
+          option
+            .setName('datum')
+            .setDescription('Datum als TT.MM.JJJJ oder YYYY-MM-DD')
+            .setRequired(true)
+        )
+        .addStringOption(option =>
+          option
+            .setName('startzeit')
+            .setDescription('Startzeit im Format HH:MM')
+            .setRequired(true)
+        )
+        .addIntegerOption(option =>
+          option
+            .setName('dauer_minuten')
+            .setDescription('Dauer in Minuten, Standard: 150')
+            .setRequired(false)
+            .setMinValue(30)
+            .setMaxValue(720)
+        )
+        .addStringOption(option =>
+          option
+            .setName('titel')
+            .setDescription('Titel des Termins')
+            .setRequired(true)
+        )
+        .addStringOption(option =>
+          option
+            .setName('gegner')
+            .setDescription('Optional: Gegnername')
+            .setRequired(false)
+        )
+        .addStringOption(option =>
+          option
+            .setName('typ')
+            .setDescription('Typ des Termins')
+            .setRequired(false)
+            .addChoices(
+              { name: 'Offen / Noch unklar', value: 'open' },
+              { name: 'Scrim', value: 'scrim' },
+              { name: 'Prime League', value: 'primeleague' },
+              { name: 'Sonstiges', value: 'other' }
+            )
+        )
+        .addStringOption(option =>
+          option
+            .setName('status')
+            .setDescription('Status des Termins')
+            .setRequired(false)
+            .addChoices(
+              { name: 'Pending', value: 'pending' },
+              { name: 'Fixed', value: 'fixed' },
+              { name: 'Cancelled', value: 'cancelled' }
+            )
+        )
+        .addStringOption(option =>
+          option
+            .setName('hinweis')
+            .setDescription('Optional: Hinweistext')
+            .setRequired(false)
+        )
+        .addStringOption(option =>
+          option
+            .setName('opgg')
+            .setDescription('Optional: Gegner-OPGG-Link')
+            .setRequired(false)
+        )
+    )
+    .addSubcommand(sub =>
+      sub
         .setName('bearbeiten')
         .setDescription('Bearbeitet einen Kalendereintrag anhand der ID.')
         .addIntegerOption(option =>
@@ -1981,7 +2053,7 @@ const command = {
 
     if (adminOnlySubcommands.has(subcommand) && !ensureAdminPermission(interaction)) {
       return interaction.reply({
-        content: 'Dafür fehlen dir die Rechte.',
+        content: 'Dafür fehlen dir die Rechte, Bro. Entwickle dich erstmal zu Schillok und dann reden wir weiter!',
         flags: MessageFlags.Ephemeral
       });
     }
@@ -2029,6 +2101,124 @@ const command = {
 
       return interaction.reply({
         content: lines.join('\n\n'),
+        flags: MessageFlags.Ephemeral
+      });
+    }
+    if (subcommand === 'erstellen') {
+      const datumInput = interaction.options.getString('datum', true);
+      const startzeit = interaction.options.getString('startzeit', true).trim();
+      const dauerMinuten = interaction.options.getInteger('dauer_minuten') ?? 150;
+      const titel = interaction.options.getString('titel', true).trim();
+      const gegner = interaction.options.getString('gegner');
+      const typ = interaction.options.getString('typ') ?? 'other';
+      const status = interaction.options.getString('status') ?? 'fixed';
+      const hinweis = interaction.options.getString('hinweis');
+      const opgg = interaction.options.getString('opgg');
+
+      const parsedDate = parseDateInput(datumInput);
+      if (!parsedDate) {
+        return interaction.reply({
+          content: 'Datum ungültig. Nutze TT.MM.JJJJ oder YYYY-MM-DD.',
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
+      if (!isValidTime(startzeit)) {
+        return interaction.reply({
+          content: 'Startzeit ungültig. Bitte nutze HH:MM, z. B. 20:00.',
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
+      const nextOpponent = gegner?.trim() ? gegner.trim() : null;
+      const nextHint = hinweis?.trim() ? hinweis.trim() : null;
+      const nextOpgg = opgg?.trim() ? opgg.trim() : null;
+
+      const startAt = buildDateTime(parsedDate, startzeit);
+      const endAt = buildDateTime(parsedDate, addMinutesToTime(startzeit, dauerMinuten));
+      const meetingScrimAt = getDefaultMeetingAtFromScheduledStart(startAt, 'scrim');
+      const meetingPrimeleagueAt = getDefaultMeetingAtFromScheduledStart(startAt, 'primeleague');
+      const now = new Date().toISOString();
+
+      const result = db.prepare(`
+    INSERT INTO team_calendar_events (
+      title,
+      opponent_name,
+      event_type,
+      status,
+      option_date,
+      window_start_at,
+      window_end_at,
+      scheduled_start_at,
+      scheduled_end_at,
+      meeting_scrim_at,
+      meeting_primeleague_at,
+      available_players_text,
+      opgg_url,
+      note,
+      suggestion_key,
+      is_auto_generated,
+      show_in_player_calendar,
+      start_at,
+      end_at,
+      meeting_at,
+      created_by_discord_user_id,
+      updated_by_discord_user_id,
+      created_at,
+      updated_at
+    )
+    VALUES (
+      ?, ?, ?, ?,
+      ?, ?, ?, ?, ?, ?, ?,
+      NULL, ?, ?, NULL, 0, 0,
+      ?, ?, NULL,
+      ?, ?, ?, ?
+    )
+  `).run(
+        titel,
+        nextOpponent,
+        typ,
+        status,
+        parsedDate,
+        startAt,
+        endAt,
+        startAt,
+        endAt,
+        meetingScrimAt,
+        meetingPrimeleagueAt,
+        nextOpgg,
+        nextHint,
+        startAt,
+        endAt,
+        interaction.user.id,
+        interaction.user.id,
+        now,
+        now
+      );
+
+      const id = Number(result.lastInsertRowid);
+      let cardPosted = false;
+
+      try {
+        const adminChannel = await interaction.client.channels.fetch(process.env.ADMIN_CHANNEL_ID);
+        if (adminChannel && adminChannel.isTextBased()) {
+          await upsertAdminCardMessage(adminChannel, id);
+          cardPosted = true;
+        }
+      } catch (error) {
+        console.error(`[Spieltermin] Konnte Admin-Karte für neuen Termin #${id} nicht posten:`, error);
+      }
+
+      return interaction.reply({
+        content:
+          `Spieltermin **#${id}** wurde erstellt.\n` +
+          `Titel: **${titel}**\n` +
+          `Gegner: **${nextOpponent ?? '-'}**\n` +
+          `Typ: **${eventTypeLabel(typ)}**\n` +
+          `Status: **${statusLabel(status)}**\n` +
+          `Zeit: **${formatDateTimeDE(startAt)}**\n` +
+          `Hinweis: **${nextHint ?? '-'}**\n` +
+          `Admin-Karte: **${cardPosted ? 'gepostet' : 'nicht gepostet'}**`,
         flags: MessageFlags.Ephemeral
       });
     }

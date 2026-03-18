@@ -597,6 +597,52 @@ function formatFutureManualEvent(event) {
   return line;
 }
 
+function plannerEventTypeLabel(eventType) {
+  switch (eventType) {
+    case 'primeleague':
+      return 'PRM';
+    case 'scrim':
+      return 'Scrims';
+    case 'open':
+      return 'Offen';
+    case 'other':
+      return 'Sonstiges';
+    default:
+      return eventType || 'Unbekannt';
+  }
+}
+
+function plannerEventTimeLabel(event) {
+  const dateTime = event.scheduled_start_at || event.window_start_at || null;
+  if (!dateTime) return null;
+  return `${dateTime.slice(11, 16)} Uhr`;
+}
+
+function formatPlannerManualEvent(event, { urgent = false } = {}) {
+  const prefix = urgent ? '🚨' : '📌';
+  const typeLabel = plannerEventTypeLabel(event.event_type);
+  const title = (event.title || '-').trim();
+  const timeLabel = plannerEventTimeLabel(event);
+  const statusLabel =
+    event.status === 'fixed'
+      ? 'Fixed'
+      : event.status === 'cancelled'
+        ? 'Abgesagt'
+        : 'Pending';
+
+  let line = `${prefix} **${formatDateLongDE(event.option_date)} • ${title}** • ${typeLabel} • ${statusLabel}`;
+
+  if (timeLabel) {
+    line += ` • ${timeLabel}`;
+  }
+
+  if (event.note && event.note.trim()) {
+    line += ` • Hinweis: ${event.note.trim()}`;
+  }
+
+  return line;
+}
+
 async function runSundayPlanner(client, options = {}) {
   const { force = false } = options;
   const runKey = getRunKey();
@@ -679,6 +725,8 @@ async function runSundayPlanner(client, options = {}) {
 
   const suggestions = [];
 
+
+
   for (const dateStr of windowDates) {
     const suggestion = buildDailySuggestion(players, upcomingEntries, rules, dateStr);
     if (!suggestion) continue;
@@ -686,6 +734,30 @@ async function runSundayPlanner(client, options = {}) {
     const calendarId = syncSuggestionEvent(suggestion);
     suggestions.push({ ...suggestion, calendarId });
   }
+
+
+
+  const weekEndDate = addDaysIso(berlinToday, 6);
+
+  const currentWeekManualEvents = db.prepare(`
+  SELECT
+    id,
+    title,
+    event_type,
+    status,
+    option_date,
+    window_start_at,
+    scheduled_start_at,
+    note,
+    admin_channel_id,
+    admin_message_id
+  FROM team_calendar_events
+  WHERE is_auto_generated = 0
+    AND status <> 'cancelled'
+    AND option_date >= ?
+    AND option_date <= ?
+  ORDER BY option_date ASC, COALESCE(scheduled_start_at, window_start_at) ASC, id ASC
+`).all(berlinToday, weekEndDate);
 
   const futureManualEvents = db.prepare(`
   SELECT
@@ -699,9 +771,10 @@ async function runSundayPlanner(client, options = {}) {
     note
   FROM team_calendar_events
   WHERE is_auto_generated = 0
+    AND status <> 'cancelled'
     AND option_date > ?
   ORDER BY option_date ASC, COALESCE(scheduled_start_at, window_start_at) ASC, id ASC
-`).all(addDaysIso(berlinToday, 6));
+`).all(weekEndDate);
 
   const overviewLines = [];
   overviewLines.push('📋 **Wochenplanung – Rohübersicht**');
@@ -718,7 +791,27 @@ async function runSundayPlanner(client, options = {}) {
   }
 
   overviewLines.push('');
+  overviewLines.push('**🚨 Bereits eingetragene Termine in dieser Woche**');
+  if (currentWeekManualEvents.length === 0) {
+    overviewLines.push('- Keine bereits eingetragenen manuellen Termine in dieser Woche.');
+  } else {
+    for (const event of currentWeekManualEvents) {
+      overviewLines.push(formatPlannerManualEvent(event, { urgent: true }));
+    }
+  }
+
+  overviewLines.push('');
   overviewLines.push('**Vormerkungen (bereits eingetragene spätere Termine)**');
+  if (futureManualEvents.length === 0) {
+    overviewLines.push('- Keine späteren fixen oder manuell angelegten Termine vorhanden.');
+  } else {
+    for (const event of futureManualEvents) {
+      overviewLines.push(formatPlannerManualEvent(event));
+    }
+  }
+
+  overviewLines.push('');
+  overviewLines.push('➡️ Nächster Schritt: Karte prüfen und dann direkt über die Buttons Status, Aufstellung, Gegner-OPGG oder Hinweis bearbeiten.');
   if (futureManualEvents.length === 0) {
     overviewLines.push('- Keine späteren fixen oder manuell angelegten Termine vorhanden.');
   } else {
@@ -737,6 +830,16 @@ async function runSundayPlanner(client, options = {}) {
   const overviewMessages = splitLongMessage(overviewLines.join('\n'));
   for (const message of overviewMessages) {
     await adminChannel.send(message);
+  }
+
+  if (currentWeekManualEvents.length > 0) {
+    await adminChannel.send('**🚨 Bereits eingetragene Termine in dieser Woche – Karten**');
+
+    for (const event of currentWeekManualEvents) {
+      // Falls schon eine Admin-Karte existiert, wird sie aktualisiert.
+      // Falls noch keine existiert, wird sie neu gepostet.
+      await upsertAdminCardMessage(adminChannel, event.id);
+    }
   }
 
   if (suggestions.length === 0) {
