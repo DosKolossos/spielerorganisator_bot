@@ -93,7 +93,7 @@ module.exports = {
     .addSubcommand(sub =>
       sub
         .setName('riot-setzen')
-        .setDescription('Speichert deinen Riot Game Name, Tag und die Region für OPGG.')
+        .setDescription('Speichert deinen Riot Game Name, Tag und optional die Region für OPGG.')
         .addStringOption(option =>
           option
             .setName('game_name')
@@ -109,8 +109,8 @@ module.exports = {
         .addStringOption(option => {
           option
             .setName('region')
-            .setDescription('Deine OPGG-Region')
-            .setRequired(true);
+            .setDescription('Deine OPGG-Region (optional, Standard: EUW)')
+            .setRequired(false);
 
           for (const choice of REGION_CHOICES) {
             option.addChoices(choice);
@@ -153,7 +153,8 @@ module.exports = {
     if (subcommand === 'riot-setzen') {
       const riotGameName = interaction.options.getString('game_name', true).trim();
       const riotTag = interaction.options.getString('tag', true).trim().replace(/^#/, '').toUpperCase();
-      const riotRegion = interaction.options.getString('region', true).trim().toLowerCase();
+      const riotRegionInput = interaction.options.getString('region');
+      const riotRegion = riotRegionInput ? riotRegionInput.trim().toLowerCase() : undefined;
 
       if (riotGameName.length < 2 || riotGameName.length > 32) {
         return interaction.reply({
