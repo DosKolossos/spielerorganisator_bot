@@ -5,7 +5,8 @@ const {
   GatewayIntentBits,
   REST,
   Routes,
-  Collection
+  Collection,
+  MessageFlags
 } = require('discord.js');
 const cron = require('node-cron');
 
