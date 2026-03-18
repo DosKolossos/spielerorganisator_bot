@@ -553,6 +553,50 @@ function splitLongMessage(text, maxLength = 1900) {
   return chunks;
 }
 
+function plannerEventTypeLabel(eventType) {
+  switch (eventType) {
+    case 'primeleague':
+      return 'PRM';
+    case 'scrim':
+      return 'Scrims';
+    case 'open':
+      return 'Offen';
+    case 'other':
+      return 'Sonstiges';
+    default:
+      return eventType || 'Unbekannt';
+  }
+}
+
+function plannerEventTimeLabel(event) {
+  const dateTime = event.scheduled_start_at || event.window_start_at;
+  if (!dateTime) return 'Zeit offen';
+
+  const time = dateTime.slice(11, 16);
+  return `${time} Uhr`;
+}
+
+function formatFutureManualEvent(event) {
+  const parts = [
+    `- ${formatDateLongDE(event.option_date)}`,
+    plannerEventTypeLabel(event.event_type),
+    event.title
+  ];
+
+  const timeLabel = plannerEventTimeLabel(event);
+  if (timeLabel !== 'Zeit offen') {
+    parts.push(timeLabel);
+  }
+
+  let line = parts.join(' • ');
+
+  if (event.note && event.note.trim()) {
+    line += ` • Hinweis: ${event.note.trim()}`;
+  }
+
+  return line;
+}
+
 async function runSundayPlanner(client, options = {}) {
   const { force = false } = options;
   const runKey = getRunKey();
@@ -643,6 +687,22 @@ async function runSundayPlanner(client, options = {}) {
     suggestions.push({ ...suggestion, calendarId });
   }
 
+  const futureManualEvents = db.prepare(`
+  SELECT
+    id,
+    title,
+    event_type,
+    status,
+    option_date,
+    window_start_at,
+    scheduled_start_at,
+    note
+  FROM team_calendar_events
+  WHERE is_auto_generated = 0
+    AND option_date > ?
+  ORDER BY option_date ASC, COALESCE(scheduled_start_at, window_start_at) ASC, id ASC
+`).all(addDaysIso(berlinToday, 6));
+
   const overviewLines = [];
   overviewLines.push('📋 **Wochenplanung – Rohübersicht**');
   overviewLines.push(`Erstellt am: **${new Date().toLocaleString('de-DE', { timeZone: 'Europe/Berlin' })}**`);
@@ -658,8 +718,17 @@ async function runSundayPlanner(client, options = {}) {
   }
 
   overviewLines.push('');
-  overviewLines.push('➡️ Nächster Schritt: Karte prüfen und dann direkt über die Buttons Status, Aufstellung, Gegner-OPGG oder Hinweis bearbeiten.');
+  overviewLines.push('**Vormerkungen (bereits eingetragene spätere Termine)**');
+  if (futureManualEvents.length === 0) {
+    overviewLines.push('- Keine späteren fixen oder manuell angelegten Termine vorhanden.');
+  } else {
+    for (const event of futureManualEvents) {
+      overviewLines.push(formatFutureManualEvent(event));
+    }
+  }
 
+  overviewLines.push('');
+  overviewLines.push('➡️ Nächster Schritt: Karte prüfen und dann direkt über die Buttons Status, Aufstellung, Gegner-OPGG oder Hinweis bearbeiten.');
   const adminChannel = await client.channels.fetch(process.env.ADMIN_CHANNEL_ID);
   if (!adminChannel || !adminChannel.isTextBased()) {
     return { skipped: false, sent: false, reason: 'invalid_admin_channel' };

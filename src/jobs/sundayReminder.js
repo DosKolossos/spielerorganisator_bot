@@ -45,7 +45,8 @@ async function runSundayReminder(client, options = {}) {
         `⏰ **Erinnerung für heute**\n` +
         `Bitte pflege bis **19:59 Uhr** deine:\n` +
         `- Abwesenheiten\n` +
-        `- wiederkehrenden Regeln\n\n` +
+        `- wiederkehrenden Regeln\n` +
+        `- bereits bekannte feste Termine / Vormerkungen\n\n` +
         `Der Wochenlauf startet um **20:00 Uhr**.`
       );
       sent++;
