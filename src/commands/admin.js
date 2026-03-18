@@ -1,4 +1,4 @@
-const { SlashCommandBuilder } = require('discord.js');
+const { SlashCommandBuilder, MessageFlags } = require('discord.js');
 const { runSundayReminder } = require('../jobs/sundayReminder');
 const { runSundayPlanner } = require('../jobs/sundayPlanner');
 const { requireAdmin } = require('../utils/permissions');
