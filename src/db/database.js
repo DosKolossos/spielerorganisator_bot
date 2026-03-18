@@ -54,12 +54,6 @@ db.exec(`
     username TEXT NOT NULL,
     global_name TEXT,
     alias TEXT,
-    riot_game_name TEXT,
-    riot_tag TEXT,
-    riot_region TEXT,
-    is_archived INTEGER NOT NULL DEFAULT 0,
-    archived_at TEXT,
-    archived_by_discord_user_id TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
@@ -73,10 +67,6 @@ db.exec(`
     start_at TEXT NOT NULL,
     end_at TEXT NOT NULL,
     reason TEXT,
-    approval_status TEXT NOT NULL DEFAULT 'approved',
-    reviewed_by_discord_user_id TEXT,
-    reviewed_at TEXT,
-    review_note TEXT,
     created_by_discord_user_id TEXT NOT NULL,
     updated_by_discord_user_id TEXT NOT NULL,
     created_at TEXT NOT NULL,
@@ -96,29 +86,9 @@ db.exec(`
     recurrence_type TEXT NOT NULL DEFAULT 'weekly',
     anchor_date TEXT,
     active INTEGER NOT NULL DEFAULT 1,
-    suspended_from TEXT,
-    suspended_until TEXT,
-    suspension_note TEXT,
-    suspended_by_discord_user_id TEXT,
-    suspended_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY(player_id) REFERENCES players(id)
-  );
-`);
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS admin_audit_log (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    actor_discord_user_id TEXT NOT NULL,
-    actor_label TEXT NOT NULL,
-    target_discord_user_id TEXT,
-    target_label TEXT,
-    entity_type TEXT NOT NULL,
-    entity_id INTEGER,
-    action_type TEXT NOT NULL,
-    details TEXT,
-    created_at TEXT NOT NULL
   );
 `);
 
@@ -135,7 +105,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS team_calendar_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT NOT NULL,
-    event_type TEXT NOT NULL DEFAULT 'open',
+    event_type TEXT NOT NULL DEFAULT 'scrim',
     status TEXT NOT NULL DEFAULT 'pending',
 
     option_date TEXT NOT NULL,
@@ -150,8 +120,6 @@ db.exec(`
     note TEXT,
     suggestion_key TEXT,
     is_auto_generated INTEGER NOT NULL DEFAULT 0,
-    admin_channel_id TEXT,
-    admin_message_id TEXT,
 
     start_at TEXT,
     end_at TEXT,
@@ -170,59 +138,18 @@ db.exec(`
     event_id INTEGER NOT NULL,
     role_label TEXT NOT NULL,
     player_label TEXT NOT NULL,
-    player_id INTEGER,
     note TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE(event_id, role_label),
-    FOREIGN KEY(event_id) REFERENCES team_calendar_events(id),
-    FOREIGN KEY(player_id) REFERENCES players(id)
+    FOREIGN KEY(event_id) REFERENCES team_calendar_events(id)
   );
 `);
 
-function migratePlayers() {
-  if (!tableExists('players')) return;
-
-  addColumnIfMissing('players', 'riot_game_name', 'TEXT');
-  addColumnIfMissing('players', 'riot_tag', 'TEXT');
-  addColumnIfMissing('players', 'riot_region', 'TEXT');
-  addColumnIfMissing('players', 'is_archived', 'INTEGER NOT NULL DEFAULT 0');
-  addColumnIfMissing('players', 'archived_at', 'TEXT');
-  addColumnIfMissing('players', 'archived_by_discord_user_id', 'TEXT');
-
-  db.exec(`
-    UPDATE players
-    SET riot_region = 'euw'
-    WHERE riot_region IS NULL OR trim(riot_region) = '';
-  `);
-}
-
-function migrateAvailabilityEntries() {
-  if (!tableExists('availability_entries')) return;
-
-  addColumnIfMissing('availability_entries', 'approval_status', `TEXT NOT NULL DEFAULT 'approved'`);
-  addColumnIfMissing('availability_entries', 'reviewed_by_discord_user_id', `TEXT`);
-  addColumnIfMissing('availability_entries', 'reviewed_at', `TEXT`);
-  addColumnIfMissing('availability_entries', 'review_note', `TEXT`);
-
-  db.exec(`
-    UPDATE availability_entries
-    SET approval_status = 'approved'
-    WHERE approval_status IS NULL OR trim(approval_status) = '';
-  `);
-}
-
 function migrateAvailabilityRules() {
-  if (!tableExists('availability_rules')) return;
-
   addColumnIfMissing('availability_rules', 'recurrence_type', `TEXT NOT NULL DEFAULT 'weekly'`);
   addColumnIfMissing('availability_rules', 'anchor_date', `TEXT`);
   addColumnIfMissing('availability_rules', 'active', `INTEGER NOT NULL DEFAULT 1`);
-  addColumnIfMissing('availability_rules', 'suspended_from', `TEXT`);
-  addColumnIfMissing('availability_rules', 'suspended_until', `TEXT`);
-  addColumnIfMissing('availability_rules', 'suspension_note', `TEXT`);
-  addColumnIfMissing('availability_rules', 'suspended_by_discord_user_id', `TEXT`);
-  addColumnIfMissing('availability_rules', 'suspended_at', `TEXT`);
 }
 
 function migrateTeamCalendarEvents() {
@@ -240,8 +167,6 @@ function migrateTeamCalendarEvents() {
   addColumnIfMissing('team_calendar_events', 'note', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'suggestion_key', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'is_auto_generated', `INTEGER NOT NULL DEFAULT 0`);
-  addColumnIfMissing('team_calendar_events', 'admin_channel_id', `TEXT`);
-  addColumnIfMissing('team_calendar_events', 'admin_message_id', `TEXT`);
 
   addColumnIfMissing('team_calendar_events', 'start_at', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'end_at', `TEXT`);
@@ -288,12 +213,6 @@ function migrateTeamCalendarEvents() {
       OR window_end_at IS NULL OR window_end_at = ''
       OR meeting_scrim_at IS NULL OR meeting_scrim_at = ''
       OR meeting_primeleague_at IS NULL OR meeting_primeleague_at = '';
-  `);
-
-  db.exec(`
-    UPDATE team_calendar_events
-    SET event_type = 'open'
-    WHERE event_type IS NULL OR trim(event_type) = '' OR event_type = 'scrim';
   `);
 }
 
@@ -349,79 +268,9 @@ function dedupeSuggestionKeys() {
   tx(duplicateGroups);
 }
 
-function migrateTeamCalendarAssignments() {
-  if (!tableExists('team_calendar_assignments')) return;
-
-  addColumnIfMissing('team_calendar_assignments', 'player_id', `INTEGER`);
-
-  if (!columnExists('team_calendar_assignments', 'player_label')) return;
-
-  db.exec(`
-    UPDATE team_calendar_assignments
-    SET player_id = (
-      SELECT p.id
-      FROM players p
-      WHERE p.alias IS NOT NULL
-        AND lower(trim(p.alias)) = lower(trim(team_calendar_assignments.player_label))
-      ORDER BY p.id ASC
-      LIMIT 1
-    )
-    WHERE player_id IS NULL
-      AND player_label IS NOT NULL;
-  `);
-
-  db.exec(`
-    UPDATE team_calendar_assignments
-    SET player_id = (
-      SELECT p.id
-      FROM players p
-      WHERE p.global_name IS NOT NULL
-        AND lower(trim(p.global_name)) = lower(trim(team_calendar_assignments.player_label))
-      ORDER BY p.id ASC
-      LIMIT 1
-    )
-    WHERE player_id IS NULL
-      AND player_label IS NOT NULL;
-  `);
-
-  db.exec(`
-    UPDATE team_calendar_assignments
-    SET player_id = (
-      SELECT p.id
-      FROM players p
-      WHERE lower(trim(p.username)) = lower(trim(team_calendar_assignments.player_label))
-      ORDER BY p.id ASC
-      LIMIT 1
-    )
-    WHERE player_id IS NULL
-      AND player_label IS NOT NULL;
-  `);
-
-  db.exec(`
-    UPDATE team_calendar_assignments
-    SET player_id = (
-      SELECT p.id
-      FROM players p
-      WHERE p.discord_user_id = team_calendar_assignments.player_label
-      ORDER BY p.id ASC
-      LIMIT 1
-    )
-    WHERE player_id IS NULL
-      AND player_label IS NOT NULL;
-  `);
-}
-
-migratePlayers();
-migrateAvailabilityEntries();
 migrateAvailabilityRules();
 migrateTeamCalendarEvents();
 dedupeSuggestionKeys();
-migrateTeamCalendarAssignments();
-
-db.exec(`
-  CREATE INDEX IF NOT EXISTS idx_players_archived
-  ON players (is_archived);
-`);
 
 db.exec(`
   CREATE INDEX IF NOT EXISTS idx_availability_entries_player_time
@@ -429,18 +278,8 @@ db.exec(`
 `);
 
 db.exec(`
-  CREATE INDEX IF NOT EXISTS idx_availability_entries_status
-  ON availability_entries (approval_status, start_at, end_at);
-`);
-
-db.exec(`
   CREATE INDEX IF NOT EXISTS idx_availability_rules_player_active
   ON availability_rules (player_id, active);
-`);
-
-db.exec(`
-  CREATE INDEX IF NOT EXISTS idx_admin_audit_log_created
-  ON admin_audit_log (created_at DESC);
 `);
 
 db.exec(`
@@ -457,11 +296,6 @@ db.exec(`
 db.exec(`
   CREATE INDEX IF NOT EXISTS idx_team_calendar_assignments_event
   ON team_calendar_assignments (event_id);
-`);
-
-db.exec(`
-  CREATE INDEX IF NOT EXISTS idx_team_calendar_assignments_player
-  ON team_calendar_assignments (player_id);
 `);
 
 module.exports = db;
