@@ -152,10 +152,6 @@ db.exec(`
     is_auto_generated INTEGER NOT NULL DEFAULT 0,
     admin_channel_id TEXT,
     admin_message_id TEXT,
-    public_channel_id TEXT,
-    public_message_id TEXT,
-    meeting_scrim_manual INTEGER NOT NULL DEFAULT 0,
-    meeting_primeleague_manual INTEGER NOT NULL DEFAULT 0,
 
     start_at TEXT,
     end_at TEXT,
@@ -246,10 +242,6 @@ function migrateTeamCalendarEvents() {
   addColumnIfMissing('team_calendar_events', 'is_auto_generated', `INTEGER NOT NULL DEFAULT 0`);
   addColumnIfMissing('team_calendar_events', 'admin_channel_id', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'admin_message_id', `TEXT`);
-  addColumnIfMissing('team_calendar_events', 'public_channel_id', `TEXT`);
-  addColumnIfMissing('team_calendar_events', 'public_message_id', `TEXT`);
-  addColumnIfMissing('team_calendar_events', 'meeting_scrim_manual', `INTEGER NOT NULL DEFAULT 0`);
-  addColumnIfMissing('team_calendar_events', 'meeting_primeleague_manual', `INTEGER NOT NULL DEFAULT 0`);
 
   addColumnIfMissing('team_calendar_events', 'start_at', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'end_at', `TEXT`);
@@ -288,36 +280,14 @@ function migrateTeamCalendarEvents() {
           END
         ELSE scheduled_end_at
       END,
-      meeting_scrim_at = COALESCE(
-        NULLIF(meeting_scrim_at, ''),
-        CASE
-          WHEN scheduled_start_at IS NOT NULL AND scheduled_start_at <> ''
-            THEN strftime('%Y-%m-%d %H:%M', datetime(scheduled_start_at, '-15 minutes'))
-          ELSE meeting_at
-        END
-      ),
-      meeting_primeleague_at = COALESCE(
-        NULLIF(meeting_primeleague_at, ''),
-        CASE
-          WHEN scheduled_start_at IS NOT NULL AND scheduled_start_at <> ''
-            THEN strftime('%Y-%m-%d %H:%M', datetime(scheduled_start_at, '-30 minutes'))
-          ELSE meeting_at
-        END
-      )
+      meeting_scrim_at = COALESCE(NULLIF(meeting_scrim_at, ''), meeting_at),
+      meeting_primeleague_at = COALESCE(NULLIF(meeting_primeleague_at, ''), meeting_at)
     WHERE
       option_date IS NULL OR option_date = ''
       OR window_start_at IS NULL OR window_start_at = ''
       OR window_end_at IS NULL OR window_end_at = ''
       OR meeting_scrim_at IS NULL OR meeting_scrim_at = ''
       OR meeting_primeleague_at IS NULL OR meeting_primeleague_at = '';
-  `);
-
-  db.exec(`
-    UPDATE team_calendar_events
-    SET meeting_scrim_manual = COALESCE(meeting_scrim_manual, 0),
-        meeting_primeleague_manual = COALESCE(meeting_primeleague_manual, 0)
-    WHERE meeting_scrim_manual IS NULL
-       OR meeting_primeleague_manual IS NULL;
   `);
 
   db.exec(`

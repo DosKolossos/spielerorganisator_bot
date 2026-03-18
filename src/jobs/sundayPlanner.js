@@ -1,5 +1,5 @@
 const db = require('../db/database');
-const { upsertAdminCardMessage, upsertPublicCardMessage, getPlayerCalendarChannelId } = require('../commands/spieltermin');
+const { upsertAdminCardMessage } = require('../commands/spieltermin');
 
 const SLOT_CONFIG = {
   weekdayStart: '17:00',
@@ -427,8 +427,7 @@ function buildDailySuggestion(players, explicitEntries, rules, dateStr) {
 
 function syncSuggestionEvent(suggestion) {
   const now = new Date().toISOString();
-  const defaultMeetingScrimAt = `${suggestion.date} ${addMinutesToTime(suggestion.earliestStart, -15)}`;
-  const defaultMeetingPrimeleagueAt = `${suggestion.date} ${addMinutesToTime(suggestion.earliestStart, -30)}`;
+  const defaultMeetingAt = `${suggestion.date} ${addMinutesToTime(suggestion.earliestStart, -15)}`;
 
   const existing = db.prepare(`
     SELECT *
@@ -465,7 +464,7 @@ function syncSuggestionEvent(suggestion) {
       )
       VALUES (
         ?, 'open', 'pending',
-        ?, ?, ?, NULL, NULL, ?, ?, 
+        ?, ?, ?, NULL, NULL, NULL, NULL,
         ?, NULL, NULL, ?, 1,
         ?, ?, ?,
         'system', 'system', ?, ?
@@ -475,13 +474,11 @@ function syncSuggestionEvent(suggestion) {
       suggestion.date,
       suggestion.windowStartAt,
       suggestion.windowEndAt,
-      defaultMeetingScrimAt,
-      defaultMeetingPrimeleagueAt,
       suggestion.availablePlayersText,
       suggestion.suggestionKey,
       suggestion.windowStartAt,
       suggestion.windowEndAt,
-      defaultMeetingScrimAt,
+      defaultMeetingAt,
       now,
       now
     );
@@ -507,14 +504,8 @@ function syncSuggestionEvent(suggestion) {
         start_at = ?,
         end_at = ?,
         meeting_at = COALESCE(meeting_at, ?),
-        meeting_scrim_at = CASE
-          WHEN COALESCE(meeting_scrim_manual, 0) = 1 THEN meeting_scrim_at
-          ELSE COALESCE(meeting_scrim_at, ?)
-        END,
-        meeting_primeleague_at = CASE
-          WHEN COALESCE(meeting_primeleague_manual, 0) = 1 THEN meeting_primeleague_at
-          ELSE COALESCE(meeting_primeleague_at, ?)
-        END,
+        meeting_scrim_at = COALESCE(meeting_scrim_at, ?),
+        meeting_primeleague_at = COALESCE(meeting_primeleague_at, ?),
         is_auto_generated = 1,
         updated_by_discord_user_id = 'system',
         updated_at = ?
@@ -674,19 +665,6 @@ async function runSundayPlanner(client, options = {}) {
     return { skipped: false, sent: false, reason: 'invalid_admin_channel' };
   }
 
-  let publicChannel = null;
-  const publicChannelId = getPlayerCalendarChannelId();
-  if (publicChannelId) {
-    try {
-      const fetchedPublicChannel = await client.channels.fetch(publicChannelId);
-      if (fetchedPublicChannel && fetchedPublicChannel.isTextBased()) {
-        publicChannel = fetchedPublicChannel;
-      }
-    } catch (error) {
-      console.warn('[Planner] Spielerkalender-Kanal konnte nicht geladen werden:', error);
-    }
-  }
-
   const overviewMessages = splitLongMessage(overviewLines.join('\n'));
   for (const message of overviewMessages) {
     await adminChannel.send(message);
@@ -697,19 +675,15 @@ async function runSundayPlanner(client, options = {}) {
   } else {
     for (const item of suggestions) {
       await upsertAdminCardMessage(adminChannel, item.calendarId);
-      if (publicChannel) {
-        await upsertPublicCardMessage(publicChannel, item.calendarId);
-      }
     }
   }
 
   return {
     skipped: false,
     sent: true,
-    messages: overviewMessages.length + suggestions.length + (publicChannel ? suggestions.length : 0),
+    messages: overviewMessages.length + suggestions.length,
     absenceCount: mergedAbsenceItems.length,
-    suggestionCount: suggestions.length,
-    mirroredToPlayerCalendar: Boolean(publicChannel)
+    suggestionCount: suggestions.length
   };
 }
 

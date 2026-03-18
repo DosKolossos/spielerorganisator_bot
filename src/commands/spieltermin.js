@@ -7,8 +7,7 @@ const {
   StringSelectMenuBuilder,
   ModalBuilder,
   TextInputBuilder,
-  TextInputStyle,
-  MessageFlags
+  TextInputStyle
 } = require('discord.js');
 const db = require('../db/database');
 const { isAdminInteraction } = require('../utils/permissions');
@@ -136,55 +135,6 @@ function eventTypeLabel(type) {
     default:
       return 'Sonstiges';
   }
-}
-
-function calculateDefaultMeetingAt(scheduledStartAt, eventType) {
-  if (!scheduledStartAt) return null;
-  const dateStr = scheduledStartAt.slice(0, 10);
-  const timeStr = scheduledStartAt.slice(11, 16);
-  const offset = eventType === 'primeleague' ? -30 : -15;
-  return `${dateStr} ${addMinutesToTime(timeStr, offset)}`;
-}
-
-function getEffectiveMeetingScrimAt(event) {
-  return event.meeting_scrim_at || calculateDefaultMeetingAt(event.scheduled_start_at, 'scrim');
-}
-
-function getEffectiveMeetingPrimeleagueAt(event) {
-  return event.meeting_primeleague_at || calculateDefaultMeetingAt(event.scheduled_start_at, 'primeleague');
-}
-
-function getDisplayedMeetingText(event) {
-  const scrimMeetingAt = getEffectiveMeetingScrimAt(event);
-  const primeMeetingAt = getEffectiveMeetingPrimeleagueAt(event);
-
-  if (event.event_type === 'scrim') {
-    return scrimMeetingAt ? formatDateTimeDE(scrimMeetingAt) : '-';
-  }
-
-  if (event.event_type === 'primeleague') {
-    return primeMeetingAt ? formatDateTimeDE(primeMeetingAt) : '-';
-  }
-
-  if (scrimMeetingAt || primeMeetingAt) {
-    return `Scrim: ${scrimMeetingAt ? formatDateTimeDE(scrimMeetingAt) : '-'}\nPrime League: ${primeMeetingAt ? formatDateTimeDE(primeMeetingAt) : '-'}`;
-  }
-
-  return '-';
-}
-
-function moveDateTimeToDate(dateTime, nextDate) {
-  if (!dateTime) return null;
-  return `${nextDate} ${dateTime.slice(11, 16)}`;
-}
-
-function getPlayerCalendarChannelId() {
-  return (
-    process.env.PLAYER_CALENDAR_CHANNEL_ID ||
-    process.env.SPIELERKALENDER_CHANNEL_ID ||
-    process.env.TEAM_CALENDAR_CHANNEL_ID ||
-    null
-  );
 }
 
 function playerDisplay(row) {
@@ -557,19 +507,9 @@ function buildEventActionRows(eventId) {
         .setLabel('Typ')
         .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
-        .setCustomId(`spieltermin:fixedtime:${eventId}`)
-        .setLabel('Fixe Zeit')
-        .setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder()
-        .setCustomId(`spieltermin:meeting:${eventId}`)
-        .setLabel('Treffpunkt')
-        .setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder()
         .setCustomId(`spieltermin:lineup:${eventId}`)
         .setLabel('Aufstellung')
-        .setStyle(ButtonStyle.Primary)
-    ),
-    new ActionRowBuilder().addComponents(
+        .setStyle(ButtonStyle.Primary),
       new ButtonBuilder()
         .setCustomId(`spieltermin:enemyopgg:${eventId}`)
         .setLabel('Gegner OPGG')
@@ -577,7 +517,9 @@ function buildEventActionRows(eventId) {
       new ButtonBuilder()
         .setCustomId(`spieltermin:teamopgg:${eventId}`)
         .setLabel('Team OPGG')
-        .setStyle(ButtonStyle.Success),
+        .setStyle(ButtonStyle.Success)
+    ),
+    new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`spieltermin:note:${eventId}`)
         .setLabel('Hinweis')
@@ -703,8 +645,7 @@ function buildLineupManagerPayload(eventId, messageId, infoText = null) {
   };
 }
 
-function buildEventCardPayload(eventId, options = {}) {
-  const { publicView = false } = options;
+function buildEventCardPayload(eventId) {
   const event = getEventById(eventId);
   if (!event) return null;
 
@@ -713,8 +654,6 @@ function buildEventCardPayload(eventId, options = {}) {
     event.scheduled_start_at && event.scheduled_end_at
       ? `${formatDateTimeDE(event.scheduled_start_at)} → ${formatDateTimeDE(event.scheduled_end_at)}`
       : '-';
-
-  const meetingText = getDisplayedMeetingText(event);
 
   const teamOpgg = buildTeamOpggInfo(assignments);
   const teamOpggField = teamOpgg.ok
@@ -752,11 +691,6 @@ function buildEventCardPayload(eventId, options = {}) {
         inline: false
       },
       {
-        name: 'Treffpunkt',
-        value: meetingText,
-        inline: false
-      },
-      {
         name: 'Verfügbare Spieler',
         value: truncateField(event.available_players_text ?? '-'),
         inline: false
@@ -783,20 +717,18 @@ function buildEventCardPayload(eventId, options = {}) {
       }
     )
     .setFooter({
-      text: publicView
-        ? 'Scrim: Treffpunkt standardmäßig 15 Min vorher • Prime League: 30 Min vorher'
-        : 'Buttons im Admin-Kanal: Status, Typ, Fixe Zeit, Treffpunkt, Aufstellung, OPGG, Hinweis'
+      text: `Treffpunkt bei Terminstart: 15 Min vorher (Scrim) / 30 Min vorher (Prime League)`
     })
     .setTimestamp(new Date(event.updated_at || event.created_at || Date.now()));
 
   return {
     embeds: [embed],
-    components: publicView ? [] : buildEventActionRows(event.id)
+    components: buildEventActionRows(event.id)
   };
 }
 
-async function refreshSpecificCard(channel, messageId, eventId, options = {}) {
-  const payload = buildEventCardPayload(eventId, options);
+async function refreshSpecificCard(channel, messageId, eventId) {
+  const payload = buildEventCardPayload(eventId);
   if (!payload) return false;
 
   try {
@@ -812,40 +744,25 @@ async function refreshSpecificCard(channel, messageId, eventId, options = {}) {
 
 async function refreshStoredEventCard(client, eventId) {
   const event = getEventById(eventId);
-  if (!event) return { admin: false, public: false };
-
-  const result = { admin: false, public: false };
-
-  if (event.admin_channel_id && event.admin_message_id) {
-    try {
-      const adminChannel = await client.channels.fetch(event.admin_channel_id);
-      if (adminChannel && adminChannel.isTextBased()) {
-        result.admin = await refreshSpecificCard(adminChannel, event.admin_message_id, eventId, { publicView: false });
-      }
-    } catch (error) {
-      console.error(`[Spieltermin] Konnte Admin-Karte für Event #${eventId} nicht laden:`, error);
-    }
+  if (!event?.admin_channel_id || !event?.admin_message_id) {
+    return false;
   }
 
-  if (event.public_channel_id && event.public_message_id) {
-    try {
-      const publicChannel = await client.channels.fetch(event.public_channel_id);
-      if (publicChannel && publicChannel.isTextBased()) {
-        result.public = await refreshSpecificCard(publicChannel, event.public_message_id, eventId, { publicView: true });
-      }
-    } catch (error) {
-      console.error(`[Spieltermin] Konnte Spielerkalender-Karte für Event #${eventId} nicht laden:`, error);
-    }
+  try {
+    const channel = await client.channels.fetch(event.admin_channel_id);
+    if (!channel || !channel.isTextBased()) return false;
+    return await refreshSpecificCard(channel, event.admin_message_id, eventId);
+  } catch (error) {
+    console.error(`[Spieltermin] Konnte gespeicherte Karte für Event #${eventId} nicht laden:`, error);
+    return false;
   }
-
-  return result;
 }
 
 async function upsertAdminCardMessage(channel, eventId) {
   const event = getEventById(eventId);
   if (!event) return null;
 
-  const payload = buildEventCardPayload(eventId, { publicView: false });
+  const payload = buildEventCardPayload(eventId);
   if (!payload) return null;
 
   if (event.admin_message_id) {
@@ -873,45 +790,6 @@ async function upsertAdminCardMessage(channel, eventId) {
     UPDATE team_calendar_events
     SET admin_channel_id = ?,
         admin_message_id = ?,
-        updated_at = ?
-    WHERE id = ?
-  `).run(channel.id, sentMessage.id, new Date().toISOString(), eventId);
-
-  return sentMessage;
-}
-
-async function upsertPublicCardMessage(channel, eventId) {
-  const event = getEventById(eventId);
-  if (!event) return null;
-
-  const payload = buildEventCardPayload(eventId, { publicView: true });
-  if (!payload) return null;
-
-  if (event.public_message_id) {
-    try {
-      const existingMessage = await channel.messages.fetch(event.public_message_id);
-      if (existingMessage) {
-        await existingMessage.edit(payload);
-        if (event.public_channel_id !== channel.id) {
-          db.prepare(`
-            UPDATE team_calendar_events
-            SET public_channel_id = ?, updated_at = ?
-            WHERE id = ?
-          `).run(channel.id, new Date().toISOString(), eventId);
-        }
-        return existingMessage;
-      }
-    } catch (error) {
-      console.warn(`[Spieltermin] Gespiegelte Spielerkalender-Nachricht für Event #${eventId} nicht gefunden, sende neu.`);
-    }
-  }
-
-  const sentMessage = await channel.send(payload);
-
-  db.prepare(`
-    UPDATE team_calendar_events
-    SET public_channel_id = ?,
-        public_message_id = ?,
         updated_at = ?
     WHERE id = ?
   `).run(channel.id, sentMessage.id, new Date().toISOString(), eventId);
@@ -970,54 +848,6 @@ async function handleButtonInteraction(interaction, parts) {
       ...buildLineupManagerPayload(eventId, messageId),
       flags: MessageFlags.Ephemeral
     });
-  }
-
-  if (action === 'fixedtime') {
-    const modal = new ModalBuilder()
-      .setCustomId(`spieltermin:fixedtimemodal:${eventId}:${messageId}`)
-      .setTitle(`Fixe Zeit – #${eventId}`);
-
-    const input = new TextInputBuilder()
-      .setCustomId('fixed_time')
-      .setLabel('Fixe Startzeit (HH:MM oder - zum Löschen)')
-      .setStyle(TextInputStyle.Short)
-      .setRequired(false)
-      .setPlaceholder(event.scheduled_start_at ? event.scheduled_start_at.slice(11, 16) : 'z. B. 19:00');
-
-    if (event.scheduled_start_at) input.setValue(event.scheduled_start_at.slice(11, 16));
-
-    modal.addComponents(new ActionRowBuilder().addComponents(input));
-    return interaction.showModal(modal);
-  }
-
-  if (action === 'meeting') {
-    const modal = new ModalBuilder()
-      .setCustomId(`spieltermin:meetingmodal:${eventId}:${messageId}`)
-      .setTitle(`Treffpunkt – #${eventId}`);
-
-    const scrimInput = new TextInputBuilder()
-      .setCustomId('meeting_scrim_time')
-      .setLabel('Scrim-Treffpunkt (HH:MM / - zurücksetzen)')
-      .setStyle(TextInputStyle.Short)
-      .setRequired(false)
-      .setPlaceholder(getEffectiveMeetingScrimAt(event)?.slice(11, 16) ?? 'Standard: 15 Min vorher');
-
-    if (event.meeting_scrim_at) scrimInput.setValue(event.meeting_scrim_at.slice(11, 16));
-
-    const primeInput = new TextInputBuilder()
-      .setCustomId('meeting_primeleague_time')
-      .setLabel('Prime-League-Treffpunkt (HH:MM / - zurücksetzen)')
-      .setStyle(TextInputStyle.Short)
-      .setRequired(false)
-      .setPlaceholder(getEffectiveMeetingPrimeleagueAt(event)?.slice(11, 16) ?? 'Standard: 30 Min vorher');
-
-    if (event.meeting_primeleague_at) primeInput.setValue(event.meeting_primeleague_at.slice(11, 16));
-
-    modal.addComponents(
-      new ActionRowBuilder().addComponents(scrimInput),
-      new ActionRowBuilder().addComponents(primeInput)
-    );
-    return interaction.showModal(modal);
   }
 
   if (action === 'enemyopgg') {
@@ -1106,7 +936,7 @@ async function handleStringSelectInteraction(interaction, parts) {
       WHERE id = ?
     `).run(nextStatus, interaction.user.id, new Date().toISOString(), eventId);
 
-    await refreshStoredEventCard(interaction.client, eventId);
+    await refreshSpecificCard(interaction.channel, messageId, eventId);
 
     return interaction.update({
       content: `Status für **#${eventId}** wurde auf **${statusLabel(nextStatus)}** gesetzt.`,
@@ -1132,7 +962,7 @@ async function handleStringSelectInteraction(interaction, parts) {
       WHERE id = ?
     `).run(nextType, interaction.user.id, new Date().toISOString(), eventId);
 
-    await refreshStoredEventCard(interaction.client, eventId);
+    await refreshSpecificCard(interaction.channel, messageId, eventId);
 
     return interaction.update({
       content: `Typ für **#${eventId}** wurde auf **${eventTypeLabel(nextType)}** gesetzt.`,
@@ -1211,7 +1041,7 @@ async function handleStringSelectInteraction(interaction, parts) {
       infoText = `**${roleLabel}** wurde auf **${playerDisplay(player)}** gesetzt.`;
     }
 
-    await refreshStoredEventCard(interaction.client, eventId);
+    await refreshSpecificCard(interaction.channel, messageId, eventId);
 
     return interaction.update({
       ...buildLineupManagerPayload(eventId, messageId, infoText)
@@ -1239,145 +1069,6 @@ async function handleModalSubmitInteraction(interaction, parts) {
     });
   }
 
-  if (action === 'fixedtimemodal') {
-    const raw = interaction.fields.getTextInputValue('fixed_time').trim();
-    const now = new Date().toISOString();
-
-    let nextScheduledStartAt = event.scheduled_start_at;
-    let nextScheduledEndAt = event.scheduled_end_at;
-    let nextMeetingScrimAt = event.meeting_scrim_at;
-    let nextMeetingPrimeleagueAt = event.meeting_primeleague_at;
-
-    if (raw === '' || raw === '-') {
-      nextScheduledStartAt = null;
-      nextScheduledEndAt = null;
-
-      if (!event.meeting_scrim_manual) nextMeetingScrimAt = null;
-      if (!event.meeting_primeleague_manual) nextMeetingPrimeleagueAt = null;
-    } else {
-      if (!isValidTime(raw)) {
-        return interaction.reply({
-          content: 'Ungültige Uhrzeit. Bitte nutze HH:MM, z. B. 19:00.',
-          flags: MessageFlags.Ephemeral
-        });
-      }
-
-      nextScheduledStartAt = `${event.option_date} ${raw}`;
-      nextScheduledEndAt = `${event.option_date} ${addMinutesToTime(raw, 150)}`;
-
-      if (!event.meeting_scrim_manual) {
-        nextMeetingScrimAt = calculateDefaultMeetingAt(nextScheduledStartAt, 'scrim');
-      }
-
-      if (!event.meeting_primeleague_manual) {
-        nextMeetingPrimeleagueAt = calculateDefaultMeetingAt(nextScheduledStartAt, 'primeleague');
-      }
-    }
-
-    db.prepare(`
-      UPDATE team_calendar_events
-      SET scheduled_start_at = ?,
-          scheduled_end_at = ?,
-          meeting_scrim_at = ?,
-          meeting_primeleague_at = ?,
-          updated_by_discord_user_id = ?,
-          updated_at = ?
-      WHERE id = ?
-    `).run(
-      nextScheduledStartAt,
-      nextScheduledEndAt,
-      nextMeetingScrimAt,
-      nextMeetingPrimeleagueAt,
-      interaction.user.id,
-      now,
-      eventId
-    );
-
-    await refreshStoredEventCard(interaction.client, eventId);
-
-    return interaction.reply({
-      content: raw === '' || raw === '-'
-        ? `Fixe Zeit für **#${eventId}** wurde gelöscht.`
-        : `Fixe Zeit für **#${eventId}** wurde auf **${formatDateTimeDE(nextScheduledStartAt)}** gesetzt.`,
-      flags: MessageFlags.Ephemeral
-    });
-  }
-
-  if (action === 'meetingmodal') {
-    const scrimRaw = interaction.fields.getTextInputValue('meeting_scrim_time').trim();
-    const primeRaw = interaction.fields.getTextInputValue('meeting_primeleague_time').trim();
-
-    if (!event.scheduled_start_at) {
-      return interaction.reply({
-        content: 'Setze zuerst eine fixe Zeit, bevor du den Treffpunkt manuell anpasst.',
-        flags: MessageFlags.Ephemeral
-      });
-    }
-
-    let nextMeetingScrimAt = event.meeting_scrim_at;
-    let nextMeetingPrimeleagueAt = event.meeting_primeleague_at;
-    let nextMeetingScrimManual = event.meeting_scrim_manual;
-    let nextMeetingPrimeleagueManual = event.meeting_primeleague_manual;
-
-    if (scrimRaw !== '') {
-      if (scrimRaw === '-') {
-        nextMeetingScrimAt = calculateDefaultMeetingAt(event.scheduled_start_at, 'scrim');
-        nextMeetingScrimManual = 0;
-      } else {
-        if (!isValidTime(scrimRaw)) {
-          return interaction.reply({
-            content: 'Scrim-Treffpunkt ungültig. Bitte nutze HH:MM oder -.',
-            flags: MessageFlags.Ephemeral
-          });
-        }
-        nextMeetingScrimAt = `${event.option_date} ${scrimRaw}`;
-        nextMeetingScrimManual = 1;
-      }
-    }
-
-    if (primeRaw !== '') {
-      if (primeRaw === '-') {
-        nextMeetingPrimeleagueAt = calculateDefaultMeetingAt(event.scheduled_start_at, 'primeleague');
-        nextMeetingPrimeleagueManual = 0;
-      } else {
-        if (!isValidTime(primeRaw)) {
-          return interaction.reply({
-            content: 'Prime-League-Treffpunkt ungültig. Bitte nutze HH:MM oder -.',
-            flags: MessageFlags.Ephemeral
-          });
-        }
-        nextMeetingPrimeleagueAt = `${event.option_date} ${primeRaw}`;
-        nextMeetingPrimeleagueManual = 1;
-      }
-    }
-
-    db.prepare(`
-      UPDATE team_calendar_events
-      SET meeting_scrim_at = ?,
-          meeting_primeleague_at = ?,
-          meeting_scrim_manual = ?,
-          meeting_primeleague_manual = ?,
-          updated_by_discord_user_id = ?,
-          updated_at = ?
-      WHERE id = ?
-    `).run(
-      nextMeetingScrimAt,
-      nextMeetingPrimeleagueAt,
-      nextMeetingScrimManual,
-      nextMeetingPrimeleagueManual,
-      interaction.user.id,
-      new Date().toISOString(),
-      eventId
-    );
-
-    await refreshStoredEventCard(interaction.client, eventId);
-
-    return interaction.reply({
-      content: `Treffpunkt für **#${eventId}** wurde aktualisiert.`,
-      flags: MessageFlags.Ephemeral
-    });
-  }
-
   if (action === 'enemyopggmodal') {
     const raw = interaction.fields.getTextInputValue('opgg_url').trim();
     const nextValue = raw === '' || raw === '-' ? null : raw;
@@ -1390,7 +1081,7 @@ async function handleModalSubmitInteraction(interaction, parts) {
       WHERE id = ?
     `).run(nextValue, interaction.user.id, new Date().toISOString(), eventId);
 
-    await refreshStoredEventCard(interaction.client, eventId);
+    await refreshSpecificCard(interaction.channel, messageId, eventId);
 
     return interaction.reply({
       content: `Gegner-OPGG für **#${eventId}** wurde ${nextValue ? 'gespeichert' : 'gelöscht'}.`,
@@ -1410,7 +1101,7 @@ async function handleModalSubmitInteraction(interaction, parts) {
       WHERE id = ?
     `).run(nextValue, interaction.user.id, new Date().toISOString(), eventId);
 
-    await refreshStoredEventCard(interaction.client, eventId);
+    await refreshSpecificCard(interaction.channel, messageId, eventId);
 
     return interaction.reply({
       content: `Hinweis für **#${eventId}** wurde ${nextValue ? 'gespeichert' : 'gelöscht'}.`,
@@ -1711,8 +1402,6 @@ const command = {
       let nextScheduledEndAt = event.scheduled_end_at;
       let nextMeetingScrimAt = event.meeting_scrim_at;
       let nextMeetingPrimeleagueAt = event.meeting_primeleague_at;
-      let nextMeetingScrimManual = event.meeting_scrim_manual;
-      let nextMeetingPrimeleagueManual = event.meeting_primeleague_manual;
 
       if (datumInput) {
         const oldWindowStartTime = event.window_start_at.slice(11, 16);
@@ -1725,14 +1414,8 @@ const command = {
           const oldEndTime = event.scheduled_end_at.slice(11, 16);
           nextScheduledStartAt = `${nextDate} ${oldStartTime}`;
           nextScheduledEndAt = `${nextDate} ${oldEndTime}`;
-
-          nextMeetingScrimAt = event.meeting_scrim_manual
-            ? moveDateTimeToDate(event.meeting_scrim_at, nextDate)
-            : calculateDefaultMeetingAt(nextScheduledStartAt, 'scrim');
-
-          nextMeetingPrimeleagueAt = event.meeting_primeleague_manual
-            ? moveDateTimeToDate(event.meeting_primeleague_at, nextDate)
-            : calculateDefaultMeetingAt(nextScheduledStartAt, 'primeleague');
+          nextMeetingScrimAt = `${nextDate} ${addMinutesToTime(oldStartTime, -15)}`;
+          nextMeetingPrimeleagueAt = `${nextDate} ${addMinutesToTime(oldStartTime, -30)}`;
         }
       }
 
@@ -1740,12 +1423,8 @@ const command = {
         const endzeit = addMinutesToTime(startzeit, 150);
         nextScheduledStartAt = `${nextDate} ${startzeit}`;
         nextScheduledEndAt = `${nextDate} ${endzeit}`;
-        nextMeetingScrimAt = event.meeting_scrim_manual
-          ? moveDateTimeToDate(event.meeting_scrim_at, nextDate)
-          : calculateDefaultMeetingAt(nextScheduledStartAt, 'scrim');
-        nextMeetingPrimeleagueAt = event.meeting_primeleague_manual
-          ? moveDateTimeToDate(event.meeting_primeleague_at, nextDate)
-          : calculateDefaultMeetingAt(nextScheduledStartAt, 'primeleague');
+        nextMeetingScrimAt = `${nextDate} ${addMinutesToTime(startzeit, -15)}`;
+        nextMeetingPrimeleagueAt = `${nextDate} ${addMinutesToTime(startzeit, -30)}`;
       }
 
       const nextHint =
@@ -1919,12 +1598,10 @@ const command = {
 
   buildEventCardPayload,
   upsertAdminCardMessage,
-  upsertPublicCardMessage,
   refreshStoredEventCard,
   statusLabel,
   eventTypeLabel,
-  buildLineupText,
-  getPlayerCalendarChannelId
+  buildLineupText
 };
 
 module.exports = command;
