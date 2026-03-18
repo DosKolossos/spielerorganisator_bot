@@ -20,31 +20,31 @@ module.exports = {
     const subcommand = interaction.options.getSubcommand();
 
     if (subcommand === 'test-reminder') {
-      await interaction.reply({ content: 'Starte Reminder-Test …', ephemeral: true });
+      await interaction.reply({ content: 'Starte Reminder-Test …', flags: MessageFlags.Ephemeral });
       try {
         const result = await runSundayReminder(interaction.client, { force: true });
         await interaction.followUp({
           content: `Reminder-Test abgeschlossen.\n\`\`\`json\n${JSON.stringify(result, null, 2)}\n\`\`\``,
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       } catch (error) {
         console.error('[Admin] Reminder-Test fehlgeschlagen:', error);
-        await interaction.followUp({ content: 'Reminder-Test ist fehlgeschlagen. Schau in die Railway-Logs.', ephemeral: true });
+        await interaction.followUp({ content: 'Reminder-Test ist fehlgeschlagen. Schau in die Railway-Logs.', flags: MessageFlags.Ephemeral });
       }
       return;
     }
 
     if (subcommand === 'test-planner') {
-      await interaction.reply({ content: 'Starte Planner-Test …', ephemeral: true });
+      await interaction.reply({ content: 'Starte Planner-Test …', flags: MessageFlags.Ephemeral });
       try {
         const result = await runSundayPlanner(interaction.client, { force: true });
         await interaction.followUp({
           content: `Planner-Test abgeschlossen.\n\`\`\`json\n${JSON.stringify(result, null, 2)}\n\`\`\``,
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       } catch (error) {
         console.error('[Admin] Planner-Test fehlgeschlagen:', error);
-        await interaction.followUp({ content: 'Planner-Test ist fehlgeschlagen. Schau in die Railway-Logs.', ephemeral: true });
+        await interaction.followUp({ content: 'Planner-Test ist fehlgeschlagen. Schau in die Railway-Logs.', flags: MessageFlags.Ephemeral });
       }
     }
   }

@@ -180,7 +180,7 @@ const command = {
         LIMIT 25
       `).all(selfPlayer.id, `${today} 00:00`);
 
-      return interaction.reply({ content: listText(rows, '**Deine Abwesenheiten**'), ephemeral: true });
+      return interaction.reply({ content: listText(rows, '**Deine Abwesenheiten**'), flags: MessageFlags.Ephemeral });
     }
 
     if (subcommand === 'hinzufuegen') {
@@ -192,7 +192,7 @@ const command = {
         ganztag: interaction.options.getBoolean('ganztag') ?? false
       }, 'self');
 
-      if (payload.error) return interaction.reply({ content: payload.error, ephemeral: true });
+      if (payload.error) return interaction.reply({ content: payload.error, flags: MessageFlags.Ephemeral });
 
       const reason = interaction.options.getString('grund')?.trim() ?? null;
       const now = new Date().toISOString();
@@ -228,7 +228,7 @@ const command = {
           `Status: **${formatStatus(status)}**\n` +
           `Grund: **${reason ?? '-'}**` +
           (status === 'pending_admin' ? `\n\nDiese kurzfristige Abwesenheit muss noch von einem Coach bestätigt werden.` : ''),
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
 
@@ -241,7 +241,7 @@ const command = {
       `).get(id, selfPlayer.id);
 
       if (!existing) {
-        return interaction.reply({ content: 'Ich habe keine eigene Abwesenheit mit dieser ID gefunden.', ephemeral: true });
+        return interaction.reply({ content: 'Ich habe keine eigene Abwesenheit mit dieser ID gefunden.', flags: MessageFlags.Ephemeral });
       }
 
       const payload = resolveEntryPayload({
@@ -252,7 +252,7 @@ const command = {
         ganztag: interaction.options.getBoolean('ganztag') ?? (extractTimePart(existing.start_at) === '00:00' && extractTimePart(existing.end_at) === '23:59')
       }, 'self');
 
-      if (payload.error) return interaction.reply({ content: payload.error, ephemeral: true });
+      if (payload.error) return interaction.reply({ content: payload.error, flags: MessageFlags.Ephemeral });
 
       const reasonInput = interaction.options.getString('grund');
       const reason = reasonInput === null ? existing.reason : (reasonInput.trim() === '-' ? null : reasonInput.trim());
@@ -274,17 +274,17 @@ const command = {
           `Zeitraum: **${formatEntryRange(payload.startAt, payload.endAt)}**\n` +
           `Status: **${formatStatus(status)}**\n` +
           `Grund: **${reason ?? '-'}**`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
 
     if (subcommand === 'loeschen') {
       const id = interaction.options.getInteger('id', true);
       const existing = db.prepare(`SELECT id FROM availability_entries WHERE id = ? AND player_id = ? AND entry_type = 'absence'`).get(id, selfPlayer.id);
-      if (!existing) return interaction.reply({ content: 'Ich habe keine eigene Abwesenheit mit dieser ID gefunden.', ephemeral: true });
+      if (!existing) return interaction.reply({ content: 'Ich habe keine eigene Abwesenheit mit dieser ID gefunden.', flags: MessageFlags.Ephemeral });
 
       db.prepare(`DELETE FROM availability_entries WHERE id = ? AND player_id = ?`).run(id, selfPlayer.id);
-      return interaction.reply({ content: `Abwesenheit **#${id}** wurde gelöscht.`, ephemeral: true });
+      return interaction.reply({ content: `Abwesenheit **#${id}** wurde gelöscht.`, flags: MessageFlags.Ephemeral });
     }
 
     if (!(await requireAdmin(interaction))) return;
@@ -303,7 +303,7 @@ const command = {
 
         return interaction.reply({
           content: listText(rows, `**Abwesenheiten von ${playerDisplay(targetPlayer)}**`),
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -325,7 +325,7 @@ const command = {
             `**#${row.id}** • ${playerDisplay(row)} • ${formatEntryRange(row.start_at, row.end_at)} • Grund: ${row.reason ?? '-'}`
           ).join('\n');
 
-      return interaction.reply({ content: text, ephemeral: true });
+      return interaction.reply({ content: text, flags: MessageFlags.Ephemeral });
     }
 
     if (subcommand === 'admin-hinzufuegen') {
@@ -338,7 +338,7 @@ const command = {
         endzeitInput: interaction.options.getString('endzeit')?.trim() ?? null,
         ganztag: interaction.options.getBoolean('ganztag') ?? false
       }, 'admin');
-      if (payload.error) return interaction.reply({ content: payload.error, ephemeral: true });
+      if (payload.error) return interaction.reply({ content: payload.error, flags: MessageFlags.Ephemeral });
 
       const reason = interaction.options.getString('grund')?.trim() ?? null;
       const now = new Date().toISOString();
@@ -366,7 +366,7 @@ const command = {
 
       return interaction.reply({
         content: `Abwesenheit für **${playerDisplay(targetPlayer)}** gespeichert.\nID: **${result.lastInsertRowid}**`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
 
@@ -378,7 +378,7 @@ const command = {
       WHERE e.id = ? AND e.entry_type = 'absence'
     `).get(id);
 
-    if (!entry) return interaction.reply({ content: 'Keine Abwesenheit mit dieser ID gefunden.', ephemeral: true });
+    if (!entry) return interaction.reply({ content: 'Keine Abwesenheit mit dieser ID gefunden.', flags: MessageFlags.Ephemeral });
 
     if (subcommand === 'admin-bearbeiten') {
       const payload = resolveEntryPayload({
@@ -388,7 +388,7 @@ const command = {
         endzeitInput: interaction.options.getString('endzeit')?.trim() ?? extractTimePart(entry.end_at),
         ganztag: interaction.options.getBoolean('ganztag') ?? (extractTimePart(entry.start_at) === '00:00' && extractTimePart(entry.end_at) === '23:59')
       }, 'admin');
-      if (payload.error) return interaction.reply({ content: payload.error, ephemeral: true });
+      if (payload.error) return interaction.reply({ content: payload.error, flags: MessageFlags.Ephemeral });
 
       const reasonInput = interaction.options.getString('grund');
       const reason = reasonInput === null ? entry.reason : (reasonInput.trim() === '-' ? null : reasonInput.trim());
@@ -415,7 +415,7 @@ const command = {
         details: formatEntryRange(payload.startAt, payload.endAt)
       });
 
-      return interaction.reply({ content: `Abwesenheit **#${id}** wurde aktualisiert.`, ephemeral: true });
+      return interaction.reply({ content: `Abwesenheit **#${id}** wurde aktualisiert.`, flags: MessageFlags.Ephemeral });
     }
 
     if (subcommand === 'admin-loeschen') {
@@ -434,7 +434,7 @@ const command = {
         details: formatEntryRange(entry.start_at, entry.end_at)
       });
 
-      return interaction.reply({ content: `Abwesenheit **#${id}** wurde gelöscht.`, ephemeral: true });
+      return interaction.reply({ content: `Abwesenheit **#${id}** wurde gelöscht.`, flags: MessageFlags.Ephemeral });
     }
 
     if (subcommand === 'admin-genehmigen' || subcommand === 'admin-ablehnen') {
@@ -464,7 +464,7 @@ const command = {
 
       return interaction.reply({
         content: `Abwesenheit **#${id}** wurde ${approved ? 'genehmigt' : 'abgelehnt'}.`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
   }

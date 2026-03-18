@@ -359,7 +359,7 @@ const command = {
 
       return interaction.reply({
         content: rows.length ? `**Deine Regeln**\n${rows.map(buildRuleLine).join('\n')}` : 'Du hast aktuell keine Regeln gespeichert.',
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
 
@@ -372,7 +372,7 @@ const command = {
       const note = interaction.options.getString('notiz')?.trim() ?? null;
 
       const validated = validateRulePayload({ recurrenceType, ruleType, startdatumInput, tageInput, timeValue });
-      if (validated.error) return interaction.reply({ content: validated.error, ephemeral: true });
+      if (validated.error) return interaction.reply({ content: validated.error, flags: MessageFlags.Ephemeral });
 
       const id = await saveRule({ interaction, player: selfPlayer, recurrenceType, ruleType, anchorDate: validated.anchorDate, weekdayMask: validated.weekdayMask, timeValue, note });
       return interaction.reply({
@@ -382,14 +382,14 @@ const command = {
           `Wiederholung: **${recurrenceToLabel(recurrenceType, validated.weekdayMask, validated.anchorDate)}**\n` +
           `Regel: **${ruleToLabel(ruleType, timeValue)}**\n` +
           `Notiz: **${note ?? '-'}**`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
 
     if (subcommand === 'bearbeiten') {
       const id = interaction.options.getInteger('id', true);
       const existing = getRuleByIdForPlayer(id, selfPlayer.id);
-      if (!existing) return interaction.reply({ content: 'Ich habe keine eigene Regel mit dieser ID gefunden.', ephemeral: true });
+      if (!existing) return interaction.reply({ content: 'Ich habe keine eigene Regel mit dieser ID gefunden.', flags: MessageFlags.Ephemeral });
 
       const recurrenceType = interaction.options.getString('wiederholung') ?? (existing.recurrence_type ?? 'weekly');
       const ruleType = interaction.options.getString('typ') ?? existing.rule_type;
@@ -403,7 +403,7 @@ const command = {
         tageInput: interaction.options.getString('tage')?.trim() ?? null,
         timeValue
       }, existing);
-      if (validated.error) return interaction.reply({ content: validated.error, ephemeral: true });
+      if (validated.error) return interaction.reply({ content: validated.error, flags: MessageFlags.Ephemeral });
 
       const noteInput = interaction.options.getString('notiz');
       const note = noteInput === null ? existing.note : (noteInput.trim() === '-' ? null : noteInput.trim());
@@ -421,40 +421,40 @@ const command = {
           `Wiederholung: **${recurrenceToLabel(recurrenceType, validated.weekdayMask, validated.anchorDate)}**\n` +
           `Regel: **${ruleToLabel(ruleType, timeValue)}**\n` +
           `Notiz: **${note ?? '-'}**`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
 
     if (subcommand === 'loeschen') {
       const id = interaction.options.getInteger('id', true);
       const existing = getRuleByIdForPlayer(id, selfPlayer.id);
-      if (!existing) return interaction.reply({ content: 'Ich habe keine eigene Regel mit dieser ID gefunden.', ephemeral: true });
+      if (!existing) return interaction.reply({ content: 'Ich habe keine eigene Regel mit dieser ID gefunden.', flags: MessageFlags.Ephemeral });
 
       db.prepare(`UPDATE availability_rules SET active = 0, updated_at = ? WHERE id = ? AND player_id = ?`).run(new Date().toISOString(), id, selfPlayer.id);
-      return interaction.reply({ content: `Regel **#${id}** wurde gelöscht.`, ephemeral: true });
+      return interaction.reply({ content: `Regel **#${id}** wurde gelöscht.`, flags: MessageFlags.Ephemeral });
     }
 
     if (subcommand === 'aussetzen' || subcommand === 'fortsetzen') {
       const id = interaction.options.getInteger('id', true);
       const existing = getRuleByIdForPlayer(id, selfPlayer.id);
-      if (!existing) return interaction.reply({ content: 'Ich habe keine eigene Regel mit dieser ID gefunden.', ephemeral: true });
+      if (!existing) return interaction.reply({ content: 'Ich habe keine eigene Regel mit dieser ID gefunden.', flags: MessageFlags.Ephemeral });
 
       if (subcommand === 'fortsetzen') {
         clearSuspension(id);
-        return interaction.reply({ content: `Regel **#${id}** ist wieder aktiv.`, ephemeral: true });
+        return interaction.reply({ content: `Regel **#${id}** ist wieder aktiv.`, flags: MessageFlags.Ephemeral });
       }
 
       const from = parseDateInput(interaction.options.getString('von', true).trim());
       const untilInput = interaction.options.getString('bis')?.trim() ?? null;
       const until = untilInput ? parseDateInput(untilInput) : null;
       const note = interaction.options.getString('grund')?.trim() ?? null;
-      if (!from) return interaction.reply({ content: 'Startdatum der Aussetzung ist ungültig.', ephemeral: true });
-      if (untilInput && !until) return interaction.reply({ content: 'Enddatum der Aussetzung ist ungültig.', ephemeral: true });
-      if (from < todayInBerlin()) return interaction.reply({ content: 'Aussetzungen können nicht in der Vergangenheit beginnen.', ephemeral: true });
-      if (until && until < from) return interaction.reply({ content: 'Das Ende der Aussetzung darf nicht vor dem Start liegen.', ephemeral: true });
+      if (!from) return interaction.reply({ content: 'Startdatum der Aussetzung ist ungültig.', flags: MessageFlags.Ephemeral });
+      if (untilInput && !until) return interaction.reply({ content: 'Enddatum der Aussetzung ist ungültig.', flags: MessageFlags.Ephemeral });
+      if (from < todayInBerlin()) return interaction.reply({ content: 'Aussetzungen können nicht in der Vergangenheit beginnen.', flags: MessageFlags.Ephemeral });
+      if (until && until < from) return interaction.reply({ content: 'Das Ende der Aussetzung darf nicht vor dem Start liegen.', flags: MessageFlags.Ephemeral });
 
       applySuspension(id, from, until, note, interaction.user.id);
-      return interaction.reply({ content: `Regel **#${id}** wurde ausgesetzt.`, ephemeral: true });
+      return interaction.reply({ content: `Regel **#${id}** wurde ausgesetzt.`, flags: MessageFlags.Ephemeral });
     }
 
     if (!(await requireAdmin(interaction))) return;
@@ -466,7 +466,7 @@ const command = {
         const rows = db.prepare(`SELECT * FROM availability_rules WHERE player_id = ? AND active = 1 ORDER BY id ASC`).all(targetPlayer.id);
         return interaction.reply({
           content: rows.length ? `**Regeln von ${playerDisplay(targetPlayer)}**\n${rows.map(buildRuleLine).join('\n')}` : 'Keine Regeln gefunden.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -482,7 +482,7 @@ const command = {
       const lines = rows.map(row => `**${playerDisplay(row)}** • ${buildRuleLine(row)}`);
       return interaction.reply({
         content: lines.length ? `**Regel-Übersicht**\n${lines.join('\n')}` : 'Keine aktiven Regeln gefunden.',
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
 
@@ -496,7 +496,7 @@ const command = {
       const timeValue = interaction.options.getString('uhrzeit')?.trim() ?? null;
       const note = interaction.options.getString('notiz')?.trim() ?? null;
       const validated = validateRulePayload({ recurrenceType, ruleType, startdatumInput, tageInput, timeValue });
-      if (validated.error) return interaction.reply({ content: validated.error, ephemeral: true });
+      if (validated.error) return interaction.reply({ content: validated.error, flags: MessageFlags.Ephemeral });
 
       const id = await saveRule({ interaction, player: targetPlayer, recurrenceType, ruleType, anchorDate: validated.anchorDate, weekdayMask: validated.weekdayMask, timeValue, note });
       await notifyUser(interaction.client, targetUser.id,
@@ -512,12 +512,12 @@ const command = {
         actionType: 'erstellt',
         details: ruleToLabel(ruleType, timeValue)
       });
-      return interaction.reply({ content: `Regel **#${id}** wurde für **${playerDisplay(targetPlayer)}** erstellt.`, ephemeral: true });
+      return interaction.reply({ content: `Regel **#${id}** wurde für **${playerDisplay(targetPlayer)}** erstellt.`, flags: MessageFlags.Ephemeral });
     }
 
     const id = interaction.options.getInteger('id', true);
     const rule = getRuleById(id);
-    if (!rule) return interaction.reply({ content: 'Keine Regel mit dieser ID gefunden.', ephemeral: true });
+    if (!rule) return interaction.reply({ content: 'Keine Regel mit dieser ID gefunden.', flags: MessageFlags.Ephemeral });
 
     if (subcommand === 'admin-bearbeiten') {
       const recurrenceType = interaction.options.getString('wiederholung') ?? (rule.recurrence_type ?? 'weekly');
@@ -532,7 +532,7 @@ const command = {
         tageInput: interaction.options.getString('tage')?.trim() ?? null,
         timeValue
       }, rule);
-      if (validated.error) return interaction.reply({ content: validated.error, ephemeral: true });
+      if (validated.error) return interaction.reply({ content: validated.error, flags: MessageFlags.Ephemeral });
 
       const noteInput = interaction.options.getString('notiz');
       const note = noteInput === null ? rule.note : (noteInput.trim() === '-' ? null : noteInput.trim());
@@ -558,7 +558,7 @@ const command = {
         details: ruleToLabel(ruleType, timeValue)
       });
 
-      return interaction.reply({ content: `Regel **#${id}** wurde aktualisiert.`, ephemeral: true });
+      return interaction.reply({ content: `Regel **#${id}** wurde aktualisiert.`, flags: MessageFlags.Ephemeral });
     }
 
     if (subcommand === 'admin-loeschen') {
@@ -576,7 +576,7 @@ const command = {
         actionType: 'gelöscht',
         details: ruleToLabel(rule.rule_type, rule.time_value)
       });
-      return interaction.reply({ content: `Regel **#${id}** wurde gelöscht.`, ephemeral: true });
+      return interaction.reply({ content: `Regel **#${id}** wurde gelöscht.`, flags: MessageFlags.Ephemeral });
     }
 
     if (subcommand === 'admin-aussetzen' || subcommand === 'admin-fortsetzen') {
@@ -595,16 +595,16 @@ const command = {
           actionType: 'fortgesetzt',
           details: 'Regel wieder aktiv'
         });
-        return interaction.reply({ content: `Regel **#${id}** ist wieder aktiv.`, ephemeral: true });
+        return interaction.reply({ content: `Regel **#${id}** ist wieder aktiv.`, flags: MessageFlags.Ephemeral });
       }
 
       const from = parseDateInput(interaction.options.getString('von', true).trim());
       const untilInput = interaction.options.getString('bis')?.trim() ?? null;
       const until = untilInput ? parseDateInput(untilInput) : null;
       const note = interaction.options.getString('grund')?.trim() ?? null;
-      if (!from) return interaction.reply({ content: 'Startdatum der Aussetzung ist ungültig.', ephemeral: true });
-      if (untilInput && !until) return interaction.reply({ content: 'Enddatum der Aussetzung ist ungültig.', ephemeral: true });
-      if (until && until < from) return interaction.reply({ content: 'Das Ende der Aussetzung darf nicht vor dem Start liegen.', ephemeral: true });
+      if (!from) return interaction.reply({ content: 'Startdatum der Aussetzung ist ungültig.', flags: MessageFlags.Ephemeral });
+      if (untilInput && !until) return interaction.reply({ content: 'Enddatum der Aussetzung ist ungültig.', flags: MessageFlags.Ephemeral });
+      if (until && until < from) return interaction.reply({ content: 'Das Ende der Aussetzung darf nicht vor dem Start liegen.', flags: MessageFlags.Ephemeral });
 
       applySuspension(id, from, until, note, interaction.user.id);
       await notifyUser(interaction.client, rule.discord_user_id,
@@ -620,7 +620,7 @@ const command = {
         actionType: 'ausgesetzt',
         details: `${from}${until ? ` bis ${until}` : ' bis auf Weiteres'}`
       });
-      return interaction.reply({ content: `Regel **#${id}** wurde ausgesetzt.`, ephemeral: true });
+      return interaction.reply({ content: `Regel **#${id}** wurde ausgesetzt.`, flags: MessageFlags.Ephemeral });
     }
   }
 };

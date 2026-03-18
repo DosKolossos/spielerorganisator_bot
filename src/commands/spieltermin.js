@@ -811,7 +811,7 @@ async function handleButtonInteraction(interaction, parts) {
   if (!ensureAdminPermission(interaction)) {
     return interaction.reply({
       content: 'Dafür fehlen dir die Rechte.',
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
   }
 
@@ -823,7 +823,7 @@ async function handleButtonInteraction(interaction, parts) {
   if (!event) {
     return interaction.reply({
       content: 'Dieser Kalendereintrag existiert nicht mehr.',
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
   }
 
@@ -831,7 +831,7 @@ async function handleButtonInteraction(interaction, parts) {
     return interaction.reply({
       content: `Wähle den neuen Status für **#${eventId}**.`,
       components: [buildStatusSelectRow(eventId, messageId, event.status)],
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
   }
 
@@ -839,14 +839,14 @@ async function handleButtonInteraction(interaction, parts) {
     return interaction.reply({
       content: `Wähle den neuen Typ für **#${eventId}**.`,
       components: [buildTypeSelectRow(eventId, messageId, event.event_type)],
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
   }
 
   if (action === 'lineup') {
     return interaction.reply({
       ...buildLineupManagerPayload(eventId, messageId),
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
   }
 
@@ -893,7 +893,7 @@ async function handleButtonInteraction(interaction, parts) {
       content: teamOpgg.ok
         ? `**Team OPGG für #${eventId}:**\n${teamOpgg.url}`
         : `Kein Team-OPGG möglich: ${teamOpgg.message}`,
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
   }
 }
@@ -902,7 +902,7 @@ async function handleStringSelectInteraction(interaction, parts) {
   if (!ensureAdminPermission(interaction)) {
     return interaction.reply({
       content: 'Dafür fehlen dir die Rechte.',
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
   }
 
@@ -1053,7 +1053,7 @@ async function handleModalSubmitInteraction(interaction, parts) {
   if (!ensureAdminPermission(interaction)) {
     return interaction.reply({
       content: 'Dafür fehlen dir die Rechte.',
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
   }
 
@@ -1065,7 +1065,7 @@ async function handleModalSubmitInteraction(interaction, parts) {
   if (!event) {
     return interaction.reply({
       content: 'Dieser Kalendereintrag existiert nicht mehr.',
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
   }
 
@@ -1085,7 +1085,7 @@ async function handleModalSubmitInteraction(interaction, parts) {
 
     return interaction.reply({
       content: `Gegner-OPGG für **#${eventId}** wurde ${nextValue ? 'gespeichert' : 'gelöscht'}.`,
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
   }
 
@@ -1105,7 +1105,7 @@ async function handleModalSubmitInteraction(interaction, parts) {
 
     return interaction.reply({
       content: `Hinweis für **#${eventId}** wurde ${nextValue ? 'gespeichert' : 'gelöscht'}.`,
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
   }
 }
@@ -1256,7 +1256,7 @@ const command = {
       if (events.length === 0) {
         return interaction.reply({
           content: 'Im Spielerkalender sind aktuell keine Termine gespeichert.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -1285,7 +1285,7 @@ const command = {
 
       return interaction.reply({
         content: lines.join('\n\n'),
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
 
@@ -1293,7 +1293,7 @@ const command = {
       if (!ensureAdminPermission(interaction)) {
         return interaction.reply({
           content: 'Dafür fehlen dir die Rechte.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -1306,14 +1306,14 @@ const command = {
       if (!parsedDate) {
         return interaction.reply({
           content: 'Datum ungültig. Nutze TT.MM.JJJJ oder YYYY-MM-DD.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
       if (!isValidTime(startzeit)) {
         return interaction.reply({
           content: 'Startzeit ungültig. Bitte nutze HH:MM, z. B. 18:30.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -1353,7 +1353,7 @@ const command = {
 
       return interaction.reply({
         embeds: [embed],
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
 
@@ -1372,7 +1372,7 @@ const command = {
       if (!event) {
         return interaction.reply({
           content: 'Ich habe keinen Kalendereintrag mit dieser ID gefunden.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -1380,14 +1380,14 @@ const command = {
       if (datumInput && !parsedDate) {
         return interaction.reply({
           content: 'Datum ungültig. Nutze TT.MM.JJJJ oder YYYY-MM-DD.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
       if (startzeit && !isValidTime(startzeit)) {
         return interaction.reply({
           content: 'Startzeit ungültig. Bitte nutze HH:MM, z. B. 18:30.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -1484,7 +1484,7 @@ const command = {
           `Fixe Zeit: **${nextScheduledStartAt ? `${formatDateTimeDE(nextScheduledStartAt)} → ${formatDateTimeDE(nextScheduledEndAt)}` : '-'}**\n` +
           `Gegner OPGG: **${nextOpgg ?? '-'}**\n` +
           `Hinweis: **${nextHint ?? '-'}**`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
 
@@ -1495,7 +1495,7 @@ const command = {
       if (!event) {
         return interaction.reply({
           content: 'Ich habe keinen Kalendereintrag mit dieser ID gefunden.',
-          ephemeral: true
+          flags: MessageFlags.Ephemeral
         });
       }
 
@@ -1565,7 +1565,7 @@ const command = {
             ? 'Es wurden keine Rollen geändert.\n'
             : `Lineup für **#${id}** wurde aktualisiert.\n`) +
           `Aktuell: **${buildLineupText(assignments)}**`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
   },

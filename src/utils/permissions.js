@@ -25,12 +25,12 @@ async function requireAdmin(interaction) {
   if (interaction.replied || interaction.deferred) {
     await interaction.followUp({
       content: `Dafür brauchst du die Rolle **${ADMIN_ROLE_NAME}**.`,
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     }).catch(() => null);
   } else {
     await interaction.reply({
       content: `Dafür brauchst du die Rolle **${ADMIN_ROLE_NAME}**.`,
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     }).catch(() => null);
   }
 

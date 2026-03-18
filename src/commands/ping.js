@@ -8,7 +8,7 @@ module.exports = {
   async execute(interaction) {
     await interaction.reply({
       content: 'Pong! Bot läuft.',
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     });
   }
 };

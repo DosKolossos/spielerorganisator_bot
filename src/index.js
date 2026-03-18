@@ -101,7 +101,7 @@ client.on('interactionCreate', async interaction => {
 
     const payload = {
       content: 'Beim Ausführen der Aktion ist ein Fehler aufgetreten.',
-      ephemeral: true
+      flags: MessageFlags.Ephemeral
     };
 
     if (interaction.replied || interaction.deferred) {

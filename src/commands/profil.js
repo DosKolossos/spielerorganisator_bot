@@ -151,13 +151,13 @@ const command = {
     if (subcommand === 'alias-setzen') {
       const alias = interaction.options.getString('alias', true).trim();
       if (alias.length < 2 || alias.length > 32) {
-        return interaction.reply({ content: 'Alias muss zwischen 2 und 32 Zeichen lang sein.', ephemeral: true });
+        return interaction.reply({ content: 'Alias muss zwischen 2 und 32 Zeichen lang sein.', flags: MessageFlags.Ephemeral });
       }
 
       const player = upsertPlayer(user, { alias });
       return interaction.reply({
         content: `Alias gespeichert.\nDiscord: **${player.username}**\nAlias: **${player.alias}**`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
 
@@ -168,11 +168,11 @@ const command = {
       const riotRegion = riotRegionInput ? riotRegionInput.trim().toLowerCase() : undefined;
 
       if (riotGameName.length < 2 || riotGameName.length > 32) {
-        return interaction.reply({ content: 'Der Riot Game Name muss zwischen 2 und 32 Zeichen lang sein.', ephemeral: true });
+        return interaction.reply({ content: 'Der Riot Game Name muss zwischen 2 und 32 Zeichen lang sein.', flags: MessageFlags.Ephemeral });
       }
 
       if (riotTag.length < 2 || riotTag.length > 10) {
-        return interaction.reply({ content: 'Der Riot-Tag muss zwischen 2 und 10 Zeichen lang sein.', ephemeral: true });
+        return interaction.reply({ content: 'Der Riot-Tag muss zwischen 2 und 10 Zeichen lang sein.', flags: MessageFlags.Ephemeral });
       }
 
       const player = upsertPlayer(user, {
@@ -186,13 +186,13 @@ const command = {
           `Riot-Daten gespeichert.\n` +
           `Riot-ID: **${player.riot_game_name}#${player.riot_tag}**\n` +
           `Region: **${(player.riot_region ?? 'euw').toUpperCase()}**`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
 
     if (subcommand === 'anzeigen') {
       const player = upsertPlayer(user);
-      return interaction.reply({ content: formatProfile(player), ephemeral: true });
+      return interaction.reply({ content: formatProfile(player), flags: MessageFlags.Ephemeral });
     }
 
     if (!(await requireAdmin(interaction))) return;
@@ -203,7 +203,7 @@ const command = {
     if (subcommand === 'admin-anzeigen') {
       return interaction.reply({
         content: formatProfile(targetPlayer, `Profil von ${playerDisplay(targetPlayer)}`),
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
 
@@ -256,7 +256,7 @@ const command = {
 
       return interaction.reply({
         content: `Profil aktualisiert.\n${formatProfile(updated, `Profil von ${targetLabel}`)}`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
 
@@ -279,7 +279,7 @@ const command = {
 
       return interaction.reply({
         content: `Spieler **${playerDisplay(archived)}** wurde archiviert.`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
 
@@ -302,7 +302,7 @@ const command = {
 
       return interaction.reply({
         content: `Spieler **${playerDisplay(restored)}** wurde wiederhergestellt.`,
-        ephemeral: true
+        flags: MessageFlags.Ephemeral
       });
     }
   }
