@@ -2164,41 +2164,40 @@ const command = {
       const now = new Date().toISOString();
 
       const result = db.prepare(`
-    INSERT INTO team_calendar_events (
-      title,
-      opponent_name,
-      event_type,
-      status,
-      option_date,
-      window_start_at,
-      window_end_at,
-      scheduled_start_at,
-      scheduled_end_at,
-      meeting_scrim_at,
-      meeting_primeleague_at,
-      available_players_text,
-      opgg_url,
-      note,
-      suggestion_key,
-      is_auto_generated,
-      show_in_player_calendar,
-      start_at,
-      end_at,
-      meeting_at,
-      created_by_discord_user_id,
-      updated_by_discord_user_id,
-      created_at,
-      updated_at
-    )
-    VALUES (
-      ?, ?, ?, ?,
-      ?, ?, ?, ?, ?, ?, ?,
-      NULL, ?, ?, NULL, 0, 0,
-      ?, ?, ?,
-      ?, ?, ?, ?
-)
-    )
-  `).run(
+  INSERT INTO team_calendar_events (
+    title,
+    opponent_name,
+    event_type,
+    status,
+    option_date,
+    window_start_at,
+    window_end_at,
+    scheduled_start_at,
+    scheduled_end_at,
+    meeting_scrim_at,
+    meeting_primeleague_at,
+    available_players_text,
+    opgg_url,
+    note,
+    suggestion_key,
+    is_auto_generated,
+    show_in_player_calendar,
+    start_at,
+    end_at,
+    meeting_at,
+    created_by_discord_user_id,
+    updated_by_discord_user_id,
+    created_at,
+    updated_at
+  )
+  VALUES (
+    ?, ?, ?, ?,
+    ?, ?, ?, ?, ?, ?, ?,
+    NULL, ?, ?, NULL, 0, 0,
+    ?, ?, ?,
+    ?, ?, ?, ?
+  )
+`).run(
         titel,
         nextOpponent,
         typ,
