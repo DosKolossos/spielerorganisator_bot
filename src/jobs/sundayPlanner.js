@@ -658,9 +658,10 @@ async function runSundayPlanner(client, options = {}) {
   }
 
   const berlinToday = todayInBerlin();
-  const windowDates = getDateWindow(berlinToday, 7);
-  const windowStart = `${berlinToday} 00:00`;
-  const windowEndInclusive = `${addDaysIso(berlinToday, 6)} 23:59`;
+  const plannerStartDate = addDaysIso(berlinToday, 1);
+  const windowDates = getDateWindow(plannerStartDate, 7);
+  const windowStart = `${plannerStartDate} 00:00`;
+  const windowEndInclusive = `${addDaysIso(plannerStartDate, 6)} 23:59`;
 
   const players = db.prepare(`
     SELECT id, discord_user_id, username, global_name, alias
@@ -735,8 +736,8 @@ async function runSundayPlanner(client, options = {}) {
     suggestions.push({ ...suggestion, calendarId });
   }
 
-  const weekEndDate = addDaysIso(berlinToday, 6);
-  await clearCurrentWeekPostedCards(client, berlinToday, weekEndDate);
+  const weekEndDate = addDaysIso(plannerStartDate, 6);
+  await clearCurrentWeekPostedCards(client, plannerStartDate, weekEndDate);
 
   const currentWeekManualEvents = db.prepare(`
   SELECT
@@ -754,7 +755,7 @@ async function runSundayPlanner(client, options = {}) {
     AND option_date >= ?
     AND option_date <= ?
   ORDER BY option_date ASC, COALESCE(scheduled_start_at, window_start_at) ASC, id ASC
-`).all(berlinToday, weekEndDate);
+`).all(plannerStartDate, weekEndDate);
 
   const orderedWeekEvents = db.prepare(`
   SELECT
@@ -771,7 +772,7 @@ async function runSundayPlanner(client, options = {}) {
     COALESCE(scheduled_start_at, window_start_at) ASC,
     CASE WHEN is_auto_generated = 0 THEN 0 ELSE 1 END ASC,
     id ASC
-`).all(berlinToday, weekEndDate);
+`).all(plannerStartDate, weekEndDate);
 
 
   const futureManualEvents = db.prepare(`
