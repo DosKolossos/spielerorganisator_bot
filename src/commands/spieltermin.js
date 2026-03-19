@@ -314,8 +314,8 @@ function buildPlayerCalendarDescription(event, assignments) {
   const teamOpgg = buildTeamOpggInfo(assignments);
 
   return [
-    `Status: ${buildPlayerCalendarStatusLabel(event.status)}`,
-    `Zeit: ${formatTimeOnlyLabel(startAt)}`,
+    `${buildPlayerCalendarStatusLabel(event.status)}`,
+    `Anpfiff: ${formatTimeOnlyLabel(startAt)}`,
     `Treffpunkt: ${formatTimeOnlyLabel(meetingAt)}`,
     '',
     buildStarterLineupText(assignments),
