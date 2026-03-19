@@ -878,6 +878,31 @@ function buildPlayerCalendarPayload(eventId) {
   };
 }
 
+async function deleteStoredAdminCard(client, eventId) {
+  const event = getEventById(eventId);
+  if (!event?.admin_channel_id || !event?.admin_message_id) {
+    return false;
+  }
+
+  try {
+    const channel = await client.channels.fetch(event.admin_channel_id);
+    if (channel && channel.isTextBased()) {
+      try {
+        const message = await channel.messages.fetch(event.admin_message_id);
+        if (message) {
+          await message.delete().catch(() => null);
+        }
+      } catch (_) {
+        // Nachricht existiert evtl. schon nicht mehr
+      }
+    }
+  } catch (_) {
+    // Kanal evtl. nicht mehr erreichbar
+  }
+
+  return true;
+}
+
 async function deleteStoredPlayerCard(client, eventId) {
   const event = getEventById(eventId);
   if (!event?.player_channel_id || !event?.player_message_id) {
@@ -1911,6 +1936,7 @@ const command = {
             .setDescription('Datum als TT.MM.JJJJ oder YYYY-MM-DD')
             .setRequired(true)
         )
+
         .addStringOption(option =>
           option
             .setName('startzeit')
@@ -1971,6 +1997,17 @@ const command = {
             .setName('opgg')
             .setDescription('Optional: Gegner-OPGG-Link')
             .setRequired(false)
+        )
+    )
+    .addSubcommand(sub =>
+      sub
+        .setName('loeschen')
+        .setDescription('Löscht einen Spieltermin endgültig.')
+        .addIntegerOption(option =>
+          option
+            .setName('id')
+            .setDescription('Kalender-ID des zu löschenden Termins')
+            .setRequired(true)
         )
     )
 
@@ -2066,7 +2103,7 @@ const command = {
 
   async execute(interaction) {
     const subcommand = interaction.options.getSubcommand();
-    const adminOnlySubcommands = new Set(['pruefen', 'bearbeiten', 'lineup', 'erstellen']);
+    const adminOnlySubcommands = new Set(['pruefen', 'bearbeiten', 'lineup', 'erstellen', 'loeschen']);
 
     if (adminOnlySubcommands.has(subcommand) && !ensureAdminPermission(interaction)) {
       return interaction.reply({
@@ -2220,7 +2257,7 @@ const command = {
         now
       );
 
-     const id = Number(result.lastInsertRowid);
+      const id = Number(result.lastInsertRowid);
       return interaction.reply({
         content:
           `Spieltermin **#${id}** wurde erstellt.\n` +
@@ -2231,6 +2268,39 @@ const command = {
           `Zeit: **${formatDateTimeDE(startAt)}**\n` +
           `Hinweis: **${nextHint ?? '-'}**\n` +
           `Admin-Karte: **wird erst zum Wochenstart erzeugt**`,
+        flags: MessageFlags.Ephemeral
+      });
+    }
+
+    if (subcommand === 'loeschen') {
+      const id = interaction.options.getInteger('id', true);
+      const event = getEventById(id);
+
+      if (!event) {
+        return interaction.reply({
+          content: 'Ich habe keinen Kalendereintrag mit dieser ID gefunden.',
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
+      await deleteStoredAdminCard(interaction.client, id);
+      await deleteStoredPlayerCard(interaction.client, id);
+
+      db.prepare(`
+    DELETE FROM team_calendar_assignments
+    WHERE event_id = ?
+  `).run(id);
+
+      db.prepare(`
+    DELETE FROM team_calendar_events
+    WHERE id = ?
+  `).run(id);
+
+      return interaction.reply({
+        content:
+          `Spieltermin **#${id}** wurde endgültig gelöscht.\n` +
+          `Titel: **${event.title}**\n` +
+          `Gegner: **${event.opponent_name ?? '-'}**`,
         flags: MessageFlags.Ephemeral
       });
     }
