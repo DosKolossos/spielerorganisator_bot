@@ -736,8 +736,9 @@ async function runSundayPlanner(client, options = {}) {
   }
 
   const weekEndDate = addDaysIso(berlinToday, 6);
+  await clearCurrentWeekPostedCards(client, berlinToday, weekEndDate);
 
-const currentWeekManualEvents = db.prepare(`
+  const currentWeekManualEvents = db.prepare(`
   SELECT
     id,
     title,
@@ -755,9 +756,28 @@ const currentWeekManualEvents = db.prepare(`
   ORDER BY option_date ASC, COALESCE(scheduled_start_at, window_start_at) ASC, id ASC
 `).all(berlinToday, weekEndDate);
 
+  const orderedWeekEvents = db.prepare(`
+  SELECT
+    id,
+    option_date,
+    COALESCE(scheduled_start_at, window_start_at) AS sort_at,
+    is_auto_generated
+  FROM team_calendar_events
+  WHERE option_date >= ?
+    AND option_date <= ?
+    AND status <> 'cancelled'
+  ORDER BY
+    option_date ASC,
+    COALESCE(scheduled_start_at, window_start_at) ASC,
+    CASE WHEN is_auto_generated = 0 THEN 0 ELSE 1 END ASC,
+    id ASC
+`).all(berlinToday, weekEndDate);
+
+  for (const event of orderedWeekEvents) {
+    await upsertAdminCardMessage(adminChannel, event.id);
+  }
 
 
-  
 
   const futureManualEvents = db.prepare(`
   SELECT
@@ -833,21 +853,21 @@ const currentWeekManualEvents = db.prepare(`
     }
   }
 
-if (currentWeekManualEvents.length > 0) {
-  await adminChannel.send('**🚨 Bereits eingetragene Termine in dieser Woche – Karten**');
+  if (currentWeekManualEvents.length > 0) {
+    await adminChannel.send('**🚨 Bereits eingetragene Termine in dieser Woche – Karten**');
 
-  for (const event of currentWeekManualEvents) {
-    await upsertAdminCardMessage(adminChannel, event.id);
+    for (const event of currentWeekManualEvents) {
+      await upsertAdminCardMessage(adminChannel, event.id);
+    }
   }
-}
 
-if (suggestions.length === 0) {
-  await adminChannel.send('**Terminoptionen**\nKein passender Tagesvorschlag in den nächsten 7 Tagen gefunden.');
-} else {
-  for (const item of suggestions) {
-    await upsertAdminCardMessage(adminChannel, item.calendarId);
+  if (suggestions.length === 0) {
+    await adminChannel.send('**Terminoptionen**\nKein passender Tagesvorschlag in den nächsten 7 Tagen gefunden.');
+  } else {
+    for (const item of suggestions) {
+      await upsertAdminCardMessage(adminChannel, item.calendarId);
+    }
   }
-}
 
   return {
     skipped: false,
@@ -856,6 +876,56 @@ if (suggestions.length === 0) {
     absenceCount: mergedAbsenceItems.length,
     suggestionCount: suggestions.length
   };
+}
+
+async function clearCurrentWeekPostedCards(client, weekStartDate, weekEndDate) {
+  const events = db.prepare(`
+    SELECT
+      id,
+      admin_channel_id,
+      admin_message_id,
+      player_channel_id,
+      player_message_id
+    FROM team_calendar_events
+    WHERE option_date >= ?
+      AND option_date <= ?
+  `).all(weekStartDate, weekEndDate);
+
+  for (const event of events) {
+    if (event.admin_channel_id && event.admin_message_id) {
+      try {
+        const channel = await client.channels.fetch(event.admin_channel_id);
+        if (channel && channel.isTextBased()) {
+          const message = await channel.messages.fetch(event.admin_message_id).catch(() => null);
+          if (message) {
+            await message.delete().catch(() => null);
+          }
+        }
+      } catch (_) { }
+    }
+
+    if (event.player_channel_id && event.player_message_id) {
+      try {
+        const channel = await client.channels.fetch(event.player_channel_id);
+        if (channel && channel.isTextBased()) {
+          const message = await channel.messages.fetch(event.player_message_id).catch(() => null);
+          if (message) {
+            await message.delete().catch(() => null);
+          }
+        }
+      } catch (_) { }
+    }
+
+    db.prepare(`
+      UPDATE team_calendar_events
+      SET admin_channel_id = NULL,
+          admin_message_id = NULL,
+          player_channel_id = NULL,
+          player_message_id = NULL,
+          updated_at = ?
+      WHERE id = ?
+    `).run(new Date().toISOString(), event.id);
+  }
 }
 
 module.exports = { runSundayPlanner };
