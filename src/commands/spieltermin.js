@@ -290,11 +290,22 @@ function getDisplayMeetingAt(event) {
   return null;
 }
 
+function buildPlayerCalendarStatusLabel(status) {
+  switch (status) {
+    case 'fixed':
+      return '✅ Fixiert';
+    case 'cancelled':
+      return '⛔ Cancelled';
+    case 'pending':
+    default:
+      return '🟡 Pending';
+  }
+}
+
 function buildPlayerCalendarTitle(event) {
-  const typeLabel = playerCalendarTypeLabel(event);
   const opponent = event.opponent_name?.trim();
 
-  return `📅 Termin ${formatDateLongDE(event.option_date)} ${typeLabel}${opponent ? ` vs ${opponent}` : ''}`;
+  return `📅 Termin ${formatDateLongDE(event.option_date)}${opponent ? ` vs ${opponent}` : ''}`;
 }
 
 function buildPlayerCalendarDescription(event, assignments) {
@@ -303,6 +314,7 @@ function buildPlayerCalendarDescription(event, assignments) {
   const teamOpgg = buildTeamOpggInfo(assignments);
 
   return [
+    `Status: ${buildPlayerCalendarStatusLabel(event.status)}`,
     `Zeit: ${formatTimeOnlyLabel(startAt)}`,
     `Treffpunkt: ${formatTimeOnlyLabel(meetingAt)}`,
     '',
