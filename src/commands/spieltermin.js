@@ -1902,6 +1902,12 @@ const command = {
             .setDescription('Startzeit im Format HH:MM')
             .setRequired(true)
         )
+                .addStringOption(option =>
+          option
+            .setName('titel')
+            .setDescription('Titel des Termins')
+            .setRequired(true)
+        )
         .addIntegerOption(option =>
           option
             .setName('dauer_minuten')
@@ -1910,12 +1916,7 @@ const command = {
             .setMinValue(30)
             .setMaxValue(720)
         )
-        .addStringOption(option =>
-          option
-            .setName('titel')
-            .setDescription('Titel des Termins')
-            .setRequired(true)
-        )
+
         .addStringOption(option =>
           option
             .setName('gegner')
