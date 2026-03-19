@@ -810,15 +810,7 @@ const currentWeekManualEvents = db.prepare(`
     }
   }
 
-  overviewLines.push('');
-  overviewLines.push('➡️ Nächster Schritt: Karte prüfen und dann direkt über die Buttons Status, Aufstellung, Gegner-OPGG oder Hinweis bearbeiten.');
-  if (futureManualEvents.length === 0) {
-    overviewLines.push('- Keine späteren fixen oder manuell angelegten Termine vorhanden.');
-  } else {
-    for (const event of futureManualEvents) {
-      overviewLines.push(formatFutureManualEvent(event));
-    }
-  }
+
 
 
   const adminChannel = await client.channels.fetch(process.env.ADMIN_CHANNEL_ID);
