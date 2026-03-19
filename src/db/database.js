@@ -132,6 +132,25 @@ db.exec(`
 `);
 
 db.exec(`
+  CREATE TABLE IF NOT EXISTS birthdays (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    birthday_month INTEGER NOT NULL,
+    birthday_day INTEGER NOT NULL,
+    note TEXT,
+    created_by_discord_user_id TEXT NOT NULL,
+    updated_by_discord_user_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+`);
+
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_birthdays_month_day
+  ON birthdays (birthday_month, birthday_day);
+`);
+
+db.exec(`
   CREATE TABLE IF NOT EXISTS team_calendar_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT NOT NULL,

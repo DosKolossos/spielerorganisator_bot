@@ -16,9 +16,11 @@ const abwesenheitCommand = require('./commands/abwesenheit');
 const regelCommand = require('./commands/regel');
 const spielterminCommand = require('./commands/spieltermin');
 const adminCommand = require('./commands/admin');
+const geburtstagCommand = require('./commands/geburtstag');
 
 const { runSundayReminder } = require('./jobs/sundayReminder');
 const { runSundayPlanner } = require('./jobs/sundayPlanner');
+const { runBirthdayReminder } = require('./jobs/birthdayReminder');
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds]
@@ -31,6 +33,7 @@ client.commands.set(abwesenheitCommand.data.name, abwesenheitCommand);
 client.commands.set(regelCommand.data.name, regelCommand);
 client.commands.set(spielterminCommand.data.name, spielterminCommand);
 client.commands.set(adminCommand.data.name, adminCommand);
+client.commands.set(geburtstagCommand.data.name, geburtstagCommand);
 
 async function registerCommands() {
   const commands = [
@@ -39,7 +42,8 @@ async function registerCommands() {
     abwesenheitCommand.data.toJSON(),
     regelCommand.data.toJSON(),
     spielterminCommand.data.toJSON(),
-    adminCommand.data.toJSON()
+    adminCommand.data.toJSON(),
+    geburtstagCommand.data.toJSON()
   ];
 
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
@@ -70,6 +74,15 @@ function registerCronJobs(client) {
     async () => {
       console.log('[Cron] Starte Sunday Planner...');
       await runSundayPlanner(client);
+    },
+    { timezone: 'Europe/Berlin' }
+  );
+
+    cron.schedule(
+    '0 9 * * *',
+    async () => {
+      console.log('[Cron] Starte Birthday Reminder...');
+      await runBirthdayReminder(client);
     },
     { timezone: 'Europe/Berlin' }
   );

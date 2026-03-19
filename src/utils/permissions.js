@@ -1,5 +1,4 @@
-const { PermissionFlagsBits } = require('discord.js');
-
+const { PermissionFlagsBits, MessageFlags } = require('discord.js');
 const ADMIN_ROLE_NAME = process.env.ADMIN_ROLE_NAME || 'Schillok | Coaches';
 
 function memberHasNamedRole(member) {
