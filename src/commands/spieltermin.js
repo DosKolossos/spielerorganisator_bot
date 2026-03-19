@@ -2220,19 +2220,7 @@ const command = {
         now
       );
 
-      const id = Number(result.lastInsertRowid);
-      let cardPosted = false;
-
-      try {
-        const adminChannel = await interaction.client.channels.fetch(process.env.ADMIN_CHANNEL_ID);
-        if (adminChannel && adminChannel.isTextBased()) {
-          await upsertAdminCardMessage(adminChannel, id);
-          cardPosted = true;
-        }
-      } catch (error) {
-        console.error(`[Spieltermin] Konnte Admin-Karte für neuen Termin #${id} nicht posten:`, error);
-      }
-
+     const id = Number(result.lastInsertRowid);
       return interaction.reply({
         content:
           `Spieltermin **#${id}** wurde erstellt.\n` +
@@ -2242,7 +2230,7 @@ const command = {
           `Status: **${statusLabel(status)}**\n` +
           `Zeit: **${formatDateTimeDE(startAt)}**\n` +
           `Hinweis: **${nextHint ?? '-'}**\n` +
-          `Admin-Karte: **${cardPosted ? 'gepostet' : 'nicht gepostet'}**`,
+          `Admin-Karte: **wird erst zum Wochenstart erzeugt**`,
         flags: MessageFlags.Ephemeral
       });
     }

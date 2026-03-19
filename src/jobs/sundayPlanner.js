@@ -735,11 +735,9 @@ async function runSundayPlanner(client, options = {}) {
     suggestions.push({ ...suggestion, calendarId });
   }
 
-
-
   const weekEndDate = addDaysIso(berlinToday, 6);
 
-  const currentWeekManualEvents = db.prepare(`
+const currentWeekManualEvents = db.prepare(`
   SELECT
     id,
     title,
@@ -748,9 +746,7 @@ async function runSundayPlanner(client, options = {}) {
     option_date,
     window_start_at,
     scheduled_start_at,
-    note,
-    admin_channel_id,
-    admin_message_id
+    note
   FROM team_calendar_events
   WHERE is_auto_generated = 0
     AND status <> 'cancelled'
@@ -758,6 +754,10 @@ async function runSundayPlanner(client, options = {}) {
     AND option_date <= ?
   ORDER BY option_date ASC, COALESCE(scheduled_start_at, window_start_at) ASC, id ASC
 `).all(berlinToday, weekEndDate);
+
+
+
+  
 
   const futureManualEvents = db.prepare(`
   SELECT
@@ -842,13 +842,21 @@ async function runSundayPlanner(client, options = {}) {
     }
   }
 
-  if (suggestions.length === 0) {
-    await adminChannel.send('**Terminoptionen**\nKein passender Tagesvorschlag in den nächsten 7 Tagen gefunden.');
-  } else {
-    for (const item of suggestions) {
-      await upsertAdminCardMessage(adminChannel, item.calendarId);
-    }
+if (currentWeekManualEvents.length > 0) {
+  await adminChannel.send('**🚨 Bereits eingetragene Termine in dieser Woche – Karten**');
+
+  for (const event of currentWeekManualEvents) {
+    await upsertAdminCardMessage(adminChannel, event.id);
   }
+}
+
+if (suggestions.length === 0) {
+  await adminChannel.send('**Terminoptionen**\nKein passender Tagesvorschlag in den nächsten 7 Tagen gefunden.');
+} else {
+  for (const item of suggestions) {
+    await upsertAdminCardMessage(adminChannel, item.calendarId);
+  }
+}
 
   return {
     skipped: false,
