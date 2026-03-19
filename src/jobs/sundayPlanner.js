@@ -413,7 +413,7 @@ function buildDailySuggestion(players, explicitEntries, rules, dateStr) {
 
   return {
     date: dateStr,
-    title: `Terminoption – ${formatDateLongDE(dateStr)}`,
+    title: ``,
     earliestStart: firstSlot.startTime,
     latestEnd: lastSlot.endTime,
     startWindows: compressStartWindows(chosenGroup.map(slot => slot.startTime)),
