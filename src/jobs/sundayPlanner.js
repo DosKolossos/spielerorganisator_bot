@@ -630,7 +630,7 @@ function formatPlannerManualEvent(event, { urgent = false } = {}) {
         ? 'Abgesagt'
         : 'Pending';
 
-  let line = `${prefix} **${formatDateLongDE(event.option_date)} • ${title}** • ${typeLabel} • ${statusLabel}`;
+  let line = `${prefix} **#${event.id} • ${formatDateLongDE(event.option_date)} • ${title}** • ${typeLabel} • ${statusLabel}`;
 
   if (timeLabel) {
     line += ` • ${timeLabel}`;
@@ -820,8 +820,7 @@ const currentWeekManualEvents = db.prepare(`
     }
   }
 
-  overviewLines.push('');
-  overviewLines.push('➡️ Nächster Schritt: Karte prüfen und dann direkt über die Buttons Status, Aufstellung, Gegner-OPGG oder Hinweis bearbeiten.');
+
   const adminChannel = await client.channels.fetch(process.env.ADMIN_CHANNEL_ID);
   if (!adminChannel || !adminChannel.isTextBased()) {
     return { skipped: false, sent: false, reason: 'invalid_admin_channel' };
