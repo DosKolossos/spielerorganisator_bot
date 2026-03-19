@@ -773,11 +773,6 @@ async function runSundayPlanner(client, options = {}) {
     id ASC
 `).all(berlinToday, weekEndDate);
 
-  for (const event of orderedWeekEvents) {
-    await upsertAdminCardMessage(adminChannel, event.id);
-  }
-
-
 
   const futureManualEvents = db.prepare(`
   SELECT
@@ -843,38 +838,25 @@ async function runSundayPlanner(client, options = {}) {
     await adminChannel.send(message);
   }
 
-  if (currentWeekManualEvents.length > 0) {
-    await adminChannel.send('**🚨 Bereits eingetragene Termine in dieser Woche – Karten**');
+  await adminChannel.send('**📅 Termine dieser Woche – chronologisch**');
 
-    for (const event of currentWeekManualEvents) {
-      // Falls schon eine Admin-Karte existiert, wird sie aktualisiert.
-      // Falls noch keine existiert, wird sie neu gepostet.
-      await upsertAdminCardMessage(adminChannel, event.id);
-    }
-  }
-
-  if (currentWeekManualEvents.length > 0) {
-    await adminChannel.send('**🚨 Bereits eingetragene Termine in dieser Woche – Karten**');
-
-    for (const event of currentWeekManualEvents) {
-      await upsertAdminCardMessage(adminChannel, event.id);
-    }
-  }
-
-  if (suggestions.length === 0) {
-    await adminChannel.send('**Terminoptionen**\nKein passender Tagesvorschlag in den nächsten 7 Tagen gefunden.');
+  if (orderedWeekEvents.length === 0) {
+    await adminChannel.send('Keine Termine für diese Woche gefunden.');
   } else {
-    for (const item of suggestions) {
-      await upsertAdminCardMessage(adminChannel, item.calendarId);
+    for (const event of orderedWeekEvents) {
+      await upsertAdminCardMessage(adminChannel, event.id);
     }
   }
+
+
 
   return {
     skipped: false,
     sent: true,
-    messages: overviewMessages.length + suggestions.length,
+    messages: overviewMessages.length + orderedWeekEvents.length + 1,
     absenceCount: mergedAbsenceItems.length,
-    suggestionCount: suggestions.length
+    suggestionCount: suggestions.length,
+    weekEventCount: orderedWeekEvents.length
   };
 }
 
