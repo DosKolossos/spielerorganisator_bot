@@ -183,6 +183,18 @@ function getEffectiveMeetingAt(event, type) {
   return null;
 }
 
+function getLegacyMeetingAtForCreate(eventType, startAt, meetingScrimAt, meetingPrimeleagueAt) {
+  if (eventType === 'scrim') {
+    return meetingScrimAt || startAt;
+  }
+
+  if (eventType === 'primeleague') {
+    return meetingPrimeleagueAt || startAt;
+  }
+
+  return startAt;
+}
+
 function buildMeetingFieldValue(event) {
   if (!event.scheduled_start_at) {
     return '-';
@@ -1844,11 +1856,13 @@ const command = {
   data: new SlashCommandBuilder()
     .setName('spieltermin')
     .setDescription('Verwalte den Spielerkalender.')
+
     .addSubcommand(sub =>
       sub
         .setName('anzeigen')
         .setDescription('Zeigt die nächsten Spieltermine an.')
     )
+
     .addSubcommand(sub =>
       sub
         .setName('pruefen')
@@ -1886,6 +1900,7 @@ const command = {
             )
         )
     )
+
     .addSubcommand(sub =>
       sub
         .setName('erstellen')
@@ -1902,7 +1917,7 @@ const command = {
             .setDescription('Startzeit im Format HH:MM')
             .setRequired(true)
         )
-                .addStringOption(option =>
+        .addStringOption(option =>
           option
             .setName('titel')
             .setDescription('Titel des Termins')
@@ -1916,7 +1931,6 @@ const command = {
             .setMinValue(30)
             .setMaxValue(720)
         )
-
         .addStringOption(option =>
           option
             .setName('gegner')
@@ -1959,6 +1973,7 @@ const command = {
             .setRequired(false)
         )
     )
+
     .addSubcommand(sub =>
       sub
         .setName('bearbeiten')
@@ -2029,6 +2044,7 @@ const command = {
             .setRequired(false)
         )
     )
+
     .addSubcommand(sub =>
       sub
         .setName('lineup')
@@ -2139,6 +2155,12 @@ const command = {
       const endAt = buildDateTime(parsedDate, addMinutesToTime(startzeit, dauerMinuten));
       const meetingScrimAt = getDefaultMeetingAtFromScheduledStart(startAt, 'scrim');
       const meetingPrimeleagueAt = getDefaultMeetingAtFromScheduledStart(startAt, 'primeleague');
+      const legacyMeetingAt = getLegacyMeetingAtForCreate(
+        typ,
+        startAt,
+        meetingScrimAt,
+        meetingPrimeleagueAt
+      );
       const now = new Date().toISOString();
 
       const result = db.prepare(`
@@ -2172,8 +2194,9 @@ const command = {
       ?, ?, ?, ?,
       ?, ?, ?, ?, ?, ?, ?,
       NULL, ?, ?, NULL, 0, 0,
-      ?, ?, NULL,
+      ?, ?, ?,
       ?, ?, ?, ?
+)
     )
   `).run(
         titel,
@@ -2191,6 +2214,7 @@ const command = {
         nextHint,
         startAt,
         endAt,
+        legacyMeetingAt,
         interaction.user.id,
         interaction.user.id,
         now,
