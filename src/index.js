@@ -14,6 +14,7 @@ const pingCommand = require('./commands/ping');
 const profilCommand = require('./commands/profil');
 const abwesenheitCommand = require('./commands/abwesenheit');
 const regelCommand = require('./commands/regel');
+const verfuegbarkeitCommand = require('./commands/verfuegbarkeit');
 const spielterminCommand = require('./commands/spieltermin');
 const adminCommand = require('./commands/admin');
 const geburtstagCommand = require('./commands/geburtstag');
@@ -31,6 +32,7 @@ client.commands.set(pingCommand.data.name, pingCommand);
 client.commands.set(profilCommand.data.name, profilCommand);
 client.commands.set(abwesenheitCommand.data.name, abwesenheitCommand);
 client.commands.set(regelCommand.data.name, regelCommand);
+client.commands.set(verfuegbarkeitCommand.data.name, verfuegbarkeitCommand);
 client.commands.set(spielterminCommand.data.name, spielterminCommand);
 client.commands.set(adminCommand.data.name, adminCommand);
 client.commands.set(geburtstagCommand.data.name, geburtstagCommand);
@@ -41,6 +43,7 @@ async function registerCommands() {
     profilCommand.data.toJSON(),
     abwesenheitCommand.data.toJSON(),
     regelCommand.data.toJSON(),
+    verfuegbarkeitCommand.data.toJSON(),
     spielterminCommand.data.toJSON(),
     adminCommand.data.toJSON(),
     geburtstagCommand.data.toJSON()
@@ -108,6 +111,12 @@ client.on('interactionCreate', async interaction => {
     if (interaction.isButton() || interaction.isStringSelectMenu() || interaction.isModalSubmit()) {
       if (spielterminCommand.canHandleInteraction?.(interaction)) {
         await spielterminCommand.handleInteraction(interaction);
+        return;
+      }
+
+      if (verfuegbarkeitCommand.canHandleInteraction?.(interaction)) {
+        await verfuegbarkeitCommand.handleInteraction(interaction);
+        return;
       }
     }
   } catch (error) {

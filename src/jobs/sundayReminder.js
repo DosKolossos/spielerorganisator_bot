@@ -1,3 +1,5 @@
+
+const { postOrRefreshWeeklyAvailabilityCards } = require('../services/weeklyAvailabilityService');
 const db = require('../db/database');
 
 function getRunKey(date = new Date()) {
@@ -28,49 +30,25 @@ async function runSundayReminder(client, options = {}) {
     console.log(`[Reminder] Force-Run aktiv für ${runKey}`);
   }
 
-  const players = db.prepare(`
-    SELECT discord_user_id, username, global_name, alias
-    FROM players
-    WHERE is_archived = 0
-    ORDER BY id ASC
-  `).all();
-
-  let sent = 0;
-  let failed = 0;
-
-  for (const player of players) {
-    try {
-      const user = await client.users.fetch(player.discord_user_id);
-      await user.send(
-        `⏰ **Erinnerung für heute**\n` +
-        `Bitte pflege bis **19:59 Uhr** deine:\n` +
-        `- Abwesenheiten\n` +
-        `- wiederkehrenden Regeln\n` +
-        `- bereits bekannte feste Termine / Vormerkungen\n\n` +
-        `Der Wochenlauf startet um **20:00 Uhr**.`
-      );
-      sent++;
-    } catch (error) {
-      failed++;
-      console.warn(`[Reminder] Konnte DM an ${player.alias || player.global_name || player.username || player.discord_user_id} nicht senden.`);
-    }
-  }
+  const result = await postOrRefreshWeeklyAvailabilityCards(client);
 
   try {
     const adminChannel = await client.channels.fetch(process.env.ADMIN_CHANNEL_ID);
     if (adminChannel && adminChannel.isTextBased()) {
       await adminChannel.send(
-        `📨 **Sonntags-Erinnerung versendet**\n` +
-        `Erfolgreich: **${sent}**\n` +
-        `Fehlgeschlagen: **${failed}**`
+        `📨 **Wochenkarten aktualisiert**\n` +
+        `Woche ab: **${result.weekStartDate ?? '-'}**\n` +
+        `Erstellt: **${result.created ?? 0}**\n` +
+        `Aktualisiert: **${result.updated ?? 0}**\n` +
+        `Fehlgeschlagen: **${result.failed ?? 0}**`
       );
     }
   } catch (error) {
     console.error('[Reminder] Konnte keine Zusammenfassung in den Adminkanal senden.', error);
   }
 
-  console.log(`[Reminder] Fertig. Erfolgreich: ${sent}, Fehlgeschlagen: ${failed}`);
-  return { skipped: false, sent, failed };
+  console.log('[Reminder] Wochenkarten-Verteilung abgeschlossen.');
+  return result;
 }
 
 module.exports = { runSundayReminder };

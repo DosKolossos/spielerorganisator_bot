@@ -77,6 +77,8 @@ db.exec(`
     reviewed_by_discord_user_id TEXT,
     reviewed_at TEXT,
     review_note TEXT,
+    source TEXT NOT NULL DEFAULT 'manual',
+    source_ref TEXT,
     created_by_discord_user_id TEXT NOT NULL,
     updated_by_discord_user_id TEXT NOT NULL,
     created_at TEXT NOT NULL,
@@ -148,6 +150,22 @@ db.exec(`
 db.exec(`
   CREATE INDEX IF NOT EXISTS idx_birthdays_month_day
   ON birthdays (birthday_month, birthday_day);
+`);
+
+
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS weekly_availability_cards (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    player_id INTEGER NOT NULL,
+    week_start_date TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(player_id, week_start_date),
+    FOREIGN KEY(player_id) REFERENCES players(id)
+  );
 `);
 
 db.exec(`
@@ -227,11 +245,19 @@ function migrateAvailabilityEntries() {
   addColumnIfMissing('availability_entries', 'reviewed_by_discord_user_id', `TEXT`);
   addColumnIfMissing('availability_entries', 'reviewed_at', `TEXT`);
   addColumnIfMissing('availability_entries', 'review_note', `TEXT`);
+  addColumnIfMissing('availability_entries', 'source', `TEXT NOT NULL DEFAULT 'manual'`);
+  addColumnIfMissing('availability_entries', 'source_ref', `TEXT`);
 
   db.exec(`
     UPDATE availability_entries
     SET approval_status = 'approved'
     WHERE approval_status IS NULL OR trim(approval_status) = '';
+  `);
+
+  db.exec(`
+    UPDATE availability_entries
+    SET source = 'manual'
+    WHERE source IS NULL OR trim(source) = '';
   `);
 }
 
@@ -462,6 +488,12 @@ db.exec(`
 `);
 
 db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_availability_entries_source_ref
+  ON availability_entries (source, source_ref, player_id, start_at);
+`);
+
+
+db.exec(`
   CREATE INDEX IF NOT EXISTS idx_availability_rules_player_active
   ON availability_rules (player_id, active);
 `);
@@ -480,6 +512,11 @@ db.exec(`
   CREATE UNIQUE INDEX IF NOT EXISTS idx_team_calendar_events_suggestion_key_unique
   ON team_calendar_events (suggestion_key)
   WHERE suggestion_key IS NOT NULL;
+`);
+
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_weekly_availability_cards_player_week
+  ON weekly_availability_cards (player_id, week_start_date);
 `);
 
 db.exec(`
