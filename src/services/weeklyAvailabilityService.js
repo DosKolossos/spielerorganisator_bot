@@ -1,4 +1,3 @@
-
 const {
   ActionRowBuilder,
   ButtonBuilder,
@@ -12,211 +11,243 @@ const {
 } = require('discord.js');
 const db = require('../db/database');
 const { todayInBerlin, isValidTime } = require('../utils/time');
-const { playerDisplay, getPlayerById } = require('../utils/playerUtils');
-const { isAdminInteraction } = require('../utils/permissions');
+const { upsertPlayer, playerDisplay } = require('../utils/playerUtils');
 
-const WEEKLY_SOURCE = 'weekly_checkin';
-const WEEKLY_PREFIX = 'verf';
+const PREFIX = 'wavail';
 
-const WEEKDAY_SHORT = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa'];
-const WEEKDAY_LONG = ['Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag'];
-
-function addDaysIso(dateStr, daysToAdd) {
+function addDaysIso(dateStr, days) {
   const [year, month, day] = dateStr.split('-').map(Number);
   const date = new Date(Date.UTC(year, month - 1, day));
-  date.setUTCDate(date.getUTCDate() + daysToAdd);
+  date.setUTCDate(date.getUTCDate() + days);
   const y = date.getUTCFullYear();
   const m = String(date.getUTCMonth() + 1).padStart(2, '0');
   const d = String(date.getUTCDate()).padStart(2, '0');
   return `${y}-${m}-${d}`;
 }
 
-function getDateWindow(startDate, numberOfDays = 7) {
-  return Array.from({ length: numberOfDays }, (_, index) => addDaysIso(startDate, index));
+function getWeekStartDate(baseDate = todayInBerlin()) {
+  return addDaysIso(baseDate, 1);
 }
 
-function getWeekStartDate() {
-  return addDaysIso(todayInBerlin(), 1);
-}
-
-function extractTimePart(dateTime) {
-  return String(dateTime).slice(11, 16);
+function getWeekDates(weekStartDate) {
+  return Array.from({ length: 7 }, (_, index) => addDaysIso(weekStartDate, index));
 }
 
 function formatDateShort(dateStr) {
-  return `${dateStr.slice(8, 10)}.${dateStr.slice(5, 7)}.`;
+  const [year, month, day] = dateStr.split('-');
+  return `${day}.${month}.`;
 }
 
-function getWeekdayIndexFromIsoDate(dateStr) {
+function formatDateRange(startDate, endDate) {
+  return `${formatDateShort(startDate)} – ${formatDateShort(endDate)}`;
+}
+
+function getWeekdayShort(dateStr) {
   const [year, month, day] = dateStr.split('-').map(Number);
-  return new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+  const date = new Date(Date.UTC(year, month - 1, day));
+  const weekday = date.getUTCDay();
+  const labels = ['So', 'Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa'];
+  return labels[weekday];
 }
 
-function formatDayLabel(dateStr) {
-  const weekday = WEEKDAY_SHORT[getWeekdayIndexFromIsoDate(dateStr)];
-  return `${weekday}, ${formatDateShort(dateStr)}`;
+function formatDayButtonLabel(dateStr, icon) {
+  return `${getWeekdayShort(dateStr)} ${formatDateShort(dateStr)} ${icon}`;
 }
 
-function formatWeekRangeLabel(weekStartDate) {
-  const weekEndDate = addDaysIso(weekStartDate, 6);
-  return `${formatDateShort(weekStartDate)} – ${formatDateShort(weekEndDate)}`;
-}
-
-function getDailyCardRows(playerId, weekStartDate) {
-  return db.prepare(`
-    SELECT id, start_at, end_at
-    FROM availability_entries
-    WHERE player_id = ?
-      AND source = ?
-      AND source_ref = ?
-    ORDER BY start_at ASC, end_at ASC, id ASC
-  `).all(playerId, WEEKLY_SOURCE, weekStartDate);
-}
-
-function getEntriesForDate(rows, dateStr) {
-  return rows.filter(row => String(row.start_at).slice(0, 10) === dateStr);
-}
-
-function deriveDayState(rowsForDate) {
-  if (rowsForDate.length === 0) {
-    return { kind: 'available', icon: '✅', text: 'verfügbar' };
+function formatDayLine(dateStr, state) {
+  const prefix = `${getWeekdayShort(dateStr)}, ${formatDateShort(dateStr)}`;
+  if (state.kind === 'unavailable') {
+    return `${prefix} ❌ nicht verfügbar`;
   }
-
-  const first = rowsForDate[0];
-  const startTime = extractTimePart(first.start_at);
-  const endTime = extractTimePart(first.end_at);
-
-  if (startTime === '00:00' && endTime === '23:59') {
-    return { kind: 'unavailable', icon: '❌', text: 'nicht verfügbar' };
+  if (state.kind === 'partial') {
+    if (state.until && state.from) {
+      return `${prefix} 🕒 bis ${state.until}, ab ${state.from}`;
+    }
+    if (state.until) {
+      return `${prefix} 🕒 bis ${state.until}`;
+    }
+    if (state.from) {
+      return `${prefix} 🕒 ab ${state.from}`;
+    }
   }
-
-  const parts = [];
-
-  if (startTime !== '00:00') {
-    parts.push(`bis ${startTime} Uhr`);
-  }
-
-  if (endTime !== '23:59') {
-    parts.push(`ab ${endTime} Uhr`);
-  }
-
-  return {
-    kind: 'partial',
-    icon: '🕒',
-    text: parts.length ? parts.join(', ') : 'eingeschränkt verfügbar'
-  };
+  return `${prefix} ✅ verfügbar`;
 }
 
-function buildWeeklyStatusMap(playerId, weekStartDate) {
-  const dates = getDateWindow(weekStartDate, 7);
-  const rows = getDailyCardRows(playerId, weekStartDate);
-  const map = new Map();
-
-  for (const dateStr of dates) {
-    map.set(dateStr, deriveDayState(getEntriesForDate(rows, dateStr)));
+function getEntryReasonForState(state) {
+  if (state.kind === 'unavailable') {
+    return 'Wochen-Check-in: ganztägig nicht verfügbar';
   }
-
-  return map;
+  if (state.kind === 'partial') {
+    if (state.until && state.from) {
+      return `Wochen-Check-in: verfügbar bis ${state.until}, ab ${state.from}`;
+    }
+    if (state.until) {
+      return `Wochen-Check-in: verfügbar bis ${state.until}`;
+    }
+    if (state.from) {
+      return `Wochen-Check-in: verfügbar ab ${state.from}`;
+    }
+  }
+  return 'Wochen-Check-in';
 }
 
-function getWeeklyCardRecord(playerId, weekStartDate) {
+function getCurrentWeekPost(weekStartDate) {
   return db.prepare(`
     SELECT *
-    FROM weekly_availability_cards
-    WHERE player_id = ? AND week_start_date = ?
-  `).get(playerId, weekStartDate);
+    FROM weekly_availability_posts
+    WHERE week_start_date = ?
+  `).get(weekStartDate);
 }
 
-function upsertWeeklyCardRecord(playerId, weekStartDate, channelId, messageId) {
+function buildPublicPromptEmbed(weekStartDate) {
+  const weekDates = getWeekDates(weekStartDate);
+  const weekEndDate = weekDates[weekDates.length - 1];
+
+  return new EmbedBuilder()
+    .setTitle(`📅 Verfügbarkeitscheck – ${formatDateRange(weekStartDate, weekEndDate)}`)
+    .setDescription(
+      'Klicke auf **Meine Woche öffnen** und markiere deine Verfügbarkeit für die kommenden 7 Tage.\n\n' +
+      'Normale Klicks setzen einen Tag auf **✅ verfügbar** oder **❌ nicht verfügbar**.\n' +
+      'Über **🕒 Zeitfenster** kannst du z. B. **bis 15:00** oder **ab 18:00** angeben.'
+    );
+}
+
+function buildPublicPromptComponents(weekStartDate) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`${PREFIX}:open:${weekStartDate}`)
+        .setLabel('Meine Woche öffnen')
+        .setStyle(ButtonStyle.Primary)
+    )
+  ];
+}
+
+async function publishWeeklyAvailabilityPrompt(client, options = {}) {
+  const weekStartDate = options.weekStartDate || getWeekStartDate();
+  const channelId = process.env.WEEKLY_AVAILABILITY_CHANNEL_ID;
+
+  if (!channelId) {
+    return { sent: false, reason: 'missing_channel_id' };
+  }
+
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel || !channel.isTextBased()) {
+    return { sent: false, reason: 'invalid_channel' };
+  }
+
+  const payload = {
+    embeds: [buildPublicPromptEmbed(weekStartDate)],
+    components: buildPublicPromptComponents(weekStartDate)
+  };
+
+  const existing = getCurrentWeekPost(weekStartDate);
   const now = new Date().toISOString();
 
-  db.prepare(`
-    INSERT INTO weekly_availability_cards (
-      player_id,
-      week_start_date,
-      channel_id,
-      message_id,
-      created_at,
-      updated_at
-    )
-    VALUES (?, ?, ?, ?, ?, ?)
-    ON CONFLICT(player_id, week_start_date)
-    DO UPDATE SET
-      channel_id = excluded.channel_id,
-      message_id = excluded.message_id,
-      updated_at = excluded.updated_at
-  `).run(playerId, weekStartDate, channelId, messageId, now, now);
+  if (existing?.message_id) {
+    const existingMessage = await channel.messages.fetch(existing.message_id).catch(() => null);
+    if (existingMessage) {
+      await existingMessage.edit(payload);
+      db.prepare(`
+        UPDATE weekly_availability_posts
+        SET channel_id = ?, updated_at = ?
+        WHERE id = ?
+      `).run(channel.id, now, existing.id);
+
+      return { sent: true, mode: 'updated', weekStartDate, messageId: existingMessage.id };
+    }
+  }
+
+  const sentMessage = await channel.send(payload);
+
+  if (existing) {
+    db.prepare(`
+      UPDATE weekly_availability_posts
+      SET channel_id = ?, message_id = ?, updated_at = ?
+      WHERE id = ?
+    `).run(channel.id, sentMessage.id, now, existing.id);
+  } else {
+    db.prepare(`
+      INSERT INTO weekly_availability_posts (
+        week_start_date,
+        channel_id,
+        message_id,
+        created_at,
+        updated_at
+      )
+      VALUES (?, ?, ?, ?, ?)
+    `).run(weekStartDate, channel.id, sentMessage.id, now, now);
+  }
+
+  return { sent: true, mode: 'created', weekStartDate, messageId: sentMessage.id };
 }
 
-function getPlannedEvents(weekStartDate) {
+function getWeeklyEntries(playerId, weekStartDate) {
   const weekEndDate = addDaysIso(weekStartDate, 6);
   return db.prepare(`
-    SELECT id, title, opponent_name, event_type, status, option_date,
-           COALESCE(scheduled_start_at, window_start_at) AS sort_at
-    FROM team_calendar_events
-    WHERE option_date >= ?
-      AND option_date <= ?
-      AND status <> 'cancelled'
-    ORDER BY option_date ASC, COALESCE(scheduled_start_at, window_start_at) ASC, id ASC
-  `).all(weekStartDate, weekEndDate);
+    SELECT *
+    FROM availability_entries
+    WHERE player_id = ?
+      AND source = 'weekly_checkin'
+      AND end_at >= ?
+      AND start_at <= ?
+    ORDER BY start_at ASC
+  `).all(playerId, `${weekStartDate} 00:00`, `${weekEndDate} 23:59`);
 }
 
-function eventTypeLabel(eventType) {
-  switch (eventType) {
-    case 'primeleague':
-      return 'PRM';
-    case 'scrim':
-      return 'Scrim';
-    case 'open':
-      return 'Offen';
-    case 'other':
-      return 'Sonstiges';
-    default:
-      return eventType || 'Termin';
-  }
+function getWeeklyEntryForDate(entries, dateStr) {
+  return entries.find(entry => entry.start_at.startsWith(`${dateStr} `) || entry.end_at.startsWith(`${dateStr} `)) || null;
 }
 
-function buildPlannedEventLines(weekStartDate) {
-  const events = getPlannedEvents(weekStartDate);
-  if (events.length === 0) {
-    return ['Keine geplanten Termine in den kommenden 7 Tagen.'];
+function deriveStateFromEntry(entry) {
+  if (!entry) {
+    return { kind: 'available', icon: '✅' };
   }
 
-  return events.map(event => {
-    const timePart = event.sort_at ? `${extractTimePart(event.sort_at)} Uhr` : 'Zeit offen';
-    const opponent = event.opponent_name?.trim() ? ` vs ${event.opponent_name.trim()}` : '';
-    return `• ${formatDayLabel(event.option_date)} — ${timePart} — ${eventTypeLabel(event.event_type)}${opponent}`;
-  });
+  const startTime = entry.start_at.slice(11, 16);
+  const endTime = entry.end_at.slice(11, 16);
+
+  if (startTime === '00:00' && endTime === '23:59') {
+    return { kind: 'unavailable', icon: '❌' };
+  }
+
+  if (startTime === '00:00') {
+    return { kind: 'partial', from: endTime, icon: '🕒' };
+  }
+
+  if (endTime === '23:59') {
+    return { kind: 'partial', until: startTime, icon: '🕒' };
+  }
+
+  return { kind: 'partial', until: startTime, from: endTime, icon: '🕒' };
 }
 
-function buildWeeklyAvailabilityPayload(player, weekStartDate) {
-  const statusMap = buildWeeklyStatusMap(player.id, weekStartDate);
-  const dates = getDateWindow(weekStartDate, 7);
-  const statusLines = dates.map(dateStr => {
-    const state = statusMap.get(dateStr);
-    return `${formatDayLabel(dateStr)} — ${state.icon} ${state.text}`;
+function buildEditorEmbed(player, weekStartDate) {
+  const weekDates = getWeekDates(weekStartDate);
+  const entries = getWeeklyEntries(player.id, weekStartDate);
+  const lines = weekDates.map(dateStr => {
+    const entry = getWeeklyEntryForDate(entries, dateStr);
+    return formatDayLine(dateStr, deriveStateFromEntry(entry));
   });
 
-  const embed = new EmbedBuilder()
-    .setTitle(`🗓️ Verfügbarkeit – ${playerDisplay(player)}`)
-    .setDescription([
-      `**Woche:** ${formatWeekRangeLabel(weekStartDate)}`,
-      '',
-      '**Geplante Termine**',
-      ...buildPlannedEventLines(weekStartDate),
-      '',
-      '**Dein Status**',
-      ...statusLines,
-      '',
-      'Klicke direkt auf einen Tag für **✅ / ❌**.',
-      'Für Uhrzeiten nutze **🕒 Zeitfenster**.'
-    ].join('\n'));
+  return new EmbedBuilder()
+    .setTitle(`🗓️ Deine Woche – ${playerDisplay(player)}`)
+    .setDescription(lines.join('\n'))
+    .setFooter({ text: 'Tagesbutton = ✅/❌ umschalten · Zeitfenster für eingeschränkte Verfügbarkeit' });
+}
 
-  const buttons = dates.map(dateStr => {
-    const state = statusMap.get(dateStr);
+function buildEditorComponents(player, weekStartDate, options = {}) {
+  const weekDates = getWeekDates(weekStartDate);
+  const entries = getWeeklyEntries(player.id, weekStartDate);
+  const withTimeSelect = options.withTimeSelect === true;
+
+  const dayButtons = weekDates.map(dateStr => {
+    const entry = getWeeklyEntryForDate(entries, dateStr);
+    const state = deriveStateFromEntry(entry);
+
     return new ButtonBuilder()
-      .setCustomId(`${WEEKLY_PREFIX}:day:${player.id}:${weekStartDate}:${dateStr}`)
-      .setLabel(`${WEEKDAY_SHORT[getWeekdayIndexFromIsoDate(dateStr)]} ${formatDateShort(dateStr)} ${state.icon}`)
+      .setCustomId(`${PREFIX}:toggle:${weekStartDate}:${dateStr}`)
+      .setLabel(formatDayButtonLabel(dateStr, state.icon))
       .setStyle(
         state.kind === 'available'
           ? ButtonStyle.Success
@@ -226,133 +257,84 @@ function buildWeeklyAvailabilityPayload(player, weekStartDate) {
       );
   });
 
-  const rows = [
-    new ActionRowBuilder().addComponents(...buttons.slice(0, 5)),
-    new ActionRowBuilder().addComponents(
-      ...buttons.slice(5, 7),
-      new ButtonBuilder()
-        .setCustomId(`${WEEKLY_PREFIX}:allyes:${player.id}:${weekStartDate}`)
-        .setLabel('Alle ✅')
-        .setStyle(ButtonStyle.Success),
-      new ButtonBuilder()
-        .setCustomId(`${WEEKLY_PREFIX}:allno:${player.id}:${weekStartDate}`)
-        .setLabel('Alle ❌')
-        .setStyle(ButtonStyle.Danger),
-      new ButtonBuilder()
-        .setCustomId(`${WEEKLY_PREFIX}:reset:${player.id}:${weekStartDate}`)
-        .setLabel('Reset')
-        .setStyle(ButtonStyle.Secondary)
-    ),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`${WEEKLY_PREFIX}:time:${player.id}:${weekStartDate}`)
-        .setLabel('🕒 Zeitfenster')
-        .setStyle(ButtonStyle.Primary)
-    )
-  ];
+  const rows = [];
+  rows.push(new ActionRowBuilder().addComponents(dayButtons.slice(0, 4)));
+  rows.push(new ActionRowBuilder().addComponents(dayButtons.slice(4, 7)));
 
-  return { embeds: [embed], components: rows };
+  rows.push(new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`${PREFIX}:allyes:${weekStartDate}`)
+      .setLabel('Alle ✅')
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId(`${PREFIX}:allno:${weekStartDate}`)
+      .setLabel('Alle ❌')
+      .setStyle(ButtonStyle.Danger),
+    new ButtonBuilder()
+      .setCustomId(`${PREFIX}:reset:${weekStartDate}`)
+      .setLabel('Reset')
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(`${PREFIX}:time:${weekStartDate}`)
+      .setLabel('🕒 Zeitfenster')
+      .setStyle(ButtonStyle.Primary)
+  ));
+
+  if (withTimeSelect) {
+    rows.push(new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(`${PREFIX}:timeday:${weekStartDate}`)
+        .setPlaceholder('Tag für Zeitfenster auswählen')
+        .addOptions(weekDates.map(dateStr => ({
+          label: `${getWeekdayShort(dateStr)}, ${formatDateShort(dateStr)}`,
+          value: dateStr
+        })))
+    ));
+  }
+
+  return rows;
 }
 
-async function upsertWeeklyAvailabilityCard(channel, player, weekStartDate) {
-  const payload = buildWeeklyAvailabilityPayload(player, weekStartDate);
-  const existing = getWeeklyCardRecord(player.id, weekStartDate);
-
-  if (existing?.message_id) {
-    try {
-      const message = await channel.messages.fetch(existing.message_id);
-      if (message) {
-        await message.edit(payload);
-        return { action: 'updated', message };
-      }
-    } catch (_) {
-      // send new below
-    }
-  }
-
-  const sentMessage = await channel.send(payload);
-  upsertWeeklyCardRecord(player.id, weekStartDate, channel.id, sentMessage.id);
-  return { action: 'created', message: sentMessage };
-}
-
-async function postOrRefreshWeeklyAvailabilityCards(client) {
-  const channelId = process.env.WEEKLY_AVAILABILITY_CHANNEL_ID;
-  if (!channelId) {
-    return { sent: false, reason: 'missing_channel_id' };
-  }
-
-  const channel = await client.channels.fetch(channelId);
-  if (!channel || !channel.isTextBased()) {
-    return { sent: false, reason: 'invalid_channel' };
-  }
-
-  const weekStartDate = getWeekStartDate();
-  const players = db.prepare(`
-    SELECT id, discord_user_id, username, global_name, alias
-    FROM players
-    WHERE is_archived = 0
-    ORDER BY id ASC
-  `).all();
-
-  let created = 0;
-  let updated = 0;
-  let failed = 0;
-
-  for (const player of players) {
-    try {
-      const result = await upsertWeeklyAvailabilityCard(channel, player, weekStartDate);
-      if (result.action === 'created') created++;
-      else updated++;
-    } catch (error) {
-      failed++;
-      console.error(`[WeeklyAvailability] Karte für ${playerDisplay(player)} fehlgeschlagen:`, error);
-    }
-  }
-
+function buildEditorPayload(player, weekStartDate, options = {}) {
   return {
-    sent: true,
-    weekStartDate,
-    created,
-    updated,
-    failed,
-    playerCount: players.length
+    embeds: [buildEditorEmbed(player, weekStartDate)],
+    components: buildEditorComponents(player, weekStartDate, options)
   };
 }
 
-function ensureOwnerOrAdmin(interaction, player) {
-  if (!player) return false;
-  if (isAdminInteraction(interaction)) return true;
-  return interaction.user.id === player.discord_user_id;
-}
-
-async function denyWrongUser(interaction) {
-  const payload = {
-    content: 'Diese Wochenkarte gehört nicht dir.',
-    flags: MessageFlags.Ephemeral
-  };
-
-  if (interaction.isButton() || interaction.isStringSelectMenu() || interaction.isModalSubmit()) {
-    if (interaction.replied || interaction.deferred) {
-      await interaction.followUp(payload).catch(() => null);
-    } else {
-      await interaction.reply(payload).catch(() => null);
-    }
-  }
-}
-
-function deleteWeeklyEntriesForDate(playerId, weekStartDate, dateStr) {
+function deleteWeeklyCheckinForDay(playerId, dateStr) {
   db.prepare(`
     DELETE FROM availability_entries
     WHERE player_id = ?
-      AND source = ?
-      AND source_ref = ?
+      AND source = 'weekly_checkin'
       AND start_at >= ?
       AND start_at <= ?
-  `).run(playerId, WEEKLY_SOURCE, weekStartDate, `${dateStr} 00:00`, `${dateStr} 23:59`);
+  `).run(playerId, `${dateStr} 00:00`, `${dateStr} 23:59`);
 }
 
-function insertWeeklyBlockedEntry(playerId, dateStr, startTime, endTime, actorDiscordUserId, weekStartDate) {
+function insertWeeklyCheckinEntry({ playerId, actorDiscordUserId, dateStr, state }) {
   const now = new Date().toISOString();
+  let startAt = null;
+  let endAt = null;
+
+  if (state.kind === 'unavailable') {
+    startAt = `${dateStr} 00:00`;
+    endAt = `${dateStr} 23:59`;
+  } else if (state.kind === 'partial') {
+    if (state.until && state.from) {
+      startAt = `${dateStr} ${state.until}`;
+      endAt = `${dateStr} ${state.from}`;
+    } else if (state.until) {
+      startAt = `${dateStr} ${state.until}`;
+      endAt = `${dateStr} 23:59`;
+    } else if (state.from) {
+      startAt = `${dateStr} 00:00`;
+      endAt = `${dateStr} ${state.from}`;
+    }
+  }
+
+  if (!startAt || !endAt) return;
+
   db.prepare(`
     INSERT INTO availability_entries (
       player_id,
@@ -360,27 +342,19 @@ function insertWeeklyBlockedEntry(playerId, dateStr, startTime, endTime, actorDi
       start_at,
       end_at,
       reason,
-      approval_status,
-      reviewed_by_discord_user_id,
-      reviewed_at,
-      review_note,
       source,
-      source_ref,
+      approval_status,
       created_by_discord_user_id,
       updated_by_discord_user_id,
       created_at,
       updated_at
     )
-    VALUES (?, 'absence', ?, ?, ?, 'approved', ?, ?, NULL, ?, ?, ?, ?, ?, ?)
+    VALUES (?, 'absence', ?, ?, ?, 'weekly_checkin', 'approved', ?, ?, ?, ?)
   `).run(
     playerId,
-    `${dateStr} ${startTime}`,
-    `${dateStr} ${endTime}`,
-    'Wochencheck-in',
-    actorDiscordUserId,
-    now,
-    WEEKLY_SOURCE,
-    weekStartDate,
+    startAt,
+    endAt,
+    getEntryReasonForState(state),
     actorDiscordUserId,
     actorDiscordUserId,
     now,
@@ -388,247 +362,209 @@ function insertWeeklyBlockedEntry(playerId, dateStr, startTime, endTime, actorDi
   );
 }
 
-function setDayAvailability(playerId, dateStr, weekStartDate, mode, actorDiscordUserId) {
-  deleteWeeklyEntriesForDate(playerId, weekStartDate, dateStr);
-
-  if (mode === 'available') return;
-
-  if (mode === 'unavailable') {
-    insertWeeklyBlockedEntry(playerId, dateStr, '00:00', '23:59', actorDiscordUserId, weekStartDate);
+function setDayState(playerId, actorDiscordUserId, dateStr, state) {
+  deleteWeeklyCheckinForDay(playerId, dateStr);
+  if (state.kind !== 'available') {
+    insertWeeklyCheckinEntry({ playerId, actorDiscordUserId, dateStr, state });
   }
 }
 
-function applyTimeWindow(playerId, dateStr, weekStartDate, availableUntil, availableFrom, actorDiscordUserId) {
-  deleteWeeklyEntriesForDate(playerId, weekStartDate, dateStr);
+function toggleDayState(player, actorDiscordUserId, dateStr, weekStartDate) {
+  const entries = getWeeklyEntries(player.id, weekStartDate);
+  const current = deriveStateFromEntry(getWeeklyEntryForDate(entries, dateStr));
 
-  const until = availableUntil?.trim() || '';
-  const from = availableFrom?.trim() || '';
-
-  if (!until && !from) {
-    return { ok: true, mode: 'available' };
+  let nextState;
+  if (current.kind === 'available') {
+    nextState = { kind: 'unavailable' };
+  } else if (current.kind === 'partial') {
+    nextState = { kind: 'unavailable' };
+  } else {
+    nextState = { kind: 'available' };
   }
 
-  if (until && !isValidTime(until)) {
-    return { ok: false, error: '„Verfügbar bis“ muss im Format HH:MM sein.' };
-  }
-
-  if (from && !isValidTime(from)) {
-    return { ok: false, error: '„Verfügbar ab“ muss im Format HH:MM sein.' };
-  }
-
-  if (until && from && until >= from) {
-    return { ok: false, error: '„Verfügbar bis“ muss vor „Verfügbar ab“ liegen.' };
-  }
-
-  if (until && until !== '23:59' && !from) {
-    insertWeeklyBlockedEntry(playerId, dateStr, until, '23:59', actorDiscordUserId, weekStartDate);
-    return { ok: true, mode: 'partial' };
-  }
-
-  if (from && from !== '00:00' && !until) {
-    insertWeeklyBlockedEntry(playerId, dateStr, '00:00', from, actorDiscordUserId, weekStartDate);
-    return { ok: true, mode: 'partial' };
-  }
-
-  if (until && from) {
-    insertWeeklyBlockedEntry(playerId, dateStr, until, from, actorDiscordUserId, weekStartDate);
-    return { ok: true, mode: 'partial' };
-  }
-
-  return { ok: true, mode: 'available' };
+  setDayState(player.id, actorDiscordUserId, dateStr, nextState);
 }
 
-function clearWeekEntries(playerId, weekStartDate) {
+function setAllDays(playerId, actorDiscordUserId, weekStartDate, state) {
+  for (const dateStr of getWeekDates(weekStartDate)) {
+    setDayState(playerId, actorDiscordUserId, dateStr, state);
+  }
+}
+
+function resetWeek(playerId, weekStartDate) {
+  const weekEndDate = addDaysIso(weekStartDate, 6);
   db.prepare(`
     DELETE FROM availability_entries
     WHERE player_id = ?
-      AND source = ?
-      AND source_ref = ?
-  `).run(playerId, WEEKLY_SOURCE, weekStartDate);
+      AND source = 'weekly_checkin'
+      AND start_at >= ?
+      AND start_at <= ?
+  `).run(playerId, `${weekStartDate} 00:00`, `${weekEndDate} 23:59`);
 }
 
-function setWholeWeek(playerId, weekStartDate, mode, actorDiscordUserId) {
-  clearWeekEntries(playerId, weekStartDate);
-  if (mode !== 'unavailable') return;
-
-  for (const dateStr of getDateWindow(weekStartDate, 7)) {
-    insertWeeklyBlockedEntry(playerId, dateStr, '00:00', '23:59', actorDiscordUserId, weekStartDate);
-  }
-}
-
-async function refreshWeeklyAvailabilityCard(client, playerId, weekStartDate) {
-  const player = getPlayerById(playerId);
-  if (!player) return false;
-  const record = getWeeklyCardRecord(playerId, weekStartDate);
-  if (!record?.channel_id) return false;
-
-  try {
-    const channel = await client.channels.fetch(record.channel_id);
-    if (!channel || !channel.isTextBased()) return false;
-    await upsertWeeklyAvailabilityCard(channel, player, weekStartDate);
-    return true;
-  } catch (error) {
-    console.error('[WeeklyAvailability] Refresh fehlgeschlagen:', error);
-    return false;
-  }
-}
-
-function buildTimeWindowDaySelect(playerId, weekStartDate) {
-  const options = getDateWindow(weekStartDate, 7).map(dateStr => ({
-    label: formatDayLabel(dateStr),
-    value: dateStr,
-    description: `Zeitfenster für ${WEEKDAY_LONG[getWeekdayIndexFromIsoDate(dateStr)]} setzen`
-  }));
-
-  return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId(`${WEEKLY_PREFIX}:timeday:${playerId}:${weekStartDate}`)
-      .setPlaceholder('Tag für Zeitfenster auswählen')
-      .addOptions(options)
-  );
-}
-
-async function handleDayButton(interaction, playerId, weekStartDate, dateStr) {
-  const player = getPlayerById(playerId);
-  if (!ensureOwnerOrAdmin(interaction, player)) {
-    return denyWrongUser(interaction);
-  }
-
-  const currentState = buildWeeklyStatusMap(playerId, weekStartDate).get(dateStr);
-  const nextMode = currentState.kind === 'unavailable' ? 'available' : 'unavailable';
-  setDayAvailability(playerId, dateStr, weekStartDate, nextMode, interaction.user.id);
-
-  await refreshWeeklyAvailabilityCard(interaction.client, playerId, weekStartDate);
-  return interaction.deferUpdate();
-}
-
-async function handleMassButton(interaction, playerId, weekStartDate, mode) {
-  const player = getPlayerById(playerId);
-  if (!ensureOwnerOrAdmin(interaction, player)) {
-    return denyWrongUser(interaction);
-  }
-
-  if (mode === 'reset' || mode === 'allyes') {
-    clearWeekEntries(playerId, weekStartDate);
-  } else if (mode === 'allno') {
-    setWholeWeek(playerId, weekStartDate, 'unavailable', interaction.user.id);
-  }
-
-  await refreshWeeklyAvailabilityCard(interaction.client, playerId, weekStartDate);
-  return interaction.deferUpdate();
-}
-
-async function handleTimeButton(interaction, playerId, weekStartDate) {
-  const player = getPlayerById(playerId);
-  if (!ensureOwnerOrAdmin(interaction, player)) {
-    return denyWrongUser(interaction);
-  }
-
-  return interaction.reply({
-    content: 'Wähle zuerst den Tag aus, für den du ein Zeitfenster setzen möchtest.',
-    components: [buildTimeWindowDaySelect(playerId, weekStartDate)],
-    flags: MessageFlags.Ephemeral
-  });
-}
-
-async function handleTimeDaySelect(interaction, playerId, weekStartDate) {
-  const player = getPlayerById(playerId);
-  if (!ensureOwnerOrAdmin(interaction, player)) {
-    return denyWrongUser(interaction);
-  }
-
-  const dateStr = interaction.values[0];
-  const state = buildWeeklyStatusMap(playerId, weekStartDate).get(dateStr);
-  const existingUntil = state.kind === 'partial' && state.text.includes('bis ') ? state.text.match(/bis (\d{2}:\d{2}) Uhr/)?.[1] || '' : '';
-  const existingFrom = state.kind === 'partial' && state.text.includes('ab ') ? state.text.match(/ab (\d{2}:\d{2}) Uhr/)?.[1] || '' : '';
-
-  const modal = new ModalBuilder()
-    .setCustomId(`${WEEKLY_PREFIX}:timemodal:${playerId}:${weekStartDate}:${dateStr}`)
-    .setTitle(`Zeitfenster – ${formatDayLabel(dateStr)}`)
-    .addComponents(
-      new ActionRowBuilder().addComponents(
-        (() => {
-          const input = new TextInputBuilder()
-            .setCustomId('available_until')
-            .setLabel('Verfügbar bis (HH:MM)')
-            .setStyle(TextInputStyle.Short)
-            .setRequired(false)
-            .setPlaceholder('z. B. 15:00');
-          if (existingUntil) input.setValue(existingUntil);
-          return input;
-        })()
-      ),
-      new ActionRowBuilder().addComponents(
-        (() => {
-          const input = new TextInputBuilder()
-            .setCustomId('available_from')
-            .setLabel('Verfügbar ab (HH:MM)')
-            .setStyle(TextInputStyle.Short)
-            .setRequired(false)
-            .setPlaceholder('z. B. 18:00');
-          if (existingFrom) input.setValue(existingFrom);
-          return input;
-        })()
-      )
-    );
-
-  return interaction.showModal(modal);
-}
-
-async function handleTimeModal(interaction, playerId, weekStartDate, dateStr) {
-  const player = getPlayerById(playerId);
-  if (!ensureOwnerOrAdmin(interaction, player)) {
-    return denyWrongUser(interaction);
-  }
-
-  const availableUntil = interaction.fields.getTextInputValue('available_until');
-  const availableFrom = interaction.fields.getTextInputValue('available_from');
-  const result = applyTimeWindow(playerId, dateStr, weekStartDate, availableUntil, availableFrom, interaction.user.id);
-
-  if (!result.ok) {
-    return interaction.reply({ content: result.error, flags: MessageFlags.Ephemeral });
-  }
-
-  await refreshWeeklyAvailabilityCard(interaction.client, playerId, weekStartDate);
-  return interaction.reply({
-    content: `Zeitfenster für **${formatDayLabel(dateStr)}** gespeichert.`,
-    flags: MessageFlags.Ephemeral
-  });
+function parseCustomId(customId) {
+  const parts = String(customId || '').split(':');
+  if (parts[0] !== PREFIX) return null;
+  return parts;
 }
 
 function canHandleInteraction(interaction) {
-  return interaction.customId?.startsWith(`${WEEKLY_PREFIX}:`);
+  return Boolean(parseCustomId(interaction.customId));
+}
+
+async function openEditor(interaction, weekStartDate, options = {}) {
+  const player = upsertPlayer(interaction.user);
+  const payload = buildEditorPayload(player, weekStartDate, options);
+
+  if (interaction.isButton() && !interaction.replied && !interaction.deferred) {
+    return interaction.reply({ ...payload, flags: MessageFlags.Ephemeral });
+  }
+
+  if (interaction.isStringSelectMenu() || interaction.isButton()) {
+    return interaction.update(payload);
+  }
+
+  return interaction.reply({ ...payload, flags: MessageFlags.Ephemeral });
+}
+
+function buildTimeWindowModal(weekStartDate, dateStr) {
+  const modal = new ModalBuilder()
+    .setCustomId(`${PREFIX}:timemodal:${weekStartDate}:${dateStr}`)
+    .setTitle(`Zeitfenster – ${getWeekdayShort(dateStr)}, ${formatDateShort(dateStr)}`);
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('available_until')
+        .setLabel('Verfügbar bis (HH:MM, optional)')
+        .setRequired(false)
+        .setStyle(TextInputStyle.Short)
+        .setPlaceholder('z. B. 15:00')
+    ),
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('available_from')
+        .setLabel('Verfügbar ab (HH:MM, optional)')
+        .setRequired(false)
+        .setStyle(TextInputStyle.Short)
+        .setPlaceholder('z. B. 18:00')
+    )
+  );
+
+  return modal;
+}
+
+function buildStateFromTimes(until, from) {
+  if (!until && !from) {
+    return { kind: 'available' };
+  }
+
+  if (until && from && until >= from) {
+    return { error: '„Verfügbar bis“ muss vor „Verfügbar ab“ liegen.' };
+  }
+
+  if (until && !isValidTime(until)) {
+    return { error: '„Verfügbar bis“ ist ungültig. Nutze HH:MM.' };
+  }
+
+  if (from && !isValidTime(from)) {
+    return { error: '„Verfügbar ab“ ist ungültig. Nutze HH:MM.' };
+  }
+
+  if (until === '23:59' || from === '00:00') {
+    return { kind: 'available' };
+  }
+
+  return { kind: 'partial', until: until || null, from: from || null };
 }
 
 async function handleInteraction(interaction) {
-  const parts = interaction.customId.split(':');
+  const parts = parseCustomId(interaction.customId);
+  if (!parts) return false;
+
   const action = parts[1];
-  const playerId = Number(parts[2]);
-  const weekStartDate = parts[3];
-  const dateStr = parts[4];
+  const weekStartDate = parts[2];
 
   if (interaction.isButton()) {
-    if (action === 'day') return handleDayButton(interaction, playerId, weekStartDate, dateStr);
-    if (action === 'allyes' || action === 'allno' || action === 'reset') {
-      return handleMassButton(interaction, playerId, weekStartDate, action);
+    if (action === 'open') {
+      await openEditor(interaction, weekStartDate);
+      return true;
     }
-    if (action === 'time') return handleTimeButton(interaction, playerId, weekStartDate);
+
+    if (action === 'toggle') {
+      const dateStr = parts[3];
+      const player = upsertPlayer(interaction.user);
+      toggleDayState(player, interaction.user.id, dateStr, weekStartDate);
+      await openEditor(interaction, weekStartDate);
+      return true;
+    }
+
+    if (action === 'allyes') {
+      const player = upsertPlayer(interaction.user);
+      resetWeek(player.id, weekStartDate);
+      await openEditor(interaction, weekStartDate);
+      return true;
+    }
+
+    if (action === 'allno') {
+      const player = upsertPlayer(interaction.user);
+      setAllDays(player.id, interaction.user.id, weekStartDate, { kind: 'unavailable' });
+      await openEditor(interaction, weekStartDate);
+      return true;
+    }
+
+    if (action === 'reset') {
+      const player = upsertPlayer(interaction.user);
+      resetWeek(player.id, weekStartDate);
+      await openEditor(interaction, weekStartDate);
+      return true;
+    }
+
+    if (action === 'time') {
+      await openEditor(interaction, weekStartDate, { withTimeSelect: true });
+      return true;
+    }
   }
 
   if (interaction.isStringSelectMenu()) {
-    if (action === 'timeday') return handleTimeDaySelect(interaction, playerId, weekStartDate);
+    if (action === 'timeday') {
+      const dateStr = interaction.values[0];
+      await interaction.showModal(buildTimeWindowModal(weekStartDate, dateStr));
+      return true;
+    }
   }
 
   if (interaction.isModalSubmit()) {
-    if (action === 'timemodal') return handleTimeModal(interaction, playerId, weekStartDate, dateStr);
+    if (action === 'timemodal') {
+      const dateStr = parts[3];
+      const until = interaction.fields.getTextInputValue('available_until').trim();
+      const from = interaction.fields.getTextInputValue('available_from').trim();
+      const player = upsertPlayer(interaction.user);
+      const nextState = buildStateFromTimes(until || null, from || null);
+
+      if (nextState.error) {
+        await interaction.reply({ content: nextState.error, flags: MessageFlags.Ephemeral });
+        return true;
+      }
+
+      setDayState(player.id, interaction.user.id, dateStr, nextState);
+      await interaction.reply({
+        ...buildEditorPayload(player, weekStartDate),
+        flags: MessageFlags.Ephemeral
+      });
+      return true;
+    }
   }
+
+  return false;
 }
 
 module.exports = {
-  WEEKLY_PREFIX,
+  PREFIX,
+  addDaysIso,
   getWeekStartDate,
-  postOrRefreshWeeklyAvailabilityCards,
-  refreshWeeklyAvailabilityCard,
+  getWeekDates,
+  publishWeeklyAvailabilityPrompt,
   canHandleInteraction,
   handleInteraction
 };

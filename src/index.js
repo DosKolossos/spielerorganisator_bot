@@ -14,10 +14,10 @@ const pingCommand = require('./commands/ping');
 const profilCommand = require('./commands/profil');
 const abwesenheitCommand = require('./commands/abwesenheit');
 const regelCommand = require('./commands/regel');
-const verfuegbarkeitCommand = require('./commands/verfuegbarkeit');
 const spielterminCommand = require('./commands/spieltermin');
 const adminCommand = require('./commands/admin');
 const geburtstagCommand = require('./commands/geburtstag');
+const verfuegbarkeitCommand = require('./commands/verfuegbarkeit');
 
 const { runSundayReminder } = require('./jobs/sundayReminder');
 const { runSundayPlanner } = require('./jobs/sundayPlanner');
@@ -32,10 +32,10 @@ client.commands.set(pingCommand.data.name, pingCommand);
 client.commands.set(profilCommand.data.name, profilCommand);
 client.commands.set(abwesenheitCommand.data.name, abwesenheitCommand);
 client.commands.set(regelCommand.data.name, regelCommand);
-client.commands.set(verfuegbarkeitCommand.data.name, verfuegbarkeitCommand);
 client.commands.set(spielterminCommand.data.name, spielterminCommand);
 client.commands.set(adminCommand.data.name, adminCommand);
 client.commands.set(geburtstagCommand.data.name, geburtstagCommand);
+client.commands.set(verfuegbarkeitCommand.data.name, verfuegbarkeitCommand);
 
 async function registerCommands() {
   const commands = [
@@ -43,10 +43,10 @@ async function registerCommands() {
     profilCommand.data.toJSON(),
     abwesenheitCommand.data.toJSON(),
     regelCommand.data.toJSON(),
-    verfuegbarkeitCommand.data.toJSON(),
     spielterminCommand.data.toJSON(),
     adminCommand.data.toJSON(),
-    geburtstagCommand.data.toJSON()
+    geburtstagCommand.data.toJSON(),
+    verfuegbarkeitCommand.data.toJSON()
   ];
 
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
