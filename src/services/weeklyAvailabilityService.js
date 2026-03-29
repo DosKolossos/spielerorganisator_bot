@@ -59,6 +59,9 @@ function formatDayLine(dateStr, state) {
   if (state.kind === 'unavailable') {
     return `${prefix} ❌ nicht verfügbar`;
   }
+  if (state.kind === 'window') {
+    return `${prefix} 🕒 ${state.from}–${state.until}`;
+  }
   if (state.kind === 'partial') {
     if (state.until && state.from) {
       return `${prefix} 🕒 bis ${state.until}, ab ${state.from}`;
@@ -76,6 +79,9 @@ function formatDayLine(dateStr, state) {
 function getEntryReasonForState(state) {
   if (state.kind === 'unavailable') {
     return 'Wochen-Check-in: ganztägig nicht verfügbar';
+  }
+  if (state.kind === 'window') {
+    return `Wochen-Check-in: verfügbar von ${state.from} bis ${state.until}`;
   }
   if (state.kind === 'partial') {
     if (state.until && state.from) {
@@ -195,39 +201,66 @@ function getWeeklyEntries(playerId, weekStartDate) {
   `).all(playerId, `${weekStartDate} 00:00`, `${weekEndDate} 23:59`);
 }
 
-function getWeeklyEntryForDate(entries, dateStr) {
-  return entries.find(entry => entry.start_at.startsWith(`${dateStr} `) || entry.end_at.startsWith(`${dateStr} `)) || null;
+function getWeeklyEntriesForDate(entries, dateStr) {
+  return entries
+    .filter(entry => entry.start_at.startsWith(`${dateStr} `) || entry.end_at.startsWith(`${dateStr} `))
+    .sort((a, b) => a.start_at.localeCompare(b.start_at));
 }
 
-function deriveStateFromEntry(entry) {
-  if (!entry) {
+function deriveStateFromEntries(dayEntries) {
+  if (!dayEntries || dayEntries.length === 0) {
     return { kind: 'available', icon: '✅' };
   }
 
-  const startTime = entry.start_at.slice(11, 16);
-  const endTime = entry.end_at.slice(11, 16);
+  const entries = [...dayEntries].sort((a, b) => a.start_at.localeCompare(b.start_at));
+  const first = entries[0];
+  const last = entries[entries.length - 1];
+  const firstStart = first.start_at.slice(11, 16);
+  const firstEnd = first.end_at.slice(11, 16);
+  const lastStart = last.start_at.slice(11, 16);
+  const lastEnd = last.end_at.slice(11, 16);
 
-  if (startTime === '00:00' && endTime === '23:59') {
+  if (entries.length === 1) {
+    if (firstStart === '00:00' && firstEnd === '23:59') {
+      return { kind: 'unavailable', icon: '❌' };
+    }
+
+    if (firstStart === '00:00') {
+      return { kind: 'partial', from: firstEnd, icon: '🕒' };
+    }
+
+    if (firstEnd === '23:59') {
+      return { kind: 'partial', until: firstStart, icon: '🕒' };
+    }
+
+    return { kind: 'partial', until: firstStart, from: firstEnd, icon: '🕒' };
+  }
+
+  if (entries.length === 2 && firstStart === '00:00' && lastEnd === '23:59' && firstEnd <= lastStart) {
+    return { kind: 'window', from: firstEnd, until: lastStart, icon: '🕒' };
+  }
+
+  if (firstStart === '00:00' && lastEnd === '23:59') {
     return { kind: 'unavailable', icon: '❌' };
   }
 
-  if (startTime === '00:00') {
-    return { kind: 'partial', from: endTime, icon: '🕒' };
+  if (firstStart === '00:00') {
+    return { kind: 'partial', from: firstEnd, icon: '🕒' };
   }
 
-  if (endTime === '23:59') {
-    return { kind: 'partial', until: startTime, icon: '🕒' };
+  if (lastEnd === '23:59') {
+    return { kind: 'partial', until: lastStart, icon: '🕒' };
   }
 
-  return { kind: 'partial', until: startTime, from: endTime, icon: '🕒' };
+  return { kind: 'partial', until: firstStart, from: lastEnd, icon: '🕒' };
 }
 
 function buildEditorEmbed(player, weekStartDate) {
   const weekDates = getWeekDates(weekStartDate);
   const entries = getWeeklyEntries(player.id, weekStartDate);
   const lines = weekDates.map(dateStr => {
-    const entry = getWeeklyEntryForDate(entries, dateStr);
-    return formatDayLine(dateStr, deriveStateFromEntry(entry));
+    const dayEntries = getWeeklyEntriesForDate(entries, dateStr);
+    return formatDayLine(dateStr, deriveStateFromEntries(dayEntries));
   });
 
   return new EmbedBuilder()
@@ -242,8 +275,8 @@ function buildEditorComponents(player, weekStartDate, options = {}) {
   const withTimeSelect = options.withTimeSelect === true;
 
   const dayButtons = weekDates.map(dateStr => {
-    const entry = getWeeklyEntryForDate(entries, dateStr);
-    const state = deriveStateFromEntry(entry);
+    const dayEntries = getWeeklyEntriesForDate(entries, dateStr);
+    const state = deriveStateFromEntries(dayEntries);
 
     return new ButtonBuilder()
       .setCustomId(`${PREFIX}:toggle:${weekStartDate}:${dateStr}`)
@@ -312,28 +345,8 @@ function deleteWeeklyCheckinForDay(playerId, dateStr) {
   `).run(playerId, `${dateStr} 00:00`, `${dateStr} 23:59`);
 }
 
-function insertWeeklyCheckinEntry({ playerId, actorDiscordUserId, dateStr, state }) {
+function insertWeeklyCheckinEntryRange({ playerId, actorDiscordUserId, startAt, endAt, reason }) {
   const now = new Date().toISOString();
-  let startAt = null;
-  let endAt = null;
-
-  if (state.kind === 'unavailable') {
-    startAt = `${dateStr} 00:00`;
-    endAt = `${dateStr} 23:59`;
-  } else if (state.kind === 'partial') {
-    if (state.until && state.from) {
-      startAt = `${dateStr} ${state.until}`;
-      endAt = `${dateStr} ${state.from}`;
-    } else if (state.until) {
-      startAt = `${dateStr} ${state.until}`;
-      endAt = `${dateStr} 23:59`;
-    } else if (state.from) {
-      startAt = `${dateStr} 00:00`;
-      endAt = `${dateStr} ${state.from}`;
-    }
-  }
-
-  if (!startAt || !endAt) return;
 
   db.prepare(`
     INSERT INTO availability_entries (
@@ -354,7 +367,7 @@ function insertWeeklyCheckinEntry({ playerId, actorDiscordUserId, dateStr, state
     playerId,
     startAt,
     endAt,
-    getEntryReasonForState(state),
+    reason,
     actorDiscordUserId,
     actorDiscordUserId,
     now,
@@ -362,16 +375,83 @@ function insertWeeklyCheckinEntry({ playerId, actorDiscordUserId, dateStr, state
   );
 }
 
+function insertWeeklyCheckinEntries({ playerId, actorDiscordUserId, dateStr, state }) {
+  const reason = getEntryReasonForState(state);
+
+  if (state.kind === 'unavailable') {
+    insertWeeklyCheckinEntryRange({
+      playerId,
+      actorDiscordUserId,
+      startAt: `${dateStr} 00:00`,
+      endAt: `${dateStr} 23:59`,
+      reason
+    });
+    return;
+  }
+
+  if (state.kind === 'window') {
+    insertWeeklyCheckinEntryRange({
+      playerId,
+      actorDiscordUserId,
+      startAt: `${dateStr} 00:00`,
+      endAt: `${dateStr} ${state.from}`,
+      reason
+    });
+    insertWeeklyCheckinEntryRange({
+      playerId,
+      actorDiscordUserId,
+      startAt: `${dateStr} ${state.until}`,
+      endAt: `${dateStr} 23:59`,
+      reason
+    });
+    return;
+  }
+
+  if (state.kind === 'partial') {
+    if (state.until && state.from) {
+      insertWeeklyCheckinEntryRange({
+        playerId,
+        actorDiscordUserId,
+        startAt: `${dateStr} ${state.until}`,
+        endAt: `${dateStr} ${state.from}`,
+        reason
+      });
+      return;
+    }
+
+    if (state.until) {
+      insertWeeklyCheckinEntryRange({
+        playerId,
+        actorDiscordUserId,
+        startAt: `${dateStr} ${state.until}`,
+        endAt: `${dateStr} 23:59`,
+        reason
+      });
+      return;
+    }
+
+    if (state.from) {
+      insertWeeklyCheckinEntryRange({
+        playerId,
+        actorDiscordUserId,
+        startAt: `${dateStr} 00:00`,
+        endAt: `${dateStr} ${state.from}`,
+        reason
+      });
+    }
+  }
+}
+
 function setDayState(playerId, actorDiscordUserId, dateStr, state) {
   deleteWeeklyCheckinForDay(playerId, dateStr);
   if (state.kind !== 'available') {
-    insertWeeklyCheckinEntry({ playerId, actorDiscordUserId, dateStr, state });
+    insertWeeklyCheckinEntries({ playerId, actorDiscordUserId, dateStr, state });
   }
 }
 
 function toggleDayState(player, actorDiscordUserId, dateStr, weekStartDate) {
   const entries = getWeeklyEntries(player.id, weekStartDate);
-  const current = deriveStateFromEntry(getWeeklyEntryForDate(entries, dateStr));
+  const current = deriveStateFromEntries(getWeeklyEntriesForDate(entries, dateStr));
 
   let nextState;
   if (current.kind === 'available') {
@@ -435,47 +515,70 @@ function buildTimeWindowModal(weekStartDate, dateStr) {
   modal.addComponents(
     new ActionRowBuilder().addComponents(
       new TextInputBuilder()
-        .setCustomId('available_until')
-        .setLabel('Verfügbar bis (HH:MM, optional)')
-        .setRequired(false)
-        .setStyle(TextInputStyle.Short)
-        .setPlaceholder('z. B. 15:00')
-    ),
-    new ActionRowBuilder().addComponents(
-      new TextInputBuilder()
         .setCustomId('available_from')
         .setLabel('Verfügbar ab (HH:MM, optional)')
         .setRequired(false)
         .setStyle(TextInputStyle.Short)
-        .setPlaceholder('z. B. 18:00')
+        .setPlaceholder('z. B. 19:30')
+    ),
+    new ActionRowBuilder().addComponents(
+      new TextInputBuilder()
+        .setCustomId('available_until')
+        .setLabel('Verfügbar bis (HH:MM, optional)')
+        .setRequired(false)
+        .setStyle(TextInputStyle.Short)
+        .setPlaceholder('z. B. 22:00')
     )
   );
 
   return modal;
 }
 
-function buildStateFromTimes(until, from) {
-  if (!until && !from) {
+function buildStateFromTimes(from, until) {
+  if (!from && !until) {
     return { kind: 'available' };
-  }
-
-  if (until && from && until >= from) {
-    return { error: '„Verfügbar bis“ muss vor „Verfügbar ab“ liegen.' };
-  }
-
-  if (until && !isValidTime(until)) {
-    return { error: '„Verfügbar bis“ ist ungültig. Nutze HH:MM.' };
   }
 
   if (from && !isValidTime(from)) {
     return { error: '„Verfügbar ab“ ist ungültig. Nutze HH:MM.' };
   }
 
-  if (until === '23:59' || from === '00:00') {
+  if (until && !isValidTime(until)) {
+    return { error: '„Verfügbar bis“ ist ungültig. Nutze HH:MM.' };
+  }
+
+  if (from && until) {
+    if (from >= until) {
+      return { error: '„Verfügbar ab“ muss vor „Verfügbar bis“ liegen.' };
+    }
+
+    if (from === '00:00' && until === '23:59') {
+      return { kind: 'available' };
+    }
+
+    if (from === '00:00') {
+      return { kind: 'partial', until };
+    }
+
+    if (until === '23:59') {
+      return { kind: 'partial', from };
+    }
+
+    return { kind: 'window', from, until };
+  }
+
+  if (from) {
+    if (from === '00:00') {
+      return { kind: 'available' };
+    }
+    return { kind: 'partial', from };
+  }
+
+  if (until === '23:59') {
     return { kind: 'available' };
   }
 
-  return { kind: 'partial', until: until || null, from: from || null };
+  return { kind: 'partial', until };
 }
 
 async function handleInteraction(interaction) {
@@ -537,10 +640,10 @@ async function handleInteraction(interaction) {
   if (interaction.isModalSubmit()) {
     if (action === 'timemodal') {
       const dateStr = parts[3];
-      const until = interaction.fields.getTextInputValue('available_until').trim();
       const from = interaction.fields.getTextInputValue('available_from').trim();
+      const until = interaction.fields.getTextInputValue('available_until').trim();
       const player = upsertPlayer(interaction.user);
-      const nextState = buildStateFromTimes(until || null, from || null);
+      const nextState = buildStateFromTimes(from || null, until || null);
 
       if (nextState.error) {
         await interaction.reply({ content: nextState.error, flags: MessageFlags.Ephemeral });
