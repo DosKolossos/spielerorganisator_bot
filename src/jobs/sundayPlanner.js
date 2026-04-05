@@ -2,8 +2,8 @@ const db = require('../db/database');
 const { upsertAdminCardMessage } = require('../commands/spieltermin');
 
 const SLOT_CONFIG = {
-  weekdayStart: '17:00',
-  weekendStart: '15:00',
+  weekdayStart: '19:30',
+  weekendStart: '19:30',
   dayEnd: '23:00',
   minDurationMinutes: 150,
   slotStepMinutes: 30
