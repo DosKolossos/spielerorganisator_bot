@@ -7,6 +7,7 @@ const {
 } = require('../services/weeklyAvailabilityService');
 
 module.exports = {
+  
   data: new SlashCommandBuilder()
     .setName('verfuegbarkeit')
     .setDescription('Verwalte die Wochen-Check-in-Nachricht.')
@@ -21,12 +22,13 @@ module.exports = {
 
   async execute(interaction) {
     if (!(await requireAdmin(interaction))) return;
-
     const subcommand = interaction.options.getSubcommand();
 
     if (subcommand === 'wochenkarten') {
+      console.log("ADMIN_CHANNEL_ID:", process.env.ADMIN_CHANNEL_ID);
       await interaction.reply({
         content: 'Baue Wochenkarten auf ...',
+
         flags: MessageFlags.Ephemeral
       });
 
