@@ -1,6 +1,8 @@
 const db = require('../db/database');
 const { upsertAdminCardMessage } = require('../commands/spieltermin');
 
+const PLANNER_WINDOW_DAYS = 14;
+
 const SLOT_CONFIG = {
   weekdayStart: '19:30',
   weekendStart: '19:30',
@@ -48,7 +50,7 @@ function addDaysIso(dateStr, daysToAdd) {
   return `${y}-${m}-${d}`;
 }
 
-function getDateWindow(startDate, numberOfDays = 7) {
+function getDateWindow(startDate, numberOfDays = PLANNER_WINDOW_DAYS) {
   const dates = [];
   for (let i = 0; i < numberOfDays; i++) {
     dates.push(addDaysIso(startDate, i));
@@ -658,10 +660,17 @@ async function runSundayPlanner(client, options = {}) {
   }
 
   const berlinToday = todayInBerlin();
-  const plannerStartDate = addDaysIso(berlinToday, 1);
-  const windowDates = getDateWindow(plannerStartDate, 7);
+  const plannerStartDate = options.startDate || addDaysIso(berlinToday, 1);
+  const windowEndDate = options.endDate || addDaysIso(plannerStartDate, PLANNER_WINDOW_DAYS - 1);
+  const plannerWindowDays = daysBetweenIso(plannerStartDate, windowEndDate) + 1;
+
+  if (plannerWindowDays <= 0) {
+    return { skipped: false, sent: false, reason: 'invalid_date_range', startDate: plannerStartDate, endDate: windowEndDate };
+  }
+
+  const windowDates = getDateWindow(plannerStartDate, plannerWindowDays);
   const windowStart = `${plannerStartDate} 00:00`;
-  const windowEndInclusive = `${addDaysIso(plannerStartDate, 6)} 23:59`;
+  const windowEndInclusive = `${windowEndDate} 23:59`;
 
   const players = db.prepare(`
     SELECT id, discord_user_id, username, global_name, alias
@@ -736,7 +745,7 @@ async function runSundayPlanner(client, options = {}) {
     suggestions.push({ ...suggestion, calendarId });
   }
 
-  const weekEndDate = addDaysIso(plannerStartDate, 6);
+  const weekEndDate = windowEndDate;
   await clearCurrentWeekPostedCards(client, plannerStartDate, weekEndDate);
 
   const currentWeekManualEvents = db.prepare(`
@@ -797,7 +806,7 @@ async function runSundayPlanner(client, options = {}) {
   overviewLines.push(`Erstellt am: **${new Date().toLocaleString('de-DE', { timeZone: 'Europe/Berlin' })}**`);
   overviewLines.push('');
 
-  overviewLines.push('**Fehlzeiten (nächste 7 Tage)**');
+  overviewLines.push(`**Fehlzeiten (${formatDateDE(plannerStartDate)} – ${formatDateDE(windowEndDate)})**`);
   if (mergedAbsenceItems.length === 0) {
     overviewLines.push('- Keine eingetragenen einmaligen oder regelmäßigen Fehlzeiten.');
   } else {
@@ -807,9 +816,9 @@ async function runSundayPlanner(client, options = {}) {
   }
 
   overviewLines.push('');
-  overviewLines.push('**🚨 Bereits eingetragene Termine in dieser Woche**');
+  overviewLines.push('**🚨 Bereits eingetragene Termine im Planungszeitraum**');
   if (currentWeekManualEvents.length === 0) {
-    overviewLines.push('- Keine bereits eingetragenen manuellen Termine in dieser Woche.');
+    overviewLines.push('- Keine bereits eingetragenen manuellen Termine im Planungszeitraum.');
   } else {
     for (const event of currentWeekManualEvents) {
       overviewLines.push(formatPlannerManualEvent(event, { urgent: true }));
@@ -839,10 +848,10 @@ async function runSundayPlanner(client, options = {}) {
     await adminChannel.send(message);
   }
 
-  await adminChannel.send('**📅 Termine dieser Woche – chronologisch**');
+  await adminChannel.send('**📅 Termine im Planungszeitraum – chronologisch**');
 
   if (orderedWeekEvents.length === 0) {
-    await adminChannel.send('Keine Termine für diese Woche gefunden.');
+    await adminChannel.send('Keine Termine im Planungszeitraum gefunden.');
   } else {
     for (const event of orderedWeekEvents) {
       await upsertAdminCardMessage(adminChannel, event.id);
@@ -854,6 +863,9 @@ async function runSundayPlanner(client, options = {}) {
   return {
     skipped: false,
     sent: true,
+    startDate: plannerStartDate,
+    endDate: windowEndDate,
+    windowDays: plannerWindowDays,
     messages: overviewMessages.length + orderedWeekEvents.length + 1,
     absenceCount: mergedAbsenceItems.length,
     suggestionCount: suggestions.length,

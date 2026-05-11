@@ -12,8 +12,11 @@ const {
 const db = require('../db/database');
 const { todayInBerlin, isValidTime } = require('../utils/time');
 const { upsertPlayer, playerDisplay } = require('../utils/playerUtils');
+const { requireAdmin } = require('../utils/permissions');
 
 const PREFIX = 'wavail';
+const DAYS_PER_WEEK = 7;
+const MAX_RANGE_DAYS = 35;
 
 function addDaysIso(dateStr, days) {
   const [year, month, day] = dateStr.split('-').map(Number);
@@ -25,17 +28,103 @@ function addDaysIso(dateStr, days) {
   return `${y}-${m}-${d}`;
 }
 
+function isValidIsoDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value || '')) return false;
+
+  const [year, month, day] = value.split('-').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+  );
+}
+
+function parseDateInput(value) {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) return null;
+
+  if (isValidIsoDate(trimmed)) {
+    return trimmed;
+  }
+
+  if (/^\d{2}\.\d{2}\.\d{4}$/.test(trimmed)) {
+    const [day, month, year] = trimmed.split('.');
+    const iso = `${year}-${month}-${day}`;
+    return isValidIsoDate(iso) ? iso : null;
+  }
+
+  return null;
+}
+
+function getDayDiffInclusive(startDate, endDate) {
+  const [sy, sm, sd] = startDate.split('-').map(Number);
+  const [ey, em, ed] = endDate.split('-').map(Number);
+  const start = Date.UTC(sy, sm - 1, sd);
+  const end = Date.UTC(ey, em - 1, ed);
+  return Math.floor((end - start) / (1000 * 60 * 60 * 24)) + 1;
+}
+
+function getMondayOfWeek(dateStr) {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  const weekday = date.getUTCDay();
+  const diffToMonday = weekday === 0 ? 6 : weekday - 1;
+  date.setUTCDate(date.getUTCDate() - diffToMonday);
+  const y = date.getUTCFullYear();
+  const m = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(date.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function getSundayOfWeek(dateStr) {
+  return addDaysIso(getMondayOfWeek(dateStr), 6);
+}
+
+function getDefaultRangeStartDate() {
+  return getMondayOfWeek(todayInBerlin());
+}
+
+function getDefaultRangeEndDate() {
+  return addDaysIso(getDefaultRangeStartDate(), 13);
+}
+
+function normalizeRangeToFullWeeks(startDate, endDate) {
+  return {
+    startDate: getMondayOfWeek(startDate),
+    endDate: getSundayOfWeek(endDate)
+  };
+}
+
 function getWeekStartDate(baseDate = todayInBerlin()) {
-  return addDaysIso(baseDate, 1);
+  return getMondayOfWeek(baseDate);
 }
 
 function getWeekDates(weekStartDate) {
-  return Array.from({ length: 7 }, (_, index) => addDaysIso(weekStartDate, index));
+  return Array.from({ length: DAYS_PER_WEEK }, (_, index) => addDaysIso(weekStartDate, index));
+}
+
+function getWeekStartsInRange(startDate, endDate) {
+  const weekStarts = [];
+  let current = getMondayOfWeek(startDate);
+  const last = getMondayOfWeek(endDate);
+
+  while (current <= last) {
+    weekStarts.push(current);
+    current = addDaysIso(current, 7);
+  }
+
+  return weekStarts;
 }
 
 function formatDateShort(dateStr) {
   const [year, month, day] = dateStr.split('-');
   return `${day}.${month}.`;
+}
+
+function formatDateDE(dateStr) {
+  const [year, month, day] = dateStr.split('-');
+  return `${day}.${month}.${year}`;
 }
 
 function formatDateRange(startDate, endDate) {
@@ -105,6 +194,35 @@ function getCurrentWeekPost(weekStartDate) {
   `).get(weekStartDate);
 }
 
+function buildAvailabilityRangeModal() {
+  const modal = new ModalBuilder()
+    .setCustomId(`${PREFIX}:rangemodal`)
+    .setTitle('Wochenkarten-Zeitraum');
+
+  const startInput = new TextInputBuilder()
+    .setCustomId('start_date')
+    .setLabel('Von-Datum (TT.MM.JJJJ oder JJJJ-MM-TT)')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setValue(formatDateDE(getDefaultRangeStartDate()))
+    .setPlaceholder('z. B. 11.05.2026');
+
+  const endInput = new TextInputBuilder()
+    .setCustomId('end_date')
+    .setLabel('Bis-Datum (TT.MM.JJJJ oder JJJJ-MM-TT)')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setValue(formatDateDE(getDefaultRangeEndDate()))
+    .setPlaceholder('z. B. 24.05.2026');
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(startInput),
+    new ActionRowBuilder().addComponents(endInput)
+  );
+
+  return modal;
+}
+
 function buildPublicPromptEmbed(weekStartDate) {
   const weekDates = getWeekDates(weekStartDate);
   const weekEndDate = weekDates[weekDates.length - 1];
@@ -112,7 +230,8 @@ function buildPublicPromptEmbed(weekStartDate) {
   return new EmbedBuilder()
     .setTitle(`📅 Verfügbarkeitscheck – ${formatDateRange(weekStartDate, weekEndDate)}`)
     .setDescription(
-      'Klicke auf **Meine Woche öffnen** und markiere deine Verfügbarkeit für die kommenden 7 Tage.\n\n' +
+      `Diese Karte gilt für **Montag bis Sonntag** (${formatDateDE(weekStartDate)} – ${formatDateDE(weekEndDate)}).\n\n` +
+      'Klicke auf **Meine Woche öffnen** und markiere deine Verfügbarkeit für diese Woche.\n\n' +
       'Normale Klicks setzen einen Tag auf **✅ verfügbar** oder **❌ nicht verfügbar**.\n' +
       'Über **🕒 Zeitfenster** kannst du z. B. **bis 15:00** oder **ab 18:00** angeben.'
     );
@@ -129,19 +248,8 @@ function buildPublicPromptComponents(weekStartDate) {
   ];
 }
 
-async function publishWeeklyAvailabilityPrompt(client, options = {}) {
-  const weekStartDate = options.weekStartDate || getWeekStartDate();
-  const channelId = process.env.WEEKLY_AVAILABILITY_CHANNEL_ID;
-
-  if (!channelId) {
-    return { sent: false, reason: 'missing_channel_id' };
-  }
-
-  const channel = await client.channels.fetch(channelId).catch(() => null);
-  if (!channel || !channel.isTextBased()) {
-    return { sent: false, reason: 'invalid_channel' };
-  }
-
+async function upsertWeeklyAvailabilityPrompt(channel, weekStartDate) {
+  const weekEndDate = addDaysIso(weekStartDate, DAYS_PER_WEEK - 1);
   const payload = {
     embeds: [buildPublicPromptEmbed(weekStartDate)],
     components: buildPublicPromptComponents(weekStartDate)
@@ -160,7 +268,12 @@ async function publishWeeklyAvailabilityPrompt(client, options = {}) {
         WHERE id = ?
       `).run(channel.id, now, existing.id);
 
-      return { sent: true, mode: 'updated', weekStartDate, messageId: existingMessage.id };
+      return {
+        mode: 'updated',
+        weekStartDate,
+        weekEndDate,
+        messageId: existingMessage.id
+      };
     }
   }
 
@@ -185,11 +298,61 @@ async function publishWeeklyAvailabilityPrompt(client, options = {}) {
     `).run(weekStartDate, channel.id, sentMessage.id, now, now);
   }
 
-  return { sent: true, mode: 'created', weekStartDate, messageId: sentMessage.id };
+  return {
+    mode: 'created',
+    weekStartDate,
+    weekEndDate,
+    messageId: sentMessage.id
+  };
+}
+
+async function publishWeeklyAvailabilityPrompt(client, options = {}) {
+  const rawStartDate = options.startDate || getDefaultRangeStartDate();
+  const rawEndDate = options.endDate || getDefaultRangeEndDate();
+  const normalizedRange = normalizeRangeToFullWeeks(rawStartDate, rawEndDate);
+  const channelId = process.env.WEEKLY_AVAILABILITY_CHANNEL_ID;
+
+  if (!channelId) {
+    return { sent: false, reason: 'missing_channel_id' };
+  }
+
+  const rangeDays = getDayDiffInclusive(normalizedRange.startDate, normalizedRange.endDate);
+  if (rangeDays > MAX_RANGE_DAYS) {
+    return {
+      sent: false,
+      reason: 'range_too_large',
+      maxRangeDays: MAX_RANGE_DAYS,
+      normalizedStartDate: normalizedRange.startDate,
+      normalizedEndDate: normalizedRange.endDate
+    };
+  }
+
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel || !channel.isTextBased()) {
+    return { sent: false, reason: 'invalid_channel' };
+  }
+
+  const weeks = getWeekStartsInRange(normalizedRange.startDate, normalizedRange.endDate);
+  const results = [];
+
+  for (const weekStartDate of weeks) {
+    results.push(await upsertWeeklyAvailabilityPrompt(channel, weekStartDate));
+  }
+
+  return {
+    sent: true,
+    mode: 'week_messages',
+    requestedStartDate: rawStartDate,
+    requestedEndDate: rawEndDate,
+    normalizedStartDate: normalizedRange.startDate,
+    normalizedEndDate: normalizedRange.endDate,
+    weekCount: results.length,
+    weeks: results
+  };
 }
 
 function getWeeklyEntries(playerId, weekStartDate) {
-  const weekEndDate = addDaysIso(weekStartDate, 6);
+  const weekEndDate = addDaysIso(weekStartDate, DAYS_PER_WEEK - 1);
   return db.prepare(`
     SELECT *
     FROM availability_entries
@@ -257,6 +420,7 @@ function deriveStateFromEntries(dayEntries) {
 
 function buildEditorEmbed(player, weekStartDate) {
   const weekDates = getWeekDates(weekStartDate);
+  const weekEndDate = weekDates[weekDates.length - 1];
   const entries = getWeeklyEntries(player.id, weekStartDate);
   const lines = weekDates.map(dateStr => {
     const dayEntries = getWeeklyEntriesForDate(entries, dateStr);
@@ -265,7 +429,7 @@ function buildEditorEmbed(player, weekStartDate) {
 
   return new EmbedBuilder()
     .setTitle(`🗓️ Deine Woche – ${playerDisplay(player)}`)
-    .setDescription(lines.join('\n'))
+    .setDescription(`**${formatDateDE(weekStartDate)} – ${formatDateDE(weekEndDate)}**\n\n${lines.join('\n')}`)
     .setFooter({ text: 'Tagesbutton = ✅/❌ umschalten · Zeitfenster für eingeschränkte Verfügbarkeit' });
 }
 
@@ -291,8 +455,9 @@ function buildEditorComponents(player, weekStartDate, options = {}) {
   });
 
   const rows = [];
-  rows.push(new ActionRowBuilder().addComponents(dayButtons.slice(0, 4)));
-  rows.push(new ActionRowBuilder().addComponents(dayButtons.slice(4, 7)));
+  for (let index = 0; index < dayButtons.length; index += 5) {
+    rows.push(new ActionRowBuilder().addComponents(dayButtons.slice(index, index + 5)));
+  }
 
   rows.push(new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -472,7 +637,7 @@ function setAllDays(playerId, actorDiscordUserId, weekStartDate, state) {
 }
 
 function resetWeek(playerId, weekStartDate) {
-  const weekEndDate = addDaysIso(weekStartDate, 6);
+  const weekEndDate = addDaysIso(weekStartDate, DAYS_PER_WEEK - 1);
   db.prepare(`
     DELETE FROM availability_entries
     WHERE player_id = ?
@@ -581,6 +746,63 @@ function buildStateFromTimes(from, until) {
   return { kind: 'partial', until };
 }
 
+function buildRangeResultMessage(result) {
+  if (!result.sent) {
+    if (result.reason === 'range_too_large') {
+      return `Der Zeitraum ist zu groß. Bitte maximal ${result.maxRangeDays} Tage wählen.`;
+    }
+    if (result.reason === 'missing_channel_id') {
+      return 'WEEKLY_AVAILABILITY_CHANNEL_ID fehlt in der .env.';
+    }
+    if (result.reason === 'invalid_channel') {
+      return 'Der Wochenkarten-Channel konnte nicht gefunden werden oder ist kein Textkanal.';
+    }
+    return `Wochenkarten konnten nicht erstellt werden: ${result.reason || 'unbekannter Fehler'}`;
+  }
+
+  const weekLines = result.weeks.map(week => {
+    const modeLabel = week.mode === 'updated' ? 'überschrieben' : 'erstellt';
+    return `- ${formatDateDE(week.weekStartDate)} – ${formatDateDE(week.weekEndDate)}: ${modeLabel}`;
+  });
+
+  return (
+    `Wochenkarten aktualisiert.\n` +
+    `Zeitraum: **${formatDateDE(result.normalizedStartDate)} – ${formatDateDE(result.normalizedEndDate)}**\n` +
+    `Wochen-Nachrichten: **${result.weekCount}**\n\n` +
+    weekLines.join('\n')
+  );
+}
+
+async function handleRangeModalSubmit(interaction) {
+  if (!(await requireAdmin(interaction))) return true;
+
+  const startDate = parseDateInput(interaction.fields.getTextInputValue('start_date'));
+  const endDate = parseDateInput(interaction.fields.getTextInputValue('end_date'));
+
+  if (!startDate || !endDate) {
+    await interaction.reply({
+      content: 'Bitte gib gültige Datumswerte ein, z. B. `11.05.2026` oder `2026-05-11`.',
+      flags: MessageFlags.Ephemeral
+    });
+    return true;
+  }
+
+  if (endDate < startDate) {
+    await interaction.reply({
+      content: 'Das Bis-Datum darf nicht vor dem Von-Datum liegen.',
+      flags: MessageFlags.Ephemeral
+    });
+    return true;
+  }
+
+  const result = await publishWeeklyAvailabilityPrompt(interaction.client, { startDate, endDate });
+  await interaction.reply({
+    content: buildRangeResultMessage(result),
+    flags: MessageFlags.Ephemeral
+  });
+  return true;
+}
+
 async function handleInteraction(interaction) {
   const parts = parseCustomId(interaction.customId);
   if (!parts) return false;
@@ -638,6 +860,10 @@ async function handleInteraction(interaction) {
   }
 
   if (interaction.isModalSubmit()) {
+    if (action === 'rangemodal') {
+      return handleRangeModalSubmit(interaction);
+    }
+
     if (action === 'timemodal') {
       const dateStr = parts[3];
       const from = interaction.fields.getTextInputValue('available_from').trim();
@@ -667,7 +893,12 @@ module.exports = {
   addDaysIso,
   getWeekStartDate,
   getWeekDates,
+  DAYS_PER_WEEK,
+  buildAvailabilityRangeModal,
   publishWeeklyAvailabilityPrompt,
   canHandleInteraction,
-  handleInteraction
+  handleInteraction,
+  parseDateInput,
+  normalizeRangeToFullWeeks,
+  formatDateDE
 };

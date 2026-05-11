@@ -1,20 +1,19 @@
 const { SlashCommandBuilder, MessageFlags } = require('discord.js');
 const { requireAdmin } = require('../utils/permissions');
 const {
-  publishWeeklyAvailabilityPrompt,
+  buildAvailabilityRangeModal,
   canHandleInteraction,
   handleInteraction
 } = require('../services/weeklyAvailabilityService');
 
 module.exports = {
-  
   data: new SlashCommandBuilder()
     .setName('verfuegbarkeit')
-    .setDescription('Verwalte die Wochen-Check-in-Nachricht.')
+    .setDescription('Verwalte die Wochen-Check-in-Nachrichten.')
     .addSubcommand(sub =>
       sub
         .setName('wochenkarten')
-        .setDescription('Erstellt oder aktualisiert die Wochen-Check-in-Nachricht im Server.')
+        .setDescription('Erstellt oder aktualisiert Wochen-Check-in-Nachrichten für einen Zeitraum.')
     ),
 
   canHandleInteraction,
@@ -25,25 +24,16 @@ module.exports = {
     const subcommand = interaction.options.getSubcommand();
 
     if (subcommand === 'wochenkarten') {
-      console.log("ADMIN_CHANNEL_ID:", process.env.ADMIN_CHANNEL_ID);
-      await interaction.reply({
-        content: 'Baue Wochenkarten auf ...',
-
-        flags: MessageFlags.Ephemeral
-      });
-
       try {
-        const result = await publishWeeklyAvailabilityPrompt(interaction.client);
-        await interaction.followUp({
-          content: `Wochenkarten aktualisiert.\n\`\`\`json\n${JSON.stringify(result, null, 2)}\n\`\`\``,
-          flags: MessageFlags.Ephemeral
-        });
+        await interaction.showModal(buildAvailabilityRangeModal());
       } catch (error) {
-        console.error('[Verfuegbarkeit] Wochenkarten-Aufbau fehlgeschlagen:', error);
-        await interaction.followUp({
-          content: 'Wochenkarten-Aufbau ist fehlgeschlagen. Schau in die Railway-Logs.',
-          flags: MessageFlags.Ephemeral
-        });
+        console.error('[Verfuegbarkeit] Zeitraum-Modal konnte nicht geöffnet werden:', error);
+        if (!interaction.replied && !interaction.deferred) {
+          await interaction.reply({
+            content: 'Das Zeitraum-Popup konnte nicht geöffnet werden. Schau in die Logs.',
+            flags: MessageFlags.Ephemeral
+          });
+        }
       }
     }
   }

@@ -118,6 +118,11 @@ client.on('interactionCreate', async interaction => {
         await verfuegbarkeitCommand.handleInteraction(interaction);
         return;
       }
+
+      if (adminCommand.canHandleInteraction?.(interaction)) {
+        await adminCommand.handleInteraction(interaction);
+        return;
+      }
     }
   } catch (error) {
     console.error(error);

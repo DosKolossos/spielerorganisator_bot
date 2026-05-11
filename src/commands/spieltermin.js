@@ -138,6 +138,61 @@ function eventTypeLabel(type) {
   }
 }
 
+function normalizeStatusInput(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+
+  if (['pending', 'offen', 'open'].includes(normalized)) return 'pending';
+  if (['fixed', 'fix', 'fest', 'bestätigt', 'bestaetigt'].includes(normalized)) return 'fixed';
+  if (['cancelled', 'canceled', 'abgesagt', 'cancel'].includes(normalized)) return 'cancelled';
+
+  return null;
+}
+
+function normalizeEventTypeInput(value) {
+  const normalized = String(value || '').trim().toLowerCase().replace(/\s+/g, '');
+
+  if (['open', 'offen', 'unklar'].includes(normalized)) return 'open';
+  if (['scrim', 'scrims', 'training'].includes(normalized)) return 'scrim';
+  if (['primeleague', 'prm', 'prime'].includes(normalized)) return 'primeleague';
+  if (['other', 'sonstiges', 'sonstig'].includes(normalized)) return 'other';
+
+  return null;
+}
+
+function buildStatusModal(eventId, messageId, currentStatus) {
+  const modal = new ModalBuilder()
+    .setCustomId(`spieltermin:statusmodal:${eventId}:${messageId}`)
+    .setTitle(`Status – #${eventId}`);
+
+  const input = new TextInputBuilder()
+    .setCustomId('status_value')
+    .setLabel('Status: pending, fixed oder cancelled')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setValue(currentStatus || 'pending')
+    .setPlaceholder('pending / fixed / cancelled');
+
+  modal.addComponents(new ActionRowBuilder().addComponents(input));
+  return modal;
+}
+
+function buildTypeModal(eventId, messageId, currentType) {
+  const modal = new ModalBuilder()
+    .setCustomId(`spieltermin:typemodal:${eventId}:${messageId}`)
+    .setTitle(`Typ – #${eventId}`);
+
+  const input = new TextInputBuilder()
+    .setCustomId('event_type_value')
+    .setLabel('Typ: open, scrim, primeleague, other')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setValue(currentType || 'open')
+    .setPlaceholder('open / scrim / primeleague / other');
+
+  modal.addComponents(new ActionRowBuilder().addComponents(input));
+  return modal;
+}
+
 function getMeetingOffsetMinutes(type) {
   switch (type) {
     case 'scrim':
@@ -1282,19 +1337,11 @@ async function handleButtonInteraction(interaction, parts) {
   }
 
   if (action === 'status') {
-    return interaction.reply({
-      content: `Wähle den neuen Status für **#${eventId}**.`,
-      components: [buildStatusSelectRow(eventId, messageId, event.status)],
-      flags: MessageFlags.Ephemeral
-    });
+    return interaction.showModal(buildStatusModal(eventId, messageId, event.status));
   }
 
   if (action === 'type') {
-    return interaction.reply({
-      content: `Wähle den neuen Typ für **#${eventId}**.`,
-      components: [buildTypeSelectRow(eventId, messageId, event.event_type)],
-      flags: MessageFlags.Ephemeral
-    });
+    return interaction.showModal(buildTypeModal(eventId, messageId, event.event_type));
   }
 
   if (action === 'fixedtime') {
@@ -1648,6 +1695,58 @@ async function handleModalSubmitInteraction(interaction, parts) {
   if (!event) {
     return interaction.reply({
       content: 'Dieser Kalendereintrag existiert nicht mehr.',
+      flags: MessageFlags.Ephemeral
+    });
+  }
+
+  if (action === 'statusmodal') {
+    const nextStatus = normalizeStatusInput(interaction.fields.getTextInputValue('status_value'));
+
+    if (!nextStatus || !STATUS_VALUES.includes(nextStatus)) {
+      return interaction.reply({
+        content: 'Ungültiger Status. Nutze `pending`, `fixed` oder `cancelled`.',
+        flags: MessageFlags.Ephemeral
+      });
+    }
+
+    db.prepare(`
+      UPDATE team_calendar_events
+      SET status = ?,
+          updated_by_discord_user_id = ?,
+          updated_at = ?
+      WHERE id = ?
+    `).run(nextStatus, interaction.user.id, new Date().toISOString(), eventId);
+
+    await refreshSpecificCard(interaction.channel, messageId, eventId);
+
+    return interaction.reply({
+      content: `Status für **#${eventId}** wurde auf **${statusLabel(nextStatus)}** gesetzt.`,
+      flags: MessageFlags.Ephemeral
+    });
+  }
+
+  if (action === 'typemodal') {
+    const nextType = normalizeEventTypeInput(interaction.fields.getTextInputValue('event_type_value'));
+
+    if (!nextType || !EVENT_TYPE_VALUES.includes(nextType)) {
+      return interaction.reply({
+        content: 'Ungültiger Typ. Nutze `open`, `scrim`, `primeleague` oder `other`.',
+        flags: MessageFlags.Ephemeral
+      });
+    }
+
+    db.prepare(`
+      UPDATE team_calendar_events
+      SET event_type = ?,
+          updated_by_discord_user_id = ?,
+          updated_at = ?
+      WHERE id = ?
+    `).run(nextType, interaction.user.id, new Date().toISOString(), eventId);
+
+    await refreshSpecificCard(interaction.channel, messageId, eventId);
+
+    return interaction.reply({
+      content: `Typ für **#${eventId}** wurde auf **${eventTypeLabel(nextType)}** gesetzt.`,
       flags: MessageFlags.Ephemeral
     });
   }
