@@ -515,7 +515,7 @@ function buildTeamOpggInfo(assignments) {
   const summoners = [];
 
   for (const item of relevantAssignments) {
-    if (!item.player_id) {
+    if (!item.player_id && !item.standin_id) {
       missingPlayers.push(`${item.role_label}: ${item.player_label} (nicht mit Profil verknüpft)`);
       continue;
     }
