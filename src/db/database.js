@@ -57,6 +57,9 @@ db.exec(`
     riot_game_name TEXT,
     riot_tag TEXT,
     riot_region TEXT,
+    roster_status TEXT NOT NULL DEFAULT 'sub',
+    primary_position TEXT,
+    secondary_position TEXT,
     is_archived INTEGER NOT NULL DEFAULT 0,
     archived_at TEXT,
     archived_by_discord_user_id TEXT,
@@ -206,13 +209,33 @@ db.exec(`
     event_id INTEGER NOT NULL,
     role_label TEXT NOT NULL,
     player_label TEXT NOT NULL,
+    assignee_type TEXT NOT NULL DEFAULT 'player',
     player_id INTEGER,
+    standin_id INTEGER,
     note TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE(event_id, role_label),
     FOREIGN KEY(event_id) REFERENCES team_calendar_events(id),
-    FOREIGN KEY(player_id) REFERENCES players(id)
+    FOREIGN KEY(player_id) REFERENCES players(id),
+    FOREIGN KEY(standin_id) REFERENCES standins(id)
+  );
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS standins (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    display_name TEXT NOT NULL,
+    riot_game_name TEXT NOT NULL,
+    riot_tag TEXT NOT NULL,
+    riot_region TEXT NOT NULL DEFAULT 'euw',
+    preferred_position TEXT,
+    note TEXT,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_by_discord_user_id TEXT NOT NULL,
+    updated_by_discord_user_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
   );
 `);
 
@@ -222,6 +245,9 @@ function migratePlayers() {
   addColumnIfMissing('players', 'riot_game_name', 'TEXT');
   addColumnIfMissing('players', 'riot_tag', 'TEXT');
   addColumnIfMissing('players', 'riot_region', 'TEXT');
+  addColumnIfMissing('players', 'roster_status', `TEXT NOT NULL DEFAULT 'sub'`);
+  addColumnIfMissing('players', 'primary_position', 'TEXT');
+  addColumnIfMissing('players', 'secondary_position', 'TEXT');
   addColumnIfMissing('players', 'is_archived', 'INTEGER NOT NULL DEFAULT 0');
   addColumnIfMissing('players', 'archived_at', 'TEXT');
   addColumnIfMissing('players', 'archived_by_discord_user_id', 'TEXT');
@@ -230,6 +256,14 @@ function migratePlayers() {
     UPDATE players
     SET riot_region = 'euw'
     WHERE riot_region IS NULL OR trim(riot_region) = '';
+  `);
+
+  db.exec(`
+    UPDATE players
+    SET roster_status = 'sub'
+    WHERE roster_status IS NULL
+      OR trim(roster_status) = ''
+      OR roster_status NOT IN ('main', 'sub', 'coach', 'admin', 'inactive');
   `);
 }
 
@@ -401,7 +435,21 @@ function dedupeSuggestionKeys() {
 function migrateTeamCalendarAssignments() {
   if (!tableExists('team_calendar_assignments')) return;
 
+  addColumnIfMissing('team_calendar_assignments', 'assignee_type', `TEXT NOT NULL DEFAULT 'player'`);
   addColumnIfMissing('team_calendar_assignments', 'player_id', `INTEGER`);
+  addColumnIfMissing('team_calendar_assignments', 'standin_id', `INTEGER`);
+
+  db.exec(`
+    UPDATE team_calendar_assignments
+    SET assignee_type = CASE
+      WHEN standin_id IS NOT NULL THEN 'standin'
+      WHEN player_id IS NOT NULL THEN 'player'
+      ELSE COALESCE(NULLIF(assignee_type, ''), 'manual')
+    END
+    WHERE assignee_type IS NULL
+       OR trim(assignee_type) = ''
+       OR assignee_type NOT IN ('player', 'standin', 'manual');
+  `);
 
   if (!columnExists('team_calendar_assignments', 'player_label')) return;
 
@@ -473,6 +521,16 @@ db.exec(`
 `);
 
 db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_players_roster_status
+  ON players (roster_status, primary_position, secondary_position);
+`);
+
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_standins_active
+  ON standins (is_active, preferred_position);
+`);
+
+db.exec(`
   CREATE INDEX IF NOT EXISTS idx_availability_entries_player_time
   ON availability_entries (player_id, start_at, end_at);
 `);
@@ -521,6 +579,11 @@ db.exec(`
 db.exec(`
   CREATE INDEX IF NOT EXISTS idx_team_calendar_assignments_player
   ON team_calendar_assignments (player_id);
+`);
+
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_team_calendar_assignments_standin
+  ON team_calendar_assignments (standin_id);
 `);
 
 module.exports = db;

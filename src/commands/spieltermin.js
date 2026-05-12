@@ -12,8 +12,18 @@ const {
 } = require('discord.js');
 const db = require('../db/database');
 const { isAdminInteraction } = require('../utils/permissions');
+const {
+  displayName,
+  formatRosterGroups,
+  normalizeRosterStatus,
+  opggRegion,
+  positionMatchesRole,
+  rosterSortRank,
+  rosterStatusLabel
+} = require('../utils/rosterUtils');
 
 const ROLE_ORDER = ['Top', 'Jgl', 'Mid', 'ADC', 'Supp', 'Sub1', 'Sub2'];
+const STARTER_ROLES = ['Top', 'Jgl', 'Mid', 'ADC', 'Supp'];
 const STATUS_VALUES = ['pending', 'fixed', 'cancelled'];
 const EVENT_TYPE_VALUES = ['open', 'scrim', 'primeleague', 'other'];
 
@@ -290,7 +300,22 @@ function reconcileMeetingAfterScheduleChange(currentMeetingAt, previousScheduled
 }
 
 function playerDisplay(row) {
-  return row.alias || row.global_name || row.username || row.discord_user_id;
+  return displayName(row);
+}
+
+function assignmentTypeLabel(item) {
+  if (item.assignee_type === 'standin') return 'Standin';
+  if (item.assignee_type === 'manual') return 'Manuell';
+  return rosterStatusLabel(item.roster_status || 'sub');
+}
+
+function assignmentDisplayLabel(item) {
+  const suffix = item.assignee_type === 'standin'
+    ? ' [Standin]'
+    : item.assignee_type === 'manual'
+      ? ' [manuell]'
+      : '';
+  return `${item.player_label}${suffix}`;
 }
 
 function truncateField(value, maxLength = 1000) {
@@ -310,7 +335,7 @@ function buildLineupText(assignments) {
       const bRank = rank.has(b.role_label) ? rank.get(b.role_label) : 999;
       return aRank - bRank || a.role_label.localeCompare(b.role_label, 'de');
     })
-    .map(item => `${item.role_label}: ${item.player_label}`)
+    .map(item => `${item.role_label}: ${assignmentDisplayLabel(item)}`)
     .join(' | ');
 }
 
@@ -407,6 +432,26 @@ function findPlayerByLabel(label) {
   );
 }
 
+function findStandinByLabel(label) {
+  if (!label) return null;
+  const trimmed = label.trim();
+  if (!trimmed) return null;
+
+  const lower = trimmed.toLowerCase();
+  const standins = db.prepare(`
+    SELECT *
+    FROM standins
+    WHERE is_active = 1
+    ORDER BY id ASC
+  `).all();
+
+  return (
+    standins.find(standin => standin.display_name && standin.display_name.trim().toLowerCase() === lower) ||
+    standins.find(standin => `${standin.riot_game_name}#${standin.riot_tag}`.trim().toLowerCase() === lower) ||
+    null
+  );
+}
+
 function getEventById(id) {
   return db.prepare(`
     SELECT *
@@ -422,16 +467,24 @@ function getAssignments(eventId) {
       a.event_id,
       a.role_label,
       a.player_label,
+      a.assignee_type,
       a.player_id,
+      a.standin_id,
       p.discord_user_id,
       p.username,
       p.global_name,
       p.alias,
-      p.riot_game_name,
-      p.riot_tag,
-      p.riot_region
+      p.roster_status,
+      p.primary_position,
+      p.secondary_position,
+      COALESCE(p.riot_game_name, s.riot_game_name) AS riot_game_name,
+      COALESCE(p.riot_tag, s.riot_tag) AS riot_tag,
+      COALESCE(p.riot_region, s.riot_region, 'euw') AS riot_region,
+      s.display_name AS standin_display_name,
+      s.preferred_position AS standin_preferred_position
     FROM team_calendar_assignments a
     LEFT JOIN players p ON p.id = a.player_id
+    LEFT JOIN standins s ON s.id = a.standin_id
     WHERE a.event_id = ?
     ORDER BY a.role_label ASC
   `).all(eventId);
@@ -452,7 +505,7 @@ function buildOpggMultisearchUrl(summoners, region) {
 }
 
 function buildTeamOpggInfo(assignments) {
-  const relevantAssignments = assignments.filter(item => ROLE_ORDER.includes(item.role_label));
+  const relevantAssignments = assignments.filter(item => STARTER_ROLES.includes(item.role_label));
   if (!relevantAssignments.length) {
     return { ok: false, message: 'Kein Lineup gesetzt.' };
   }
@@ -472,7 +525,7 @@ function buildTeamOpggInfo(assignments) {
       continue;
     }
 
-    regions.add((item.riot_region || 'euw').toLowerCase());
+    regions.add(opggRegion(item.riot_region));
     summoners.push(`${item.riot_game_name}#${item.riot_tag}`);
   }
 
@@ -832,6 +885,122 @@ function buildTypeSelectRow(eventId, messageId, currentType) {
 
 
 
+function buildRoleSelectRow(eventId, messageId) {
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(`spieltermin:lineuprole:${eventId}:${messageId}`)
+      .setPlaceholder('Position auswählen')
+      .addOptions(ROLE_ORDER.map(role => ({
+        label: role,
+        value: role,
+        description: role.startsWith('Sub') ? 'Ersatzspieler-Slot' : `Starter-Position ${role}`
+      })))
+  );
+}
+
+function getLineupCandidates(roleLabel) {
+  const players = db.prepare(`
+    SELECT
+      id,
+      username,
+      global_name,
+      alias,
+      roster_status,
+      primary_position,
+      secondary_position,
+      riot_game_name,
+      riot_tag,
+      riot_region
+    FROM players
+    WHERE is_archived = 0
+      AND COALESCE(roster_status, 'sub') <> 'inactive'
+    ORDER BY
+      CASE COALESCE(roster_status, 'sub')
+        WHEN 'main' THEN 0
+        WHEN 'sub' THEN 1
+        WHEN 'coach' THEN 2
+        WHEN 'admin' THEN 3
+        ELSE 9
+      END ASC,
+      COALESCE(alias, global_name, username) COLLATE NOCASE ASC
+  `).all().map(player => ({ ...player, candidate_type: 'player' }));
+
+  const standins = db.prepare(`
+    SELECT
+      id,
+      display_name,
+      riot_game_name,
+      riot_tag,
+      riot_region,
+      preferred_position
+    FROM standins
+    WHERE is_active = 1
+    ORDER BY COALESCE(preferred_position, 'ZZZ') ASC, display_name COLLATE NOCASE ASC
+  `).all().map(standin => ({ ...standin, candidate_type: 'standin', roster_status: 'sub' }));
+
+  return [...players, ...standins]
+    .sort((a, b) => {
+      const aMatch = positionMatchesRole(a, roleLabel) ? 0 : 1;
+      const bMatch = positionMatchesRole(b, roleLabel) ? 0 : 1;
+      if (aMatch !== bMatch) return aMatch - bMatch;
+      if (a.candidate_type !== b.candidate_type) return a.candidate_type === 'player' ? -1 : 1;
+      const rankDiff = rosterSortRank(a.roster_status) - rosterSortRank(b.roster_status);
+      if (rankDiff !== 0) return rankDiff;
+      return displayName(a).localeCompare(displayName(b), 'de');
+    });
+}
+
+function candidateOption(candidate, roleLabel) {
+  const isStandin = candidate.candidate_type === 'standin';
+  const prefix = isStandin ? '[Standin]' : `[${rosterStatusLabel(candidate.roster_status)}]`;
+  const pos = candidate.primary_position || candidate.preferred_position || '-';
+  const secondary = candidate.secondary_position ? `/${candidate.secondary_position}` : '';
+  const riot = candidate.riot_game_name && candidate.riot_tag ? `${candidate.riot_game_name}#${candidate.riot_tag}` : 'Riot-ID fehlt';
+  const matchHint = positionMatchesRole(candidate, roleLabel) ? 'passt zur Position' : 'andere Position';
+
+  return {
+    label: `${prefix} ${displayName(candidate)}`.slice(0, 100),
+    value: `${isStandin ? 'standin' : 'player'}:${candidate.id}`,
+    description: `${pos}${secondary} • ${riot} • ${matchHint}`.slice(0, 100)
+  };
+}
+
+function buildPlayerSelectRow(eventId, messageId, roleLabel) {
+  const candidates = getLineupCandidates(roleLabel);
+  const options = [
+    {
+      label: `${roleLabel} leeren`,
+      value: '__clear__',
+      description: 'Entfernt die aktuelle Besetzung dieser Position'
+    },
+    ...candidates.slice(0, 24).map(candidate => candidateOption(candidate, roleLabel))
+  ];
+
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(`spieltermin:lineupplayer:${eventId}:${messageId}:${roleLabel}`)
+      .setPlaceholder(`${roleLabel}: Spieler oder Standin auswählen`)
+      .addOptions(options)
+  );
+}
+
+function buildLineupManagerPayload(eventId, messageId, infoText = null) {
+  const assignments = getAssignments(eventId);
+  const text = [
+    infoText,
+    `**Aufstellung für #${eventId}**`,
+    buildLineupText(assignments),
+    '',
+    'Wähle zuerst eine Position und danach den Spieler oder Standin.'
+  ].filter(Boolean).join('\n');
+
+  return {
+    content: text,
+    components: [buildRoleSelectRow(eventId, messageId)]
+  };
+}
+
+
 function buildLineupModalValue(eventId) {
   const assignments = getAssignments(eventId);
   const byRole = new Map(assignments.map(item => [item.role_label, item.player_label]));
@@ -881,28 +1050,41 @@ async function applyLineupChanges(eventId, roleMap) {
     }
 
     const matchedPlayer = findPlayerByLabel(trimmed);
+    const matchedStandin = matchedPlayer ? null : findStandinByLabel(trimmed);
+    const assigneeType = matchedPlayer ? 'player' : matchedStandin ? 'standin' : 'manual';
+    const playerLabel = matchedPlayer
+      ? playerDisplay(matchedPlayer)
+      : matchedStandin
+        ? matchedStandin.display_name
+        : trimmed;
 
     db.prepare(`
       INSERT INTO team_calendar_assignments (
         event_id,
         role_label,
         player_label,
+        assignee_type,
         player_id,
+        standin_id,
         note,
         created_at,
         updated_at
       )
-      VALUES (?, ?, ?, ?, NULL, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
       ON CONFLICT(event_id, role_label)
       DO UPDATE SET
         player_label = excluded.player_label,
+        assignee_type = excluded.assignee_type,
         player_id = excluded.player_id,
+        standin_id = excluded.standin_id,
         updated_at = excluded.updated_at
     `).run(
       eventId,
       roleLabel,
-      matchedPlayer ? playerDisplay(matchedPlayer) : trimmed,
+      playerLabel,
+      assigneeType,
       matchedPlayer?.id ?? null,
+      matchedStandin?.id ?? null,
       now,
       now
     );
@@ -1424,42 +1606,7 @@ async function handleButtonInteraction(interaction, parts) {
     return interaction.showModal(modal);
   }
   if (action === 'lineup') {
-    const modal = new ModalBuilder()
-      .setCustomId(`spieltermin:lineupmodal:${eventId}:${messageId}`)
-      .setTitle(`Aufstellung – #${eventId}`);
-
-    const input = new TextInputBuilder()
-      .setCustomId('lineup_text')
-      .setLabel('Lineup (eine Rolle pro Zeile)')
-      .setStyle(TextInputStyle.Paragraph)
-      .setRequired(true)
-      .setPlaceholder('Top: ...\nJgl: ...\nMid: ...\nADC: ...\nSupp: ...\nSub1: ...\nSub2: ...')
-      .setValue(buildLineupModalValue(eventId));
-
-    modal.addComponents(new ActionRowBuilder().addComponents(input));
-    return interaction.showModal(modal);
-  }
-
-  if (action === 'playervisibility') {
-    const nextValue = Number(event.show_in_player_calendar) === 1 ? 0 : 1;
-
-    db.prepare(`
-    UPDATE team_calendar_events
-    SET show_in_player_calendar = ?,
-        updated_by_discord_user_id = ?,
-        updated_at = ?
-    WHERE id = ?
-  `).run(nextValue, interaction.user.id, new Date().toISOString(), eventId);
-
-    await refreshSpecificCard(interaction.channel, messageId, eventId);
-
-    return interaction.reply({
-      content:
-        nextValue === 1
-          ? `Karte **#${eventId}** wird jetzt im Spielerkalender angezeigt.`
-          : `Karte **#${eventId}** wurde aus dem Spielerkalender entfernt.`,
-      flags: MessageFlags.Ephemeral
-    });
+    return interaction.reply({ ...buildLineupManagerPayload(eventId, messageId), flags: MessageFlags.Ephemeral });
   }
 
   if (action === 'opponent') {
@@ -1630,15 +1777,36 @@ async function handleStringSelectInteraction(interaction, parts) {
 
       infoText = `**${roleLabel}** wurde geleert.`;
     } else {
-      const player = db.prepare(`
-        SELECT *
-        FROM players
-        WHERE id = ?
-      `).get(Number(selectedValue));
+      const [selectedType, selectedIdRaw] = String(selectedValue).split(':');
+      const selectedId = Number(selectedIdRaw || selectedValue);
+      let assigneeType = selectedType;
+      let assignee = null;
+      let playerId = null;
+      let standinId = null;
+      let label = null;
 
-      if (!player) {
+      if (selectedType === 'standin') {
+        assignee = db.prepare(`
+          SELECT *
+          FROM standins
+          WHERE id = ? AND is_active = 1
+        `).get(selectedId);
+        standinId = assignee?.id ?? null;
+        label = assignee?.display_name ?? null;
+      } else {
+        assigneeType = 'player';
+        assignee = db.prepare(`
+          SELECT *
+          FROM players
+          WHERE id = ?
+        `).get(selectedType === 'player' ? selectedId : Number(selectedValue));
+        playerId = assignee?.id ?? null;
+        label = assignee ? playerDisplay(assignee) : null;
+      }
+
+      if (!assignee || !label) {
         return interaction.update({
-          content: 'Der ausgewählte Spieler wurde nicht gefunden.',
+          content: 'Die ausgewählte Person wurde nicht gefunden.',
           components: [buildRoleSelectRow(eventId, messageId)]
         });
       }
@@ -1648,27 +1816,33 @@ async function handleStringSelectInteraction(interaction, parts) {
           event_id,
           role_label,
           player_label,
+          assignee_type,
           player_id,
+          standin_id,
           note,
           created_at,
           updated_at
         )
-        VALUES (?, ?, ?, ?, NULL, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
         ON CONFLICT(event_id, role_label)
         DO UPDATE SET
           player_label = excluded.player_label,
+          assignee_type = excluded.assignee_type,
           player_id = excluded.player_id,
+          standin_id = excluded.standin_id,
           updated_at = excluded.updated_at
       `).run(
         eventId,
         roleLabel,
-        playerDisplay(player),
-        player.id,
+        label,
+        assigneeType,
+        playerId,
+        standinId,
         now,
         now
       );
 
-      infoText = `**${roleLabel}** wurde auf **${playerDisplay(player)}** gesetzt.`;
+      infoText = `**${roleLabel}** wurde auf **${label}**${assigneeType === 'standin' ? ' [Standin]' : ''} gesetzt.`;
     }
 
     await refreshSpecificCard(interaction.channel, messageId, eventId);
@@ -2612,28 +2786,41 @@ const command = {
         }
 
         const matchedPlayer = findPlayerByLabel(trimmed);
+        const matchedStandin = matchedPlayer ? null : findStandinByLabel(trimmed);
+        const assigneeType = matchedPlayer ? 'player' : matchedStandin ? 'standin' : 'manual';
+        const playerLabel = matchedPlayer
+          ? playerDisplay(matchedPlayer)
+          : matchedStandin
+            ? matchedStandin.display_name
+            : trimmed;
 
         db.prepare(`
           INSERT INTO team_calendar_assignments (
             event_id,
             role_label,
             player_label,
+            assignee_type,
             player_id,
+            standin_id,
             note,
             created_at,
             updated_at
           )
-          VALUES (?, ?, ?, ?, NULL, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
           ON CONFLICT(event_id, role_label)
           DO UPDATE SET
             player_label = excluded.player_label,
+            assignee_type = excluded.assignee_type,
             player_id = excluded.player_id,
+            standin_id = excluded.standin_id,
             updated_at = excluded.updated_at
         `).run(
           id,
           roleLabel,
-          matchedPlayer ? playerDisplay(matchedPlayer) : trimmed,
+          playerLabel,
+          assigneeType,
           matchedPlayer?.id ?? null,
+          matchedStandin?.id ?? null,
           now,
           now
         );

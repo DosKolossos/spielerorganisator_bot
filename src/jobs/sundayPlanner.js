@@ -1,5 +1,6 @@
 const db = require('../db/database');
 const { upsertAdminCardMessage } = require('../commands/spieltermin');
+const { displayName, formatRosterGroups, normalizeRosterStatus } = require('../utils/rosterUtils');
 
 const PLANNER_WINDOW_DAYS = 14;
 
@@ -36,7 +37,7 @@ function tryAcquireJobRun(jobName, runKey) {
 }
 
 function playerDisplay(row) {
-  return row.alias || row.global_name || row.username || row.discord_user_id;
+  return displayName(row);
 }
 
 function addDaysIso(dateStr, daysToAdd) {
@@ -320,8 +321,8 @@ function getUnavailablePlayersForSlot(players, explicitEntries, rules, dateStr, 
       }
     }
 
-    if (blocked) unavailable.push(playerDisplay(player));
-    else available.push(playerDisplay(player));
+    if (blocked) unavailable.push(player);
+    else available.push(player);
   }
 
   return { unavailable, available };
@@ -384,17 +385,28 @@ function buildDailySuggestion(players, explicitEntries, rules, dateStr) {
       endTime,
       available,
       unavailable,
-      signature: available.slice().sort((a, b) => a.localeCompare(b, 'de')).join('||'),
-      availableCount: available.length
+      signature: available.map(playerDisplay).slice().sort((a, b) => a.localeCompare(b, 'de')).join('||'),
+      availableCount: available.length,
+      mainAvailableCount: available.filter(player => normalizeRosterStatus(player.roster_status) === 'main').length
     });
   }
 
   if (!slots.length) return null;
 
   const maxAvailable = Math.max(...slots.map(slot => slot.availableCount));
+  const maxMainAvailable = Math.max(...slots.map(slot => slot.mainAvailableCount));
   if (maxAvailable <= 0) return null;
 
-  const bestSlots = slots.filter(slot => slot.availableCount === maxAvailable);
+  const bestTotalAmongBestMain = Math.max(
+    ...slots
+      .filter(candidate => candidate.mainAvailableCount === maxMainAvailable)
+      .map(candidate => candidate.availableCount)
+  );
+
+  const bestSlots = slots.filter(slot =>
+    slot.mainAvailableCount === maxMainAvailable &&
+    slot.availableCount === bestTotalAmongBestMain
+  );
 
   const grouped = new Map();
   for (const slot of bestSlots) {
@@ -420,7 +432,7 @@ function buildDailySuggestion(players, explicitEntries, rules, dateStr) {
     latestEnd: lastSlot.endTime,
     startWindows: compressStartWindows(chosenGroup.map(slot => slot.startTime)),
     availablePlayers,
-    availablePlayersText: availablePlayers.join(', '),
+    availablePlayersText: formatRosterGroups(availablePlayers, { includeInactive: false }),
     suggestionKey: `daily:${dateStr}`,
     windowStartAt: `${dateStr} ${firstSlot.startTime}`,
     windowEndAt: `${dateStr} ${lastSlot.endTime}`
@@ -673,7 +685,7 @@ async function runSundayPlanner(client, options = {}) {
   const windowEndInclusive = `${windowEndDate} 23:59`;
 
   const players = db.prepare(`
-    SELECT id, discord_user_id, username, global_name, alias
+    SELECT id, discord_user_id, username, global_name, alias, roster_status, primary_position, secondary_position
     FROM players
     WHERE is_archived = 0
     ORDER BY id ASC
@@ -691,7 +703,10 @@ async function runSundayPlanner(client, options = {}) {
       p.discord_user_id,
       p.username,
       p.global_name,
-      p.alias
+      p.alias,
+      p.roster_status,
+      p.primary_position,
+      p.secondary_position
     FROM availability_entries e
     INNER JOIN players p ON p.id = e.player_id
     WHERE e.end_at >= ?
@@ -716,7 +731,10 @@ async function runSundayPlanner(client, options = {}) {
       p.discord_user_id,
       p.username,
       p.global_name,
-      p.alias
+      p.alias,
+      p.roster_status,
+      p.primary_position,
+      p.secondary_position
     FROM availability_rules r
     INNER JOIN players p ON p.id = r.player_id
     WHERE r.active = 1

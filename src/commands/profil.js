@@ -3,6 +3,13 @@ const db = require('../db/database');
 const { requireAdmin } = require('../utils/permissions');
 const { logAdminAction, notifyUser } = require('../utils/adminTools');
 const {
+  ROSTER_STATUS_CHOICES,
+  POSITION_CHOICES,
+  normalizeRosterStatus,
+  normalizePosition,
+  rosterStatusLabel
+} = require('../utils/rosterUtils');
+const {
   upsertPlayer,
   getPlayerByDiscordUserId,
   playerDisplay,
@@ -37,6 +44,9 @@ function formatProfile(player, heading = 'Dein Profil') {
     `Alias: **${player.alias ?? '-'}**\n` +
     `Riot-ID: **${riotId}**\n` +
     `OPGG-Region: **${(player.riot_region ?? 'euw').toUpperCase()}**\n` +
+    `Status: **${rosterStatusLabel(player.roster_status)}**\n` +
+    `Hauptposition: **${player.primary_position ?? '-'}**\n` +
+    `Nebenposition: **${player.secondary_position ?? '-'}**\n` +
     `Archiviert: **${player.is_archived ? 'Ja' : 'Nein'}**`
   );
 }
@@ -123,6 +133,31 @@ const command = {
             .setDescription('Neue Region (optional)')
             .setRequired(false);
           for (const choice of REGION_CHOICES) option.addChoices(choice);
+          return option;
+        })
+        .addStringOption(option => {
+          option
+            .setName('status')
+            .setDescription('Roster-Status des Spielers')
+            .setRequired(false);
+          for (const choice of ROSTER_STATUS_CHOICES) option.addChoices(choice);
+          return option;
+        })
+        .addStringOption(option => {
+          option
+            .setName('hauptposition')
+            .setDescription('Hauptposition des Spielers')
+            .setRequired(false);
+          for (const choice of POSITION_CHOICES) option.addChoices(choice);
+          return option;
+        })
+        .addStringOption(option => {
+          option
+            .setName('nebenposition')
+            .setDescription('Nebenposition des Spielers, optional')
+            .setRequired(false);
+          option.addChoices({ name: 'Keine', value: '-' });
+          for (const choice of POSITION_CHOICES) option.addChoices(choice);
           return option;
         });
       return sub;
@@ -214,6 +249,14 @@ const command = {
       if (typeof riotTag === 'string' && riotTag !== '__CLEAR__') riotTag = riotTag.replace(/^#/, '').toUpperCase();
       const riotRegionInput = interaction.options.getString('region');
       const riotRegion = riotRegionInput ? riotRegionInput.trim().toLowerCase() : undefined;
+      const rosterStatusInput = interaction.options.getString('status');
+      const rosterStatus = rosterStatusInput ? normalizeRosterStatus(rosterStatusInput) : undefined;
+      const primaryPositionInput = interaction.options.getString('hauptposition');
+      const primaryPosition = primaryPositionInput ? normalizePosition(primaryPositionInput) : undefined;
+      const secondaryPositionInput = interaction.options.getString('nebenposition');
+      const secondaryPosition = secondaryPositionInput
+        ? (secondaryPositionInput === '-' ? '__CLEAR__' : normalizePosition(secondaryPositionInput))
+        : undefined;
 
       const now = new Date().toISOString();
       db.prepare(`
@@ -222,6 +265,9 @@ const command = {
             riot_game_name = CASE WHEN ? = '__CLEAR__' THEN NULL ELSE COALESCE(?, riot_game_name) END,
             riot_tag = CASE WHEN ? = '__CLEAR__' THEN NULL ELSE COALESCE(?, riot_tag) END,
             riot_region = COALESCE(?, riot_region, 'euw'),
+            roster_status = COALESCE(?, roster_status, 'sub'),
+            primary_position = COALESCE(?, primary_position),
+            secondary_position = CASE WHEN ? = '__CLEAR__' THEN NULL ELSE COALESCE(?, secondary_position) END,
             updated_at = ?
         WHERE id = ?
       `).run(
@@ -232,6 +278,10 @@ const command = {
         riotTag ?? null,
         riotTag ?? null,
         riotRegion ?? null,
+        rosterStatus ?? null,
+        primaryPosition ?? null,
+        secondaryPosition ?? null,
+        secondaryPosition ?? null,
         now,
         targetPlayer.id
       );
@@ -251,7 +301,7 @@ const command = {
         entityType: 'profil',
         entityId: updated.id,
         actionType: 'bearbeitet',
-        details: 'Alias/Riot-Daten angepasst'
+        details: 'Alias/Riot/Roster-Daten angepasst'
       });
 
       return interaction.reply({

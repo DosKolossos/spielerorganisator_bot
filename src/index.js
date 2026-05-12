@@ -18,6 +18,7 @@ const spielterminCommand = require('./commands/spieltermin');
 const adminCommand = require('./commands/admin');
 const geburtstagCommand = require('./commands/geburtstag');
 const verfuegbarkeitCommand = require('./commands/verfuegbarkeit');
+const standinCommand = require('./commands/standin');
 
 const { runSundayReminder } = require('./jobs/sundayReminder');
 const { runSundayPlanner } = require('./jobs/sundayPlanner');
@@ -36,6 +37,7 @@ client.commands.set(spielterminCommand.data.name, spielterminCommand);
 client.commands.set(adminCommand.data.name, adminCommand);
 client.commands.set(geburtstagCommand.data.name, geburtstagCommand);
 client.commands.set(verfuegbarkeitCommand.data.name, verfuegbarkeitCommand);
+client.commands.set(standinCommand.data.name, standinCommand);
 
 async function registerCommands() {
   const commands = [
@@ -46,7 +48,8 @@ async function registerCommands() {
     spielterminCommand.data.toJSON(),
     adminCommand.data.toJSON(),
     geburtstagCommand.data.toJSON(),
-    verfuegbarkeitCommand.data.toJSON()
+    verfuegbarkeitCommand.data.toJSON(),
+    standinCommand.data.toJSON()
   ];
 
   const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
