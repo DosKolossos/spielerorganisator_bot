@@ -1663,6 +1663,33 @@ async function handleButtonInteraction(interaction, parts) {
     return interaction.showModal(modal);
   }
 
+  if (action === 'playervisibility') {
+    const nextValue = Number(event.show_in_player_calendar) === 1 ? 0 : 1;
+
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+    db.prepare(`
+      UPDATE team_calendar_events
+      SET show_in_player_calendar = ?,
+          updated_by_discord_user_id = ?,
+          updated_at = ?
+      WHERE id = ?
+    `).run(nextValue, interaction.user.id, new Date().toISOString(), eventId);
+
+    await refreshSpecificCard(interaction.channel, messageId, eventId);
+
+    const playerCalendarChannelConfigured = Boolean(process.env.PLAYER_CALENDAR_CHANNEL_ID);
+    const playerCalendarHint = nextValue === 1 && !playerCalendarChannelConfigured
+      ? '\n⚠️ `PLAYER_CALENDAR_CHANNEL_ID` ist nicht gesetzt. Die Admin-Karte wurde aktualisiert, aber es konnte keine Spielerkarte gepostet werden.'
+      : '';
+
+    return interaction.editReply({
+      content: nextValue === 1
+        ? `Spielerkalender für **#${eventId}** wurde auf **AN** gestellt.${playerCalendarHint}`
+        : `Spielerkalender für **#${eventId}** wurde auf **AUS** gestellt. Die gespiegelte Spielerkarte wurde entfernt, falls sie existierte.`
+    });
+  }
+
   if (action === 'teamopgg') {
     const teamOpgg = buildTeamOpggInfo(getAssignments(eventId));
 
