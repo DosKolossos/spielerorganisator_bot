@@ -9,6 +9,7 @@ const {
 const { runSundayReminder } = require('../jobs/sundayReminder');
 const { runSundayPlanner } = require('../jobs/sundayPlanner');
 const { requireAdmin } = require('../utils/permissions');
+const { resolveTeamForInteraction } = require('../services/teamService');
 const {
   addDaysIso,
   getWeekStartDate,
@@ -99,23 +100,33 @@ async function handleInteraction(interaction) {
     }
 
     const normalized = normalizeRangeToFullWeeks(startDate, endDate);
+    const team = resolveTeamForInteraction(interaction);
+
+    if (!team) {
+      await interaction.reply({
+        content: 'Für diesen Kanal konnte kein Team ermittelt werden.',
+        flags: MessageFlags.Ephemeral
+      });
+      return true;
+    }
+
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     try {
       const result = await runSundayPlanner(interaction.client, {
         force: true,
+        teamId: team.id,
         startDate: normalized.startDate,
         endDate: normalized.endDate
       });
 
-      await interaction.reply({
-        content: buildPlannerResultMessage(result),
-        flags: MessageFlags.Ephemeral
+      await interaction.editReply({
+        content: `**${team.name}**\n${buildPlannerResultMessage(result)}`
       });
     } catch (error) {
       console.error('[Admin] Planner-Test fehlgeschlagen:', error);
-      await interaction.reply({
-        content: 'Planner-Test ist fehlgeschlagen. Schau in die Logs.',
-        flags: MessageFlags.Ephemeral
+      await interaction.editReply({
+        content: 'Planner-Test ist fehlgeschlagen. Schau in die Logs.'
       });
     }
 

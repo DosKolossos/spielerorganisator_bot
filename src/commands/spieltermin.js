@@ -410,7 +410,7 @@ function buildPlayerCalendarDescription(event, assignments) {
   ].join('\n');
 }
 
-function findPlayerByLabel(label) {
+function findPlayerByLabel(label, teamId = null) {
   if (!label) return null;
   const trimmed = label.trim();
   if (!trimmed) return null;
@@ -419,8 +419,9 @@ function findPlayerByLabel(label) {
     SELECT *
     FROM players
     WHERE is_archived = 0
+      AND (? IS NULL OR team_id = ?)
     ORDER BY id ASC
-  `).all();
+  `).all(teamId, teamId);
 
   const lower = trimmed.toLowerCase();
 
@@ -899,7 +900,7 @@ function buildRoleSelectRow(eventId, messageId) {
   );
 }
 
-function getLineupCandidates(roleLabel) {
+function getLineupCandidates(roleLabel, teamId) {
   const players = db.prepare(`
     SELECT
       id,
@@ -914,6 +915,7 @@ function getLineupCandidates(roleLabel) {
       riot_region
     FROM players
     WHERE is_archived = 0
+      AND team_id = ?
       AND COALESCE(roster_status, 'sub') <> 'inactive'
     ORDER BY
       CASE COALESCE(roster_status, 'sub')
@@ -924,7 +926,7 @@ function getLineupCandidates(roleLabel) {
         ELSE 9
       END ASC,
       COALESCE(alias, global_name, username) COLLATE NOCASE ASC
-  `).all().map(player => ({ ...player, candidate_type: 'player' }));
+  `).all(teamId).map(player => ({ ...player, candidate_type: 'player' }));
 
   const standins = db.prepare(`
     SELECT
@@ -967,7 +969,8 @@ function candidateOption(candidate, roleLabel) {
 }
 
 function buildPlayerSelectRow(eventId, messageId, roleLabel) {
-  const candidates = getLineupCandidates(roleLabel);
+  const event = getEventById(eventId);
+  const candidates = getLineupCandidates(roleLabel, event?.team_id);
   const options = [
     {
       label: `${roleLabel} leeren`,
@@ -1034,6 +1037,8 @@ function parseLineupModalText(raw) {
 }
 
 async function applyLineupChanges(eventId, roleMap) {
+  const event = getEventById(eventId);
+  const teamId = event?.team_id ?? null;
   const now = new Date().toISOString();
   let changed = 0;
 
@@ -1050,7 +1055,7 @@ async function applyLineupChanges(eventId, roleMap) {
       continue;
     }
 
-    const matchedPlayer = findPlayerByLabel(trimmed);
+    const matchedPlayer = findPlayerByLabel(trimmed, teamId);
     const matchedStandin = matchedPlayer ? null : findStandinByLabel(trimmed);
     const assigneeType = matchedPlayer ? 'player' : matchedStandin ? 'standin' : 'manual';
     const playerLabel = matchedPlayer
@@ -2787,6 +2792,8 @@ const command = {
         });
       }
 
+      const lineupEvent = getEventById(id);
+      const lineupTeamId = lineupEvent?.team_id ?? null;
       const roleMap = {
         Top: interaction.options.getString('top'),
         Jgl: interaction.options.getString('jgl'),
@@ -2815,7 +2822,7 @@ const command = {
           continue;
         }
 
-        const matchedPlayer = findPlayerByLabel(trimmed);
+        const matchedPlayer = findPlayerByLabel(trimmed, lineupTeamId);
         const matchedStandin = matchedPlayer ? null : findStandinByLabel(trimmed);
         const assigneeType = matchedPlayer ? 'player' : matchedStandin ? 'standin' : 'manual';
         const playerLabel = matchedPlayer

@@ -24,6 +24,7 @@ const teamCommand = require('./commands/team');
 const { runSundayReminder } = require('./jobs/sundayReminder');
 const { runSundayPlanner } = require('./jobs/sundayPlanner');
 const { runBirthdayReminder } = require('./jobs/birthdayReminder');
+const { listTeams } = require('./services/teamService');
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds]
@@ -82,7 +83,13 @@ function registerCronJobs(client) {
     '0 20 * * 0',
     async () => {
       console.log('[Cron] Starte Sunday Planner...');
-      await runSundayPlanner(client);
+      for (const team of listTeams()) {
+        try {
+          await runSundayPlanner(client, { teamId: team.id });
+        } catch (error) {
+          console.error(`[Cron] Sunday Planner für Team ${team.id} fehlgeschlagen:`, error);
+        }
+      }
     },
     { timezone: 'Europe/Berlin' }
   );

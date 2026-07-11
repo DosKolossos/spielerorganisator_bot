@@ -1,6 +1,7 @@
 const db = require('../db/database');
 const { upsertAdminCardMessage } = require('../commands/spieltermin');
 const { displayName, formatRosterGroups, normalizeRosterStatus } = require('../utils/rosterUtils');
+const { getTeamById, getDefaultTeam } = require('../services/teamService');
 
 const PLANNER_WINDOW_DAYS = 14;
 
@@ -439,20 +440,22 @@ function buildDailySuggestion(players, explicitEntries, rules, dateStr) {
   };
 }
 
-function syncSuggestionEvent(suggestion) {
+function syncSuggestionEvent(suggestion, teamId) {
   const now = new Date().toISOString();
   const defaultMeetingAt = `${suggestion.date} ${addMinutesToTime(suggestion.earliestStart, -15)}`;
 
+  const suggestionKey = `team:${teamId}:${suggestion.suggestionKey}`;
   const existing = db.prepare(`
     SELECT *
     FROM team_calendar_events
-    WHERE suggestion_key = ?
+    WHERE team_id = ? AND suggestion_key = ?
     LIMIT 1
-  `).get(suggestion.suggestionKey);
+  `).get(teamId, suggestionKey);
 
   if (!existing) {
     const result = db.prepare(`
       INSERT INTO team_calendar_events (
+        team_id,
         title,
         event_type,
         status,
@@ -477,19 +480,20 @@ function syncSuggestionEvent(suggestion) {
         updated_at
       )
       VALUES (
-        ?, 'open', 'pending',
+        ?, ?, 'open', 'pending',
         ?, ?, ?, NULL, NULL, NULL, NULL,
         ?, NULL, NULL, ?, 1,
         ?, ?, ?,
         'system', 'system', ?, ?
       )
     `).run(
+      teamId,
       suggestion.title,
       suggestion.date,
       suggestion.windowStartAt,
       suggestion.windowEndAt,
       suggestion.availablePlayersText,
-      suggestion.suggestionKey,
+      suggestionKey,
       suggestion.windowStartAt,
       suggestion.windowEndAt,
       defaultMeetingAt,
@@ -659,7 +663,12 @@ function formatPlannerManualEvent(event, { urgent = false } = {}) {
 
 async function runSundayPlanner(client, options = {}) {
   const { force = false } = options;
-  const runKey = getRunKey();
+  const team = options.teamId ? getTeamById(options.teamId) : getDefaultTeam();
+  if (!team || !team.is_active) {
+    return { skipped: false, sent: false, reason: 'team_not_found' };
+  }
+  const teamId = team.id;
+  const runKey = `${getRunKey()}:team:${teamId}`;
 
   if (!force) {
     const acquired = tryAcquireJobRun('sunday_planner', runKey);
@@ -688,8 +697,9 @@ async function runSundayPlanner(client, options = {}) {
     SELECT id, discord_user_id, username, global_name, alias, roster_status, primary_position, secondary_position
     FROM players
     WHERE is_archived = 0
+      AND team_id = ?
     ORDER BY id ASC
-  `).all();
+  `).all(teamId);
 
   const upcomingEntries = db.prepare(`
     SELECT
@@ -713,8 +723,9 @@ async function runSundayPlanner(client, options = {}) {
       AND e.start_at <= ?
       AND e.approval_status <> 'rejected'
       AND p.is_archived = 0
+      AND p.team_id = ?
     ORDER BY e.start_at ASC
-  `).all(windowStart, windowEndInclusive);
+  `).all(windowStart, windowEndInclusive, teamId);
 
   const rules = db.prepare(`
     SELECT
@@ -739,8 +750,9 @@ async function runSundayPlanner(client, options = {}) {
     INNER JOIN players p ON p.id = r.player_id
     WHERE r.active = 1
       AND p.is_archived = 0
+      AND p.team_id = ?
     ORDER BY p.id ASC, r.id ASC
-  `).all();
+  `).all(teamId);
 
   const explicitItems = mapExplicitEntries(upcomingEntries);
   const recurringItems = expandRecurringRules(rules, windowDates);
@@ -759,12 +771,12 @@ async function runSundayPlanner(client, options = {}) {
     const suggestion = buildDailySuggestion(players, upcomingEntries, rules, dateStr);
     if (!suggestion) continue;
 
-    const calendarId = syncSuggestionEvent(suggestion);
+    const calendarId = syncSuggestionEvent(suggestion, teamId);
     suggestions.push({ ...suggestion, calendarId });
   }
 
   const weekEndDate = windowEndDate;
-  await clearCurrentWeekPostedCards(client, plannerStartDate, weekEndDate);
+  await clearCurrentWeekPostedCards(client, teamId, plannerStartDate, weekEndDate);
 
   const currentWeekManualEvents = db.prepare(`
   SELECT
@@ -777,12 +789,13 @@ async function runSundayPlanner(client, options = {}) {
     scheduled_start_at,
     note
   FROM team_calendar_events
-  WHERE is_auto_generated = 0
+  WHERE team_id = ?
+    AND is_auto_generated = 0
     AND status <> 'cancelled'
     AND option_date >= ?
     AND option_date <= ?
   ORDER BY option_date ASC, COALESCE(scheduled_start_at, window_start_at) ASC, id ASC
-`).all(plannerStartDate, weekEndDate);
+`).all(teamId, plannerStartDate, weekEndDate);
 
   const orderedWeekEvents = db.prepare(`
   SELECT
@@ -791,7 +804,8 @@ async function runSundayPlanner(client, options = {}) {
     COALESCE(scheduled_start_at, window_start_at) AS sort_at,
     is_auto_generated
   FROM team_calendar_events
-  WHERE option_date >= ?
+  WHERE team_id = ?
+    AND option_date >= ?
     AND option_date <= ?
     AND status <> 'cancelled'
   ORDER BY
@@ -799,7 +813,7 @@ async function runSundayPlanner(client, options = {}) {
     COALESCE(scheduled_start_at, window_start_at) ASC,
     CASE WHEN is_auto_generated = 0 THEN 0 ELSE 1 END ASC,
     id ASC
-`).all(plannerStartDate, weekEndDate);
+`).all(teamId, plannerStartDate, weekEndDate);
 
 
   const futureManualEvents = db.prepare(`
@@ -813,11 +827,12 @@ async function runSundayPlanner(client, options = {}) {
     scheduled_start_at,
     note
   FROM team_calendar_events
-  WHERE is_auto_generated = 0
+  WHERE team_id = ?
+    AND is_auto_generated = 0
     AND status <> 'cancelled'
     AND option_date > ?
   ORDER BY option_date ASC, COALESCE(scheduled_start_at, window_start_at) ASC, id ASC
-`).all(weekEndDate);
+`).all(teamId, weekEndDate);
 
   const overviewLines = [];
   overviewLines.push('📋 **Wochenplanung – Rohübersicht**');
@@ -856,7 +871,8 @@ async function runSundayPlanner(client, options = {}) {
 
 
 
-  const adminChannel = await client.channels.fetch(process.env.ADMIN_CHANNEL_ID);
+  const adminChannelId = team.admin_channel_id || (team.is_default ? process.env.ADMIN_CHANNEL_ID : null);
+  const adminChannel = adminChannelId ? await client.channels.fetch(adminChannelId) : null;
   if (!adminChannel || !adminChannel.isTextBased()) {
     return { skipped: false, sent: false, reason: 'invalid_admin_channel' };
   }
@@ -881,6 +897,8 @@ async function runSundayPlanner(client, options = {}) {
   return {
     skipped: false,
     sent: true,
+    teamId,
+    teamName: team.name,
     startDate: plannerStartDate,
     endDate: windowEndDate,
     windowDays: plannerWindowDays,
@@ -891,7 +909,7 @@ async function runSundayPlanner(client, options = {}) {
   };
 }
 
-async function clearCurrentWeekPostedCards(client, weekStartDate, weekEndDate) {
+async function clearCurrentWeekPostedCards(client, teamId, weekStartDate, weekEndDate) {
   const events = db.prepare(`
     SELECT
       id,
@@ -900,9 +918,10 @@ async function clearCurrentWeekPostedCards(client, weekStartDate, weekEndDate) {
       player_channel_id,
       player_message_id
     FROM team_calendar_events
-    WHERE option_date >= ?
+    WHERE team_id = ?
+      AND option_date >= ?
       AND option_date <= ?
-  `).all(weekStartDate, weekEndDate);
+  `).all(teamId, weekStartDate, weekEndDate);
 
   for (const event of events) {
     if (event.admin_channel_id && event.admin_message_id) {
