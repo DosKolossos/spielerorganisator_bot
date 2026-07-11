@@ -482,13 +482,22 @@ function syncSuggestionEvent(suggestion, teamId) {
   const now = new Date().toISOString();
   const defaultMeetingAt = `${suggestion.date} ${addMinutesToTime(suggestion.earliestStart, -15)}`;
 
-  const suggestionKey = `team:${teamId}:${suggestion.suggestionKey}`;
+  const legacySuggestionKey = suggestion.suggestionKey;
+  const suggestionKey = `team:${teamId}:${legacySuggestionKey}`;
+
+  // Ältere Planner-Versionen speicherten nur `daily:YYYY-MM-DD`.
+  // Diese Einträge werden übernommen, damit beim Mehrteam-Upgrade keine
+  // zweite automatische Terminoption für denselben Tag entsteht.
   const existing = db.prepare(`
     SELECT *
     FROM team_calendar_events
-    WHERE team_id = ? AND suggestion_key = ?
+    WHERE team_id = ?
+      AND is_auto_generated = 1
+      AND option_date = ?
+      AND (suggestion_key = ? OR suggestion_key = ?)
+    ORDER BY CASE WHEN suggestion_key = ? THEN 0 ELSE 1 END, id DESC
     LIMIT 1
-  `).get(teamId, suggestionKey);
+  `).get(teamId, suggestion.date, suggestionKey, legacySuggestionKey, suggestionKey);
 
   if (!existing) {
     const result = db.prepare(`
@@ -542,6 +551,18 @@ function syncSuggestionEvent(suggestion, teamId) {
     return Number(result.lastInsertRowid);
   }
 
+  // Doppelte automatische Alt-Einträge desselben Teams/Tages entfernen.
+  // Manuell angelegte oder bereits fixierte Termine bleiben unberührt.
+  db.prepare(`
+    DELETE FROM team_calendar_events
+    WHERE team_id = ?
+      AND option_date = ?
+      AND is_auto_generated = 1
+      AND status = 'pending'
+      AND id <> ?
+      AND (suggestion_key = ? OR suggestion_key = ?)
+  `).run(teamId, suggestion.date, existing.id, suggestionKey, legacySuggestionKey);
+
   if (existing.is_auto_generated === 1 && existing.status === 'pending') {
     const nextEventType =
       existing.updated_by_discord_user_id === 'system' && (!existing.event_type || existing.event_type === 'scrim')
@@ -553,6 +574,7 @@ function syncSuggestionEvent(suggestion, teamId) {
       SET
         title = ?,
         event_type = ?,
+        suggestion_key = ?,
         option_date = ?,
         window_start_at = ?,
         window_end_at = ?,
@@ -569,6 +591,7 @@ function syncSuggestionEvent(suggestion, teamId) {
     `).run(
       suggestion.title,
       nextEventType,
+      suggestionKey,
       suggestion.date,
       suggestion.windowStartAt,
       suggestion.windowEndAt,
@@ -802,8 +825,12 @@ async function runSundayPlanner(client, options = {}) {
   });
 
   const suggestions = [];
+  const weekEndDate = windowEndDate;
 
-
+  // Zuerst alle vorhandenen Karten des Zeitraums entfernen. Das ist wichtig
+  // für Altbestände, bei denen bereits zwei automatische Datensätze und damit
+  // zwei Discord-Nachrichten für denselben Tag existieren.
+  await clearCurrentWeekPostedCards(client, teamId, plannerStartDate, weekEndDate);
 
   for (const dateStr of windowDates) {
     const suggestion = buildDailySuggestion(players, upcomingEntries, rules, dateStr);
@@ -812,9 +839,6 @@ async function runSundayPlanner(client, options = {}) {
     const calendarId = syncSuggestionEvent(suggestion, teamId);
     suggestions.push({ ...suggestion, calendarId });
   }
-
-  const weekEndDate = windowEndDate;
-  await clearCurrentWeekPostedCards(client, teamId, plannerStartDate, weekEndDate);
 
   const currentWeekManualEvents = db.prepare(`
   SELECT
