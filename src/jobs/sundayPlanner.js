@@ -363,6 +363,43 @@ function compressStartWindows(startTimes) {
     .join(', ');
 }
 
+function buildPlayerAvailabilityText(players, slots) {
+  const grouped = new Map([
+    ['main', { label: 'Main-Line-up', rows: [] }],
+    ['sub', { label: 'Subs', rows: [] }],
+    ['staff', { label: 'Coaches/Admins', rows: [] }]
+  ]);
+
+  for (const player of players) {
+    const status = normalizeRosterStatus(player.roster_status);
+    if (status === 'inactive') continue;
+
+    const availableStarts = slots
+      .filter(slot => slot.available.some(candidate => candidate.id === player.id))
+      .map(slot => slot.startTime);
+
+    if (!availableStarts.length) continue;
+
+    const key = status === 'coach' || status === 'admin' ? 'staff' : status;
+    const group = grouped.get(key) || grouped.get('sub');
+    group.rows.push({
+      name: playerDisplay(player),
+      windows: compressStartWindows(availableStarts)
+    });
+  }
+
+  const lines = [];
+  for (const group of grouped.values()) {
+    if (!group.rows.length) continue;
+    lines.push(`**${group.label}:**`);
+    for (const row of group.rows.sort((a, b) => a.name.localeCompare(b.name, 'de'))) {
+      lines.push(`• ${row.name}: ${row.windows}`);
+    }
+  }
+
+  return lines.length ? lines.join('\n') : '-';
+}
+
 function buildDailySuggestion(players, explicitEntries, rules, dateStr) {
   const startTimes = getCandidateStartTimesForDate(dateStr);
   const slots = [];
@@ -425,6 +462,7 @@ function buildDailySuggestion(players, explicitEntries, rules, dateStr) {
   const availablePlayers = chosenGroup[0].available;
   const firstSlot = chosenGroup[0];
   const lastSlot = chosenGroup[chosenGroup.length - 1];
+  const playerAvailabilityText = buildPlayerAvailabilityText(players, slots);
 
   return {
     date: dateStr,
@@ -433,7 +471,7 @@ function buildDailySuggestion(players, explicitEntries, rules, dateStr) {
     latestEnd: lastSlot.endTime,
     startWindows: compressStartWindows(chosenGroup.map(slot => slot.startTime)),
     availablePlayers,
-    availablePlayersText: formatRosterGroups(availablePlayers, { includeInactive: false }),
+    availablePlayersText: playerAvailabilityText,
     suggestionKey: `daily:${dateStr}`,
     windowStartAt: `${dateStr} ${firstSlot.startTime}`,
     windowEndAt: `${dateStr} ${lastSlot.endTime}`

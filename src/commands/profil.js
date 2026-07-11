@@ -2,6 +2,7 @@ const { SlashCommandBuilder, MessageFlags } = require('discord.js');
 const db = require('../db/database');
 const { requireAdmin } = require('../utils/permissions');
 const { logAdminAction, notifyUser } = require('../utils/adminTools');
+const { getTeamById } = require('../services/teamService');
 const {
   ROSTER_STATUS_CHOICES,
   POSITION_CHOICES,
@@ -32,6 +33,7 @@ const REGION_CHOICES = [
 ];
 
 function formatProfile(player, heading = 'Dein Profil') {
+  const team = player.team_id ? getTeamById(player.team_id) : null;
   const riotId = player.riot_game_name && player.riot_tag
     ? `${player.riot_game_name}#${player.riot_tag}`
     : '-';
@@ -44,6 +46,7 @@ function formatProfile(player, heading = 'Dein Profil') {
     `Alias: **${player.alias ?? '-'}**\n` +
     `Riot-ID: **${riotId}**\n` +
     `OPGG-Region: **${(player.riot_region ?? 'euw').toUpperCase()}**\n` +
+    `Team: **${team?.name ?? 'Nicht zugewiesen'}**\n` +
     `Status: **${rosterStatusLabel(player.roster_status)}**\n` +
     `Hauptposition: **${player.primary_position ?? '-'}**\n` +
     `Nebenposition: **${player.secondary_position ?? '-'}**\n` +
