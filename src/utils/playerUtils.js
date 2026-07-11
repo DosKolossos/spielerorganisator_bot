@@ -39,11 +39,12 @@ function upsertPlayer(user, patch = {}) {
         riot_game_name,
         riot_tag,
         riot_region,
+        team_id,
         is_archived,
         created_at,
         updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
     `).run(
       user.id,
       user.username,
@@ -52,6 +53,7 @@ function upsertPlayer(user, patch = {}) {
       patch.riot_game_name ?? null,
       patch.riot_tag ?? null,
       normalizeRegion(patch.riot_region),
+      patch.team_id ?? null,
       now,
       now
     );
@@ -76,6 +78,7 @@ function upsertPlayer(user, patch = {}) {
             WHEN ? = '__CLEAR__' THEN 'euw'
             ELSE COALESCE(?, riot_region, 'euw')
           END,
+          team_id = COALESCE(?, team_id),
           updated_at = ?
       WHERE discord_user_id = ?
     `).run(
@@ -89,6 +92,7 @@ function upsertPlayer(user, patch = {}) {
       patch.riot_tag ?? null,
       patch.riot_region ?? null,
       patch.riot_region ? normalizeRegion(patch.riot_region) : null,
+      patch.team_id ?? null,
       now,
       user.id
     );

@@ -508,12 +508,107 @@ function migrateTeamCalendarAssignments() {
   `);
 }
 
+
+
+function migrateMultiTeam() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS teams (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      slug TEXT NOT NULL UNIQUE,
+      short_name TEXT,
+      discord_role_id TEXT,
+      admin_channel_id TEXT,
+      availability_channel_id TEXT,
+      player_calendar_channel_id TEXT,
+      scrim_channel_id TEXT,
+      primeleague_channel_id TEXT,
+      is_default INTEGER NOT NULL DEFAULT 0,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_by_discord_user_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
+
+  const now = new Date().toISOString();
+  let defaultTeam = db.prepare(`SELECT * FROM teams ORDER BY is_default DESC, id ASC LIMIT 1`).get();
+  if (!defaultTeam) {
+    const result = db.prepare(`
+      INSERT INTO teams (
+        name, slug, short_name, admin_channel_id, availability_channel_id,
+        player_calendar_channel_id, is_default, is_active,
+        created_by_discord_user_id, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?)
+    `).run(
+      process.env.DEFAULT_TEAM_NAME || 'SchiggyGang Main',
+      'main',
+      process.env.DEFAULT_TEAM_SHORT_NAME || 'MAIN',
+      process.env.ADMIN_CHANNEL_ID || null,
+      process.env.WEEKLY_AVAILABILITY_CHANNEL_ID || null,
+      process.env.PLAYER_CALENDAR_CHANNEL_ID || null,
+      'migration', now, now
+    );
+    defaultTeam = db.prepare(`SELECT * FROM teams WHERE id = ?`).get(result.lastInsertRowid);
+  }
+
+  addColumnIfMissing('players', 'team_id', 'INTEGER');
+  addColumnIfMissing('team_calendar_events', 'team_id', 'INTEGER');
+  addColumnIfMissing('standins', 'team_id', 'INTEGER');
+
+  db.prepare(`UPDATE players SET team_id = ? WHERE team_id IS NULL`).run(defaultTeam.id);
+  db.prepare(`UPDATE team_calendar_events SET team_id = ? WHERE team_id IS NULL`).run(defaultTeam.id);
+
+  // Alte Tabelle hatte week_start_date global UNIQUE. Für mehrere Teams muss
+  // stattdessen die Kombination aus Team und Woche eindeutig sein.
+  const weeklyColumns = tableExists('weekly_availability_posts')
+    ? db.prepare(`PRAGMA table_info(weekly_availability_posts)`).all()
+    : [];
+  const hasTeamId = weeklyColumns.some(column => column.name === 'team_id');
+  if (!hasTeamId) {
+    db.exec(`
+      ALTER TABLE weekly_availability_posts RENAME TO weekly_availability_posts_legacy;
+      CREATE TABLE weekly_availability_posts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        team_id INTEGER NOT NULL,
+        week_start_date TEXT NOT NULL,
+        channel_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(team_id, week_start_date),
+        FOREIGN KEY(team_id) REFERENCES teams(id)
+      );
+    `);
+    db.prepare(`
+      INSERT INTO weekly_availability_posts (
+        team_id, week_start_date, channel_id, message_id, created_at, updated_at
+      )
+      SELECT ?, week_start_date, channel_id, message_id, created_at, updated_at
+      FROM weekly_availability_posts_legacy
+    `).run(defaultTeam.id);
+    db.exec(`DROP TABLE weekly_availability_posts_legacy;`);
+  }
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_teams_channels
+    ON teams (admin_channel_id, availability_channel_id, player_calendar_channel_id);
+    CREATE INDEX IF NOT EXISTS idx_players_team
+    ON players (team_id, is_archived, roster_status);
+    CREATE INDEX IF NOT EXISTS idx_team_calendar_events_team_date
+    ON team_calendar_events (team_id, option_date, status);
+    CREATE INDEX IF NOT EXISTS idx_weekly_availability_posts_team_week
+    ON weekly_availability_posts (team_id, week_start_date);
+  `);
+}
+
 migratePlayers();
 migrateAvailabilityEntries();
 migrateAvailabilityRules();
 migrateTeamCalendarEvents();
 dedupeSuggestionKeys();
 migrateTeamCalendarAssignments();
+migrateMultiTeam();
 
 db.exec(`
   CREATE INDEX IF NOT EXISTS idx_players_archived

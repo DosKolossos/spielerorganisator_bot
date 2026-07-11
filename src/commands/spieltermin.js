@@ -21,6 +21,7 @@ const {
   rosterSortRank,
   rosterStatusLabel
 } = require('../utils/rosterUtils');
+const { getTeamById, resolveTeamForInteraction } = require('../services/teamService');
 
 const ROLE_ORDER = ['Top', 'Jgl', 'Mid', 'ADC', 'Supp', 'Sub1', 'Sub2'];
 const STARTER_ROLES = ['Top', 'Jgl', 'Mid', 'ADC', 'Supp'];
@@ -1196,7 +1197,7 @@ async function syncPlayerCalendarCard(client, eventId) {
     return false;
   }
 
-  const playerChannelId = process.env.PLAYER_CALENDAR_CHANNEL_ID;
+  const playerChannelId = getTeamById(event.team_id)?.player_calendar_channel_id || process.env.PLAYER_CALENDAR_CHANNEL_ID;
   if (!playerChannelId) return false;
 
   try {
@@ -1346,7 +1347,7 @@ async function refreshSpecificCard(channel, messageId, eventId) {
 }
 
 async function refreshStoredPlayerCard(client, eventId) {
-  const playerChannelId = process.env.PLAYER_CALENDAR_CHANNEL_ID;
+  const playerChannelId = getTeamById(event.team_id)?.player_calendar_channel_id || process.env.PLAYER_CALENDAR_CHANNEL_ID;
   if (!playerChannelId) return false;
 
   const event = getEventById(eventId);
@@ -1678,9 +1679,9 @@ async function handleButtonInteraction(interaction, parts) {
 
     await refreshSpecificCard(interaction.channel, messageId, eventId);
 
-    const playerCalendarChannelConfigured = Boolean(process.env.PLAYER_CALENDAR_CHANNEL_ID);
+    const playerCalendarChannelConfigured = Boolean(getTeamById(event.team_id)?.player_calendar_channel_id || process.env.PLAYER_CALENDAR_CHANNEL_ID);
     const playerCalendarHint = nextValue === 1 && !playerCalendarChannelConfigured
-      ? '\n⚠️ `PLAYER_CALENDAR_CHANNEL_ID` ist nicht gesetzt. Die Admin-Karte wurde aktualisiert, aber es konnte keine Spielerkarte gepostet werden.'
+      ? '\n⚠️ Für dieses Team ist kein Spielerkalender-Kanal eingerichtet. Die Admin-Karte wurde aktualisiert, aber es konnte keine Spielerkarte gepostet werden.'
       : '';
 
     return interaction.editReply({
@@ -2514,6 +2515,7 @@ const command = {
 
       const result = db.prepare(`
   INSERT INTO team_calendar_events (
+    team_id,
     title,
     opponent_name,
     event_type,
@@ -2540,13 +2542,14 @@ const command = {
     updated_at
   )
   VALUES (
-    ?, ?, ?, ?,
+    ?, ?, ?, ?, ?,
     ?, ?, ?, ?, ?, ?, ?,
     NULL, ?, ?, NULL, 0, 0,
     ?, ?, ?,
     ?, ?, ?, ?
   )
 `).run(
+        resolveTeamForInteraction(interaction)?.id || null,
         titel,
         nextOpponent,
         typ,

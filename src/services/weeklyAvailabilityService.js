@@ -13,6 +13,7 @@ const db = require('../db/database');
 const { todayInBerlin, isValidTime } = require('../utils/time');
 const { upsertPlayer, playerDisplay } = require('../utils/playerUtils');
 const { requireAdmin } = require('../utils/permissions');
+const { getTeamById, resolveTeamForInteraction } = require('./teamService');
 
 const PREFIX = 'wavail';
 const DAYS_PER_WEEK = 7;
@@ -186,17 +187,17 @@ function getEntryReasonForState(state) {
   return 'Wochen-Check-in';
 }
 
-function getCurrentWeekPost(weekStartDate) {
+function getCurrentWeekPost(teamId, weekStartDate) {
   return db.prepare(`
     SELECT *
     FROM weekly_availability_posts
-    WHERE week_start_date = ?
-  `).get(weekStartDate);
+    WHERE team_id = ? AND week_start_date = ?
+  `).get(teamId, weekStartDate);
 }
 
-function buildAvailabilityRangeModal() {
+function buildAvailabilityRangeModal(teamId) {
   const modal = new ModalBuilder()
-    .setCustomId(`${PREFIX}:rangemodal`)
+    .setCustomId(`${PREFIX}:rangemodal:${teamId || 0}`)
     .setTitle('Wochenkarten-Zeitraum');
 
   const startInput = new TextInputBuilder()
@@ -248,14 +249,14 @@ function buildPublicPromptComponents(weekStartDate) {
   ];
 }
 
-async function upsertWeeklyAvailabilityPrompt(channel, weekStartDate) {
+async function upsertWeeklyAvailabilityPrompt(channel, teamId, weekStartDate) {
   const weekEndDate = addDaysIso(weekStartDate, DAYS_PER_WEEK - 1);
   const payload = {
     embeds: [buildPublicPromptEmbed(weekStartDate)],
     components: buildPublicPromptComponents(weekStartDate)
   };
 
-  const existing = getCurrentWeekPost(weekStartDate);
+  const existing = getCurrentWeekPost(teamId, weekStartDate);
   const now = new Date().toISOString();
 
   if (existing?.message_id) {
@@ -288,14 +289,15 @@ async function upsertWeeklyAvailabilityPrompt(channel, weekStartDate) {
   } else {
     db.prepare(`
       INSERT INTO weekly_availability_posts (
+        team_id,
         week_start_date,
         channel_id,
         message_id,
         created_at,
         updated_at
       )
-      VALUES (?, ?, ?, ?, ?)
-    `).run(weekStartDate, channel.id, sentMessage.id, now, now);
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(teamId, weekStartDate, channel.id, sentMessage.id, now, now);
   }
 
   return {
@@ -310,7 +312,8 @@ async function publishWeeklyAvailabilityPrompt(client, options = {}) {
   const rawStartDate = options.startDate || getDefaultRangeStartDate();
   const rawEndDate = options.endDate || getDefaultRangeEndDate();
   const normalizedRange = normalizeRangeToFullWeeks(rawStartDate, rawEndDate);
-  const channelId = process.env.WEEKLY_AVAILABILITY_CHANNEL_ID;
+  const team = options.teamId ? getTeamById(options.teamId) : null;
+  const channelId = team?.availability_channel_id || process.env.WEEKLY_AVAILABILITY_CHANNEL_ID;
 
   if (!channelId) {
     return { sent: false, reason: 'missing_channel_id' };
@@ -336,7 +339,7 @@ async function publishWeeklyAvailabilityPrompt(client, options = {}) {
   const results = [];
 
   for (const weekStartDate of weeks) {
-    results.push(await upsertWeeklyAvailabilityPrompt(channel, weekStartDate));
+    results.push(await upsertWeeklyAvailabilityPrompt(channel, team?.id || 1, weekStartDate));
   }
 
   return {
@@ -658,7 +661,7 @@ function canHandleInteraction(interaction) {
 }
 
 async function openEditor(interaction, weekStartDate, options = {}) {
-  const player = upsertPlayer(interaction.user);
+  const player = upsertPlayer(interaction.user, { team_id: resolveTeamForInteraction(interaction)?.id });
   const payload = buildEditorPayload(player, weekStartDate, options);
 
   if (interaction.isButton() && !interaction.replied && !interaction.deferred) {
@@ -773,7 +776,7 @@ function buildRangeResultMessage(result) {
   );
 }
 
-async function handleRangeModalSubmit(interaction) {
+async function handleRangeModalSubmit(interaction, teamId) {
   if (!(await requireAdmin(interaction))) return true;
 
   const startDate = parseDateInput(interaction.fields.getTextInputValue('start_date'));
@@ -795,7 +798,7 @@ async function handleRangeModalSubmit(interaction) {
     return true;
   }
 
-  const result = await publishWeeklyAvailabilityPrompt(interaction.client, { startDate, endDate });
+  const result = await publishWeeklyAvailabilityPrompt(interaction.client, { startDate, endDate, teamId });
   await interaction.reply({
     content: buildRangeResultMessage(result),
     flags: MessageFlags.Ephemeral
@@ -818,28 +821,28 @@ async function handleInteraction(interaction) {
 
     if (action === 'toggle') {
       const dateStr = parts[3];
-      const player = upsertPlayer(interaction.user);
+      const player = upsertPlayer(interaction.user, { team_id: resolveTeamForInteraction(interaction)?.id });
       toggleDayState(player, interaction.user.id, dateStr, weekStartDate);
       await openEditor(interaction, weekStartDate);
       return true;
     }
 
     if (action === 'allyes') {
-      const player = upsertPlayer(interaction.user);
+      const player = upsertPlayer(interaction.user, { team_id: resolveTeamForInteraction(interaction)?.id });
       resetWeek(player.id, weekStartDate);
       await openEditor(interaction, weekStartDate);
       return true;
     }
 
     if (action === 'allno') {
-      const player = upsertPlayer(interaction.user);
+      const player = upsertPlayer(interaction.user, { team_id: resolveTeamForInteraction(interaction)?.id });
       setAllDays(player.id, interaction.user.id, weekStartDate, { kind: 'unavailable' });
       await openEditor(interaction, weekStartDate);
       return true;
     }
 
     if (action === 'reset') {
-      const player = upsertPlayer(interaction.user);
+      const player = upsertPlayer(interaction.user, { team_id: resolveTeamForInteraction(interaction)?.id });
       resetWeek(player.id, weekStartDate);
       await openEditor(interaction, weekStartDate);
       return true;
@@ -861,14 +864,14 @@ async function handleInteraction(interaction) {
 
   if (interaction.isModalSubmit()) {
     if (action === 'rangemodal') {
-      return handleRangeModalSubmit(interaction);
+      return handleRangeModalSubmit(interaction, Number(parts[2]) || resolveTeamForInteraction(interaction)?.id);
     }
 
     if (action === 'timemodal') {
       const dateStr = parts[3];
       const from = interaction.fields.getTextInputValue('available_from').trim();
       const until = interaction.fields.getTextInputValue('available_until').trim();
-      const player = upsertPlayer(interaction.user);
+      const player = upsertPlayer(interaction.user, { team_id: resolveTeamForInteraction(interaction)?.id });
       const nextState = buildStateFromTimes(from || null, until || null);
 
       if (nextState.error) {

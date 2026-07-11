@@ -5,6 +5,7 @@ const {
   canHandleInteraction,
   handleInteraction
 } = require('../services/weeklyAvailabilityService');
+const { resolveTeamForInteraction } = require('../services/teamService');
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -25,7 +26,11 @@ module.exports = {
 
     if (subcommand === 'wochenkarten') {
       try {
-        await interaction.showModal(buildAvailabilityRangeModal());
+        const team = resolveTeamForInteraction(interaction);
+        if (!team) {
+          return interaction.reply({ content: 'Für diesen Kanal ist kein Team eingerichtet.', flags: MessageFlags.Ephemeral });
+        }
+        await interaction.showModal(buildAvailabilityRangeModal(team.id));
       } catch (error) {
         console.error('[Verfuegbarkeit] Zeitraum-Modal konnte nicht geöffnet werden:', error);
         if (!interaction.replied && !interaction.deferred) {
