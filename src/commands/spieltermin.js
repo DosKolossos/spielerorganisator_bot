@@ -2135,6 +2135,13 @@ async function handleStringSelectInteraction(interaction, parts) {
     const selectedValue = interaction.values[0];
 
     if (selectedValue === '__replacement__') {
+      db.prepare(`
+        DELETE FROM team_calendar_assignments
+        WHERE event_id = ? AND role_label = ?
+      `).run(eventId, roleLabel);
+
+      await refreshSpecificCard(interaction.channel, messageId, eventId);
+
       return interaction.update(buildReplacementPayload(eventId, messageId, roleLabel));
     }
 
