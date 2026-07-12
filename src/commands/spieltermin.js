@@ -772,6 +772,287 @@ function getAvailabilitySnapshot(dateStr, startTime, durationMinutes) {
   };
 }
 
+
+function getEventPlanningWindow(event) {
+  const startAt = event.scheduled_start_at || event.window_start_at || event.start_at;
+  const endAt = event.scheduled_end_at || event.window_end_at || event.end_at;
+  if (!startAt || !endAt) return null;
+  return { startAt, endAt, dateStr: startAt.slice(0, 10) };
+}
+
+function isPlayerAvailableForEvent(playerId, event) {
+  const window = getEventPlanningWindow(event);
+  if (!window) return true;
+
+  const entries = db.prepare(`
+    SELECT entry_type, start_at, end_at, approval_status
+    FROM availability_entries
+    WHERE player_id = ?
+      AND end_at >= ?
+      AND start_at <= ?
+      AND approval_status <> 'rejected'
+  `).all(playerId, window.startAt, window.endAt);
+
+  if (entries.some(entry => overlaps(window.startAt, window.endAt, entry.start_at, entry.end_at))) {
+    return false;
+  }
+
+  const rules = db.prepare(`
+    SELECT *
+    FROM availability_rules
+    WHERE player_id = ? AND active = 1
+  `).all(playerId);
+
+  return !rules.some(rule =>
+    getRuleBlockedIntervalsForDate(rule, window.dateStr)
+      .some(interval => overlaps(window.startAt, window.endAt, interval.start_at, interval.end_at))
+  );
+}
+
+function candidatePositionRank(candidate, roleLabel) {
+  const primary = candidate.primary_position || candidate.preferred_position;
+  const secondary = candidate.secondary_position;
+  if (primary === roleLabel) return 0;
+  if (secondary === roleLabel) return 1;
+  if (primary === 'Fill' || secondary === 'Fill') return 2;
+  return 9;
+}
+
+function getSuggestedPlayers(event) {
+  return db.prepare(`
+    SELECT id, username, global_name, alias, roster_status,
+           primary_position, secondary_position,
+           riot_game_name, riot_tag, riot_region
+    FROM players
+    WHERE is_archived = 0
+      AND team_id = ?
+      AND COALESCE(roster_status, 'sub') IN ('main', 'sub')
+    ORDER BY COALESCE(alias, global_name, username) COLLATE NOCASE ASC
+  `).all(event.team_id)
+    .filter(player => isPlayerAvailableForEvent(player.id, event));
+}
+
+function saveLineupAssignment(eventId, roleLabel, candidate) {
+  const now = new Date().toISOString();
+  const isStandin = candidate.candidate_type === 'standin';
+  db.prepare(`
+    INSERT INTO team_calendar_assignments (
+      event_id, role_label, player_label, assignee_type,
+      player_id, standin_id, note, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
+    ON CONFLICT(event_id, role_label)
+    DO UPDATE SET
+      player_label = excluded.player_label,
+      assignee_type = excluded.assignee_type,
+      player_id = excluded.player_id,
+      standin_id = excluded.standin_id,
+      updated_at = excluded.updated_at
+  `).run(
+    eventId,
+    roleLabel,
+    displayName(candidate),
+    isStandin ? 'standin' : 'player',
+    isStandin ? null : candidate.id,
+    isStandin ? candidate.id : null,
+    now,
+    now
+  );
+}
+
+function generateLineupSuggestion(eventId, { overwrite = false } = {}) {
+  const event = getEventById(eventId);
+  if (!event) return { assigned: 0, missing: STARTER_ROLES.slice() };
+
+  if (overwrite) {
+    db.prepare(`
+      DELETE FROM team_calendar_assignments
+      WHERE event_id = ? AND role_label IN ('Top', 'Jgl', 'Mid', 'ADC', 'Supp')
+    `).run(eventId);
+  }
+
+  const existing = getAssignments(eventId);
+  const byRole = new Map(existing.map(item => [item.role_label, item]));
+  const usedPlayerIds = new Set(existing.map(item => item.player_id).filter(Boolean));
+  const players = getSuggestedPlayers(event);
+  let assigned = 0;
+  const missing = [];
+
+  for (const roleLabel of STARTER_ROLES) {
+    if (byRole.has(roleLabel)) continue;
+
+    const candidate = players
+      .filter(player => !usedPlayerIds.has(player.id))
+      .map(player => ({
+        ...player,
+        candidate_type: 'player',
+        position_rank: candidatePositionRank(player, roleLabel),
+        status_rank: normalizeRosterStatus(player.roster_status) === 'main' ? 0 : 1
+      }))
+      .filter(player => player.position_rank < 9)
+      .sort((a, b) =>
+        a.position_rank - b.position_rank ||
+        a.status_rank - b.status_rank ||
+        displayName(a).localeCompare(displayName(b), 'de')
+      )[0];
+
+    if (!candidate) {
+      missing.push(roleLabel);
+      continue;
+    }
+
+    saveLineupAssignment(eventId, roleLabel, candidate);
+    usedPlayerIds.add(candidate.id);
+    assigned++;
+  }
+
+  return { assigned, missing };
+}
+
+function buildStarterLineupSelectRows(eventId, messageId) {
+  const event = getEventById(eventId);
+  const assignments = getAssignments(eventId);
+  const byRole = new Map(assignments.map(item => [item.role_label, item]));
+  const usedPlayerIds = new Set(assignments.map(item => item.player_id).filter(Boolean));
+  const candidates = getSuggestedPlayers(event);
+
+  return STARTER_ROLES.map(roleLabel => {
+    const current = byRole.get(roleLabel);
+    const options = [];
+
+    if (current) {
+      options.push({
+        label: `${current.player_label} (aktuell)`.slice(0, 100),
+        value: current.standin_id ? `standin:${current.standin_id}` : `player:${current.player_id}`,
+        description: `${roleLabel} ist aktuell besetzt`.slice(0, 100),
+        default: true
+      });
+    } else {
+      options.push({
+        label: 'Ersatz besorgen',
+        value: '__replacement__',
+        description: `Kein verfügbarer ${roleLabel}-Spieler gefunden`,
+        default: true
+      });
+    }
+
+    for (const player of candidates
+      .filter(player => !usedPlayerIds.has(player.id) || player.id === current?.player_id)
+      .sort((a, b) =>
+        candidatePositionRank(a, roleLabel) - candidatePositionRank(b, roleLabel) ||
+        rosterSortRank(a.roster_status) - rosterSortRank(b.roster_status) ||
+        displayName(a).localeCompare(displayName(b), 'de')
+      )
+      .slice(0, 23)) {
+      const value = `player:${player.id}`;
+      if (options.some(option => option.value === value)) continue;
+      options.push(candidateOption({ ...player, candidate_type: 'player' }, roleLabel));
+    }
+
+    if (!options.some(option => option.value === '__replacement__')) {
+      options.push({
+        label: 'Ersatz besorgen',
+        value: '__replacement__',
+        description: 'Subs und Standins anzeigen'
+      });
+    }
+
+    return new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(`spieltermin:autoslot:${eventId}:${messageId}:${roleLabel}`)
+        .setPlaceholder(`${roleLabel}: ${current?.player_label || 'Ersatz besorgen'}`)
+        .addOptions(options.slice(0, 25))
+    );
+  });
+}
+
+function buildAutoLineupPayload(eventId, messageId, infoText = null) {
+  const assignments = getAssignments(eventId);
+  const missing = STARTER_ROLES.filter(role => !assignments.some(item => item.role_label === role));
+  return {
+    content: [
+      infoText,
+      `**Line-up-Vorschlag für #${eventId}**`,
+      buildLineupText(assignments),
+      missing.length
+        ? `\n⚠️ **Ersatz besorgen:** ${missing.join(', ')}`
+        : '\n✅ Alle Starter-Positionen sind besetzt.',
+      '\nDu kannst jede Position direkt über das jeweilige Dropdown ändern.'
+    ].filter(Boolean).join('\n'),
+    components: buildStarterLineupSelectRows(eventId, messageId)
+  };
+}
+
+function buildReplacementPayload(eventId, messageId, roleLabel) {
+  const event = getEventById(eventId);
+  const players = db.prepare(`
+    SELECT id, username, global_name, alias, roster_status,
+           primary_position, secondary_position,
+           riot_game_name, riot_tag, riot_region
+    FROM players
+    WHERE is_archived = 0
+      AND team_id = ?
+      AND COALESCE(roster_status, 'sub') = 'sub'
+    ORDER BY COALESCE(alias, global_name, username) COLLATE NOCASE ASC
+  `).all(event.team_id).map(row => ({ ...row, candidate_type: 'player' }));
+
+  const standins = db.prepare(`
+    SELECT id, display_name, riot_game_name, riot_tag, riot_region, preferred_position
+    FROM standins
+    WHERE is_active = 1
+    ORDER BY display_name COLLATE NOCASE ASC
+  `).all().map(row => ({ ...row, candidate_type: 'standin', roster_status: 'sub' }));
+
+  const candidates = [...players, ...standins]
+    .sort((a, b) =>
+      candidatePositionRank(a, roleLabel) - candidatePositionRank(b, roleLabel) ||
+      (a.candidate_type === 'player' ? -1 : 1) ||
+      displayName(a).localeCompare(displayName(b), 'de')
+    )
+    .slice(0, 24);
+
+  const select = new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(`spieltermin:replacement:${eventId}:${messageId}:${roleLabel}`)
+      .setPlaceholder(`${roleLabel}: Sub oder Standin auswählen`)
+      .addOptions([
+        ...candidates.map(candidate => candidateOption(candidate, roleLabel)),
+        { label: 'Neuen Standin anlegen', value: '__new_standin__', description: 'Standin speichern und direkt einsetzen' }
+      ].slice(0, 25))
+  );
+
+  const back = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`spieltermin:lineupback:${eventId}:${messageId}`)
+      .setLabel('Zurück zum Vorschlag')
+      .setStyle(ButtonStyle.Secondary)
+  );
+
+  return {
+    content: `**Ersatz für ${roleLabel}**
+Wähle einen Sub oder Standin. Ist die Person noch nicht vorhanden, nutze **Neuen Standin anlegen**.`,
+    components: [select, back]
+  };
+}
+
+function buildNewStandinModal(eventId, messageId, roleLabel) {
+  const modal = new ModalBuilder()
+    .setCustomId(`spieltermin:newstandin:${eventId}:${messageId}:${roleLabel}`)
+    .setTitle(`Neuer Standin – ${roleLabel}`);
+
+  const name = new TextInputBuilder().setCustomId('display_name').setLabel('Anzeigename').setStyle(TextInputStyle.Short).setRequired(true);
+  const riot = new TextInputBuilder().setCustomId('riot_id').setLabel('Riot-ID (GameName#Tag)').setStyle(TextInputStyle.Short).setRequired(true);
+  const region = new TextInputBuilder().setCustomId('riot_region').setLabel('OP.GG-Region, z. B. EUW').setStyle(TextInputStyle.Short).setRequired(true).setValue('EUW');
+  const note = new TextInputBuilder().setCustomId('note').setLabel('Notiz (optional)').setStyle(TextInputStyle.Short).setRequired(false);
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(name),
+    new ActionRowBuilder().addComponents(riot),
+    new ActionRowBuilder().addComponents(region),
+    new ActionRowBuilder().addComponents(note)
+  );
+  return modal;
+}
+
 function buildEventActionRows(event) {
   const publishEnabled = Number(event.show_in_player_calendar) === 1;
 
@@ -1612,7 +1893,14 @@ async function handleButtonInteraction(interaction, parts) {
     return interaction.showModal(modal);
   }
   if (action === 'lineup') {
-    return interaction.reply({ ...buildLineupManagerPayload(eventId, messageId), flags: MessageFlags.Ephemeral });
+    const starterAssignments = getAssignments(eventId).filter(item => STARTER_ROLES.includes(item.role_label));
+    if (starterAssignments.length === 0) generateLineupSuggestion(eventId);
+    return interaction.reply({ ...buildAutoLineupPayload(eventId, messageId), flags: MessageFlags.Ephemeral });
+  }
+
+  if (action === 'lineupback') {
+    const sourceMessageId = parts[3] || messageId;
+    return interaction.update(buildAutoLineupPayload(eventId, sourceMessageId));
   }
 
   if (action === 'opponent') {
@@ -1778,6 +2066,52 @@ async function handleStringSelectInteraction(interaction, parts) {
       content: `Typ für **#${eventId}** wurde auf **${eventTypeLabel(nextType)}** gesetzt.`,
       components: []
     });
+  }
+
+  if (action === 'autoslot') {
+    const roleLabel = parts[4];
+    const selectedValue = interaction.values[0];
+
+    if (selectedValue === '__replacement__') {
+      return interaction.update(buildReplacementPayload(eventId, messageId, roleLabel));
+    }
+
+    const [selectedType, selectedIdRaw] = String(selectedValue).split(':');
+    const selectedId = Number(selectedIdRaw);
+    const candidate = selectedType === 'standin'
+      ? db.prepare(`SELECT *, 'standin' AS candidate_type FROM standins WHERE id = ? AND is_active = 1`).get(selectedId)
+      : db.prepare(`SELECT *, 'player' AS candidate_type FROM players WHERE id = ? AND is_archived = 0 AND team_id = ?`).get(selectedId, event.team_id);
+
+    if (!candidate) {
+      return interaction.update({ content: 'Die ausgewählte Person wurde nicht gefunden.', components: [] });
+    }
+
+    db.prepare(`DELETE FROM team_calendar_assignments WHERE event_id = ? AND player_id = ? AND role_label <> ?`).run(eventId, candidate.candidate_type === 'player' ? candidate.id : -1, roleLabel);
+    saveLineupAssignment(eventId, roleLabel, candidate);
+    await refreshSpecificCard(interaction.channel, messageId, eventId);
+    return interaction.update(buildAutoLineupPayload(eventId, messageId, `**${roleLabel}** wurde auf **${displayName(candidate)}** gesetzt.`));
+  }
+
+  if (action === 'replacement') {
+    const roleLabel = parts[4];
+    const selectedValue = interaction.values[0];
+    if (selectedValue === '__new_standin__') {
+      return interaction.showModal(buildNewStandinModal(eventId, messageId, roleLabel));
+    }
+
+    const [selectedType, selectedIdRaw] = String(selectedValue).split(':');
+    const selectedId = Number(selectedIdRaw);
+    const candidate = selectedType === 'standin'
+      ? db.prepare(`SELECT *, 'standin' AS candidate_type FROM standins WHERE id = ? AND is_active = 1`).get(selectedId)
+      : db.prepare(`SELECT *, 'player' AS candidate_type FROM players WHERE id = ? AND is_archived = 0 AND team_id = ?`).get(selectedId, event.team_id);
+
+    if (!candidate) {
+      return interaction.update({ content: 'Die ausgewählte Person wurde nicht gefunden.', components: [] });
+    }
+
+    saveLineupAssignment(eventId, roleLabel, candidate);
+    await refreshSpecificCard(interaction.channel, messageId, eventId);
+    return interaction.update(buildAutoLineupPayload(eventId, messageId, `Ersatz für **${roleLabel}**: **${displayName(candidate)}**.`));
   }
 
   if (action === 'lineuprole') {
@@ -2106,6 +2440,54 @@ async function handleModalSubmitInteraction(interaction, parts) {
       flags: MessageFlags.Ephemeral
     });
   }
+  if (action === 'newstandin') {
+    const roleLabel = parts[4];
+    const displayNameValue = interaction.fields.getTextInputValue('display_name').trim();
+    const riotRaw = interaction.fields.getTextInputValue('riot_id').trim();
+    const regionValue = interaction.fields.getTextInputValue('riot_region').trim().toLowerCase() || 'euw';
+    const noteValue = interaction.fields.getTextInputValue('note').trim() || null;
+    const hashIndex = riotRaw.lastIndexOf('#');
+
+    if (!displayNameValue || hashIndex <= 0 || hashIndex === riotRaw.length - 1) {
+      return interaction.reply({ content: 'Bitte gib die Riot-ID im Format `GameName#Tag` ein.', flags: MessageFlags.Ephemeral });
+    }
+
+    const riotGameName = riotRaw.slice(0, hashIndex).trim();
+    const riotTag = riotRaw.slice(hashIndex + 1).trim().toUpperCase();
+    const now = new Date().toISOString();
+    const existing = db.prepare(`
+      SELECT * FROM standins
+      WHERE lower(riot_game_name) = lower(?) AND lower(riot_tag) = lower(?) AND lower(riot_region) = lower(?)
+      LIMIT 1
+    `).get(riotGameName, riotTag, regionValue);
+
+    let standinId;
+    if (existing) {
+      standinId = existing.id;
+      db.prepare(`
+        UPDATE standins SET display_name = ?, preferred_position = ?, note = ?, is_active = 1,
+          updated_by_discord_user_id = ?, updated_at = ? WHERE id = ?
+      `).run(displayNameValue, roleLabel, noteValue, interaction.user.id, now, standinId);
+    } else {
+      const result = db.prepare(`
+        INSERT INTO standins (
+          display_name, riot_game_name, riot_tag, riot_region, preferred_position, note,
+          is_active, created_by_discord_user_id, updated_by_discord_user_id, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+      `).run(displayNameValue, riotGameName, riotTag, regionValue, roleLabel, noteValue, interaction.user.id, interaction.user.id, now, now);
+      standinId = Number(result.lastInsertRowid);
+    }
+
+    const candidate = db.prepare(`SELECT *, 'standin' AS candidate_type FROM standins WHERE id = ?`).get(standinId);
+    saveLineupAssignment(eventId, roleLabel, candidate);
+    await refreshSpecificCard(interaction.channel, messageId, eventId);
+
+    return interaction.reply({
+      content: `Standin **${displayNameValue}** wurde gespeichert und direkt auf **${roleLabel}** gesetzt.`,
+      flags: MessageFlags.Ephemeral
+    });
+  }
+
   if (action === 'lineupmodal') {
     const parsedLineup = parseLineupModalText(interaction.fields.getTextInputValue('lineup_text'));
 
