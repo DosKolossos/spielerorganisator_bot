@@ -982,6 +982,29 @@ function buildAutoLineupPayload(eventId, messageId, infoText = null) {
   };
 }
 
+function buildLineupConfirmationPayload(eventId, messageId, infoText = null) {
+  const assignments = getAssignments(eventId);
+  const missing = STARTER_ROLES.filter(role => !assignments.some(item => item.role_label === role));
+  const complete = missing.length === 0;
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`spieltermin:lineupconfirm:${eventId}:${messageId}`)
+      .setLabel('Aufstellung bestätigen')
+      .setStyle(complete ? ButtonStyle.Success : ButtonStyle.Primary)
+  );
+
+  return {
+    content: [
+      infoText,
+      complete
+        ? '✅ Alle fünf Positionen sind besetzt. Bestätige die Aufstellung, damit die Termin- und Spielerkalenderkarten final aktualisiert werden.'
+        : `⚠️ Aktuell noch offen: **${missing.join(', ')}**. Besetze die Positionen oben und klicke danach auf Bestätigen.`
+    ].filter(Boolean).join('\n'),
+    components: [row]
+  };
+}
+
 function buildReplacementPayload(eventId, messageId, roleLabel) {
   const event = getEventById(eventId);
   const players = db.prepare(`
@@ -1895,7 +1918,46 @@ async function handleButtonInteraction(interaction, parts) {
   if (action === 'lineup') {
     const starterAssignments = getAssignments(eventId).filter(item => STARTER_ROLES.includes(item.role_label));
     if (starterAssignments.length === 0) generateLineupSuggestion(eventId);
-    return interaction.reply({ ...buildAutoLineupPayload(eventId, messageId), flags: MessageFlags.Ephemeral });
+
+    await interaction.reply({ ...buildAutoLineupPayload(eventId, messageId), flags: MessageFlags.Ephemeral });
+    await interaction.followUp({ ...buildLineupConfirmationPayload(eventId, messageId), flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  if (action === 'lineupconfirm') {
+    const sourceMessageId = parts[3] || messageId;
+    const assignments = getAssignments(eventId).filter(item => STARTER_ROLES.includes(item.role_label));
+    const missing = STARTER_ROLES.filter(role => !assignments.some(item => item.role_label === role));
+
+    if (missing.length > 0) {
+      return interaction.update(buildLineupConfirmationPayload(
+        eventId,
+        sourceMessageId,
+        `Die Aufstellung kann noch nicht bestätigt werden. Offen: **${missing.join(', ')}**.`
+      ));
+    }
+
+    const now = new Date().toISOString();
+    db.prepare(`
+      UPDATE team_calendar_events
+      SET updated_by_discord_user_id = ?,
+          updated_at = ?
+      WHERE id = ?
+    `).run(interaction.user.id, now, eventId);
+
+    const refreshed = await refreshSpecificCard(interaction.channel, sourceMessageId, eventId);
+    const teamOpgg = buildTeamOpggInfo(assignments);
+
+    return interaction.update({
+      content: [
+        `✅ **Aufstellung für #${eventId} bestätigt.**`,
+        refreshed
+          ? 'Die Termin- und gegebenenfalls Spielerkalenderkarte wurden aktualisiert.'
+          : 'Die Aufstellung wurde gespeichert, die ursprüngliche Terminkarte konnte aber nicht aktualisiert werden.',
+        teamOpgg.ok ? `**Team OP.GG:** ${teamOpgg.url}` : null
+      ].filter(Boolean).join('\n'),
+      components: []
+    });
   }
 
   if (action === 'lineupback') {
