@@ -880,7 +880,9 @@ function candidatePositionRank(candidate, roleLabel) {
   return 9;
 }
 
-function getSuggestedPlayers(event) {
+function getTeamLineupPlayers(event) {
+  if (!event) return [];
+
   return db.prepare(`
     SELECT id, username, global_name, alias, roster_status,
            primary_position, secondary_position,
@@ -891,7 +893,21 @@ function getSuggestedPlayers(event) {
       AND COALESCE(roster_status, 'sub') IN ('main', 'sub')
     ORDER BY COALESCE(alias, global_name, username) COLLATE NOCASE ASC
   `).all(event.team_id)
-    .filter(player => isPlayerAvailableForEvent(player.id, event));
+    .map(player => ({
+      ...player,
+      is_available: isPlayerAvailableForEvent(player.id, event)
+    }));
+}
+
+function getSuggestedPlayers(event) {
+  return getTeamLineupPlayers(event)
+    .filter(player => player.is_available);
+}
+
+function unavailableAssignmentWarning(candidate, event) {
+  if (!candidate || candidate.candidate_type === 'standin') return '';
+  if (isPlayerAvailableForEvent(candidate.id, event)) return '';
+  return ' ⚠️ **Hinweis:** Dieser Spieler ist für den Termin als abwesend eingetragen.';
 }
 
 function saveLineupAssignment(eventId, roleLabel, candidate) {
@@ -975,7 +991,7 @@ function buildStarterLineupSelectRows(eventId, messageId) {
   const assignments = getAssignments(eventId);
   const byRole = new Map(assignments.map(item => [item.role_label, item]));
   const usedPlayerIds = new Set(assignments.map(item => item.player_id).filter(Boolean));
-  const candidates = getSuggestedPlayers(event);
+  const candidates = getTeamLineupPlayers(event);
 
   return STARTER_ROLES.map(roleLabel => {
     const current = byRole.get(roleLabel);
@@ -1000,6 +1016,7 @@ function buildStarterLineupSelectRows(eventId, messageId) {
     for (const player of candidates
       .filter(player => !usedPlayerIds.has(player.id) || player.id === current?.player_id)
       .sort((a, b) =>
+        Number(!a.is_available) - Number(!b.is_available) ||
         candidatePositionRank(a, roleLabel) - candidatePositionRank(b, roleLabel) ||
         rosterSortRank(a.roster_status) - rosterSortRank(b.roster_status) ||
         displayName(a).localeCompare(displayName(b), 'de')
@@ -1078,7 +1095,11 @@ function buildReplacementPayload(eventId, messageId, roleLabel) {
       AND team_id = ?
       AND COALESCE(roster_status, 'sub') = 'sub'
     ORDER BY COALESCE(alias, global_name, username) COLLATE NOCASE ASC
-  `).all(event.team_id).map(row => ({ ...row, candidate_type: 'player' }));
+  `).all(event.team_id).map(row => ({
+    ...row,
+    candidate_type: 'player',
+    is_available: isPlayerAvailableForEvent(row.id, event)
+  }));
 
   const standins = db.prepare(`
     SELECT id, display_name, riot_game_name, riot_tag, riot_region, preferred_position
@@ -1090,6 +1111,7 @@ function buildReplacementPayload(eventId, messageId, roleLabel) {
   const candidates = [...players, ...standins]
     .sort((a, b) =>
       candidatePositionRank(a, roleLabel) - candidatePositionRank(b, roleLabel) ||
+      Number(a.is_available === false) - Number(b.is_available === false) ||
       (a.candidate_type === 'player' ? -1 : 1) ||
       displayName(a).localeCompare(displayName(b), 'de')
     )
@@ -1287,7 +1309,7 @@ function buildRoleSelectRow(eventId, messageId) {
   );
 }
 
-function getLineupCandidates(roleLabel, teamId) {
+function getLineupCandidates(roleLabel, event) {
   const players = db.prepare(`
     SELECT
       id,
@@ -1313,7 +1335,11 @@ function getLineupCandidates(roleLabel, teamId) {
         ELSE 9
       END ASC,
       COALESCE(alias, global_name, username) COLLATE NOCASE ASC
-  `).all(teamId).map(player => ({ ...player, candidate_type: 'player' }));
+  `).all(event?.team_id).map(player => ({
+    ...player,
+    candidate_type: 'player',
+    is_available: isPlayerAvailableForEvent(player.id, event)
+  }));
 
   const standins = db.prepare(`
     SELECT
@@ -1333,6 +1359,8 @@ function getLineupCandidates(roleLabel, teamId) {
       const aMatch = positionMatchesRole(a, roleLabel) ? 0 : 1;
       const bMatch = positionMatchesRole(b, roleLabel) ? 0 : 1;
       if (aMatch !== bMatch) return aMatch - bMatch;
+      const availabilityDiff = Number(a.is_available === false) - Number(b.is_available === false);
+      if (availabilityDiff !== 0) return availabilityDiff;
       if (a.candidate_type !== b.candidate_type) return a.candidate_type === 'player' ? -1 : 1;
       const rankDiff = rosterSortRank(a.roster_status) - rosterSortRank(b.roster_status);
       if (rankDiff !== 0) return rankDiff;
@@ -1342,22 +1370,24 @@ function getLineupCandidates(roleLabel, teamId) {
 
 function candidateOption(candidate, roleLabel) {
   const isStandin = candidate.candidate_type === 'standin';
+  const isUnavailable = !isStandin && candidate.is_available === false;
   const prefix = isStandin ? '[Standin]' : `[${rosterStatusLabel(candidate.roster_status)}]`;
   const pos = candidate.primary_position || candidate.preferred_position || '-';
   const secondary = candidate.secondary_position ? `/${candidate.secondary_position}` : '';
   const riot = candidate.riot_game_name && candidate.riot_tag ? `${candidate.riot_game_name}#${candidate.riot_tag}` : 'Riot-ID fehlt';
   const matchHint = positionMatchesRole(candidate, roleLabel) ? 'passt zur Position' : 'andere Position';
+  const availabilityHint = isUnavailable ? '⚠️ abwesend' : (!isStandin && candidate.is_available === true ? 'verfügbar' : null);
 
   return {
-    label: `${prefix} ${displayName(candidate)}`.slice(0, 100),
+    label: `${isUnavailable ? '⚠️ ' : ''}${prefix} ${displayName(candidate)}`.slice(0, 100),
     value: `${isStandin ? 'standin' : 'player'}:${candidate.id}`,
-    description: `${pos}${secondary} • ${riot} • ${matchHint}`.slice(0, 100)
+    description: [availabilityHint, `${pos}${secondary}`, riot, matchHint].filter(Boolean).join(' • ').slice(0, 100)
   };
 }
 
 function buildPlayerSelectRow(eventId, messageId, roleLabel) {
   const event = getEventById(eventId);
-  const candidates = getLineupCandidates(roleLabel, event?.team_id);
+  const candidates = getLineupCandidates(roleLabel, event);
   const options = [
     {
       label: `${roleLabel} leeren`,
@@ -2321,7 +2351,8 @@ async function handleStringSelectInteraction(interaction, parts) {
     db.prepare(`DELETE FROM team_calendar_assignments WHERE event_id = ? AND player_id = ? AND role_label <> ?`).run(eventId, candidate.candidate_type === 'player' ? candidate.id : -1, roleLabel);
     saveLineupAssignment(eventId, roleLabel, candidate);
     await refreshSpecificCard(interaction.channel, messageId, eventId);
-    return interaction.update(buildAutoLineupPayload(eventId, messageId, `**${roleLabel}** wurde auf **${displayName(candidate)}** gesetzt.`));
+    const warning = unavailableAssignmentWarning(candidate, event);
+    return interaction.update(buildAutoLineupPayload(eventId, messageId, `**${roleLabel}** wurde auf **${displayName(candidate)}** gesetzt.${warning}`));
   }
 
   if (action === 'replacement') {
@@ -2343,7 +2374,8 @@ async function handleStringSelectInteraction(interaction, parts) {
 
     saveLineupAssignment(eventId, roleLabel, candidate);
     await refreshSpecificCard(interaction.channel, messageId, eventId);
-    return interaction.update(buildAutoLineupPayload(eventId, messageId, `Ersatz für **${roleLabel}**: **${displayName(candidate)}**.`));
+    const warning = unavailableAssignmentWarning(candidate, event);
+    return interaction.update(buildAutoLineupPayload(eventId, messageId, `Ersatz für **${roleLabel}**: **${displayName(candidate)}**.${warning}`));
   }
 
   if (action === 'lineuprole') {
@@ -2441,7 +2473,10 @@ async function handleStringSelectInteraction(interaction, parts) {
         now
       );
 
-      infoText = `**${roleLabel}** wurde auf **${label}**${assigneeType === 'standin' ? ' [Standin]' : ''} gesetzt.`;
+      const warning = assigneeType === 'player' && !isPlayerAvailableForEvent(playerId, event)
+        ? ' ⚠️ **Hinweis:** Dieser Spieler ist für den Termin als abwesend eingetragen.'
+        : '';
+      infoText = `**${roleLabel}** wurde auf **${label}**${assigneeType === 'standin' ? ' [Standin]' : ''} gesetzt.${warning}`;
     }
 
     await refreshSpecificCard(interaction.channel, messageId, eventId);
