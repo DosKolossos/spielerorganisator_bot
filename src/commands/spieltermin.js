@@ -26,7 +26,7 @@ const { getTeamById, resolveTeamForInteraction } = require('../services/teamServ
 const ROLE_ORDER = ['Top', 'Jgl', 'Mid', 'ADC', 'Supp', 'Sub1', 'Sub2'];
 const STARTER_ROLES = ['Top', 'Jgl', 'Mid', 'ADC', 'Supp'];
 const STATUS_VALUES = ['pending', 'fixed', 'cancelled'];
-const EVENT_TYPE_VALUES = ['open', 'scrim', 'primeleague', 'other'];
+const EVENT_TYPE_VALUES = ['open', 'flex', 'scrim', 'primeleague', 'other'];
 
 function isValidTime(value) {
   if (!/^\d{2}:\d{2}$/.test(value)) return false;
@@ -139,9 +139,11 @@ function statusColor(status) {
 function eventTypeLabel(type) {
   switch (type) {
     case 'open':
-      return 'Offen / Noch unklar';
+      return 'Offen';
+    case 'flex':
+      return 'Flex';
     case 'primeleague':
-      return 'Prime League';
+      return 'Primeleague';
     case 'scrim':
       return 'Scrim';
     default:
@@ -163,6 +165,7 @@ function normalizeEventTypeInput(value) {
   const normalized = String(value || '').trim().toLowerCase().replace(/\s+/g, '');
 
   if (['open', 'offen', 'unklar'].includes(normalized)) return 'open';
+  if (['flex', 'flexqueue', 'flexq'].includes(normalized)) return 'flex';
   if (['scrim', 'scrims', 'training'].includes(normalized)) return 'scrim';
   if (['primeleague', 'prm', 'prime'].includes(normalized)) return 'primeleague';
   if (['other', 'sonstiges', 'sonstig'].includes(normalized)) return 'other';
@@ -194,11 +197,11 @@ function buildTypeModal(eventId, messageId, currentType) {
 
   const input = new TextInputBuilder()
     .setCustomId('event_type_value')
-    .setLabel('Typ: open, scrim, primeleague, other')
+    .setLabel('Typ: open, flex, scrim, primeleague, other')
     .setStyle(TextInputStyle.Short)
     .setRequired(true)
     .setValue(currentType || 'open')
-    .setPlaceholder('open / scrim / primeleague / other');
+    .setPlaceholder('open / flex / scrim / primeleague / other');
 
   modal.addComponents(new ActionRowBuilder().addComponents(input));
   return modal;
@@ -338,6 +341,65 @@ function buildLineupText(assignments) {
     })
     .map(item => `${item.role_label}: ${assignmentDisplayLabel(item)}`)
     .join(' | ');
+}
+
+function buildCompactAvailablePlayersText(value) {
+  const raw = String(value || '').trim();
+  if (!raw || raw === '-') return 'Noch nicht ermittelt';
+
+  const names = [];
+  const seen = new Set();
+
+  for (const line of raw.split(/\r?\n/)) {
+    const normalized = line.replace(/\*\*/g, '').trim();
+    const match = normalized.match(/^[•*-]\s*([^:]+):/);
+    if (!match) continue;
+
+    const name = match[1].trim();
+    const key = name.toLocaleLowerCase('de-DE');
+    if (!name || seen.has(key)) continue;
+
+    seen.add(key);
+    names.push(name);
+  }
+
+  if (names.length) {
+    return truncateField(names.join(', '));
+  }
+
+  return truncateField(raw.replace(/\s*\n\s*/g, ', '));
+}
+
+function buildMissingStarterRolesText(assignments) {
+  const filledRoles = new Set(
+    assignments
+      .filter(item => STARTER_ROLES.includes(item.role_label) && String(item.player_label || '').trim())
+      .map(item => item.role_label)
+  );
+
+  const missingRoles = STARTER_ROLES.filter(role => !filledRoles.has(role));
+  return missingRoles.length ? missingRoles.join(', ') : 'Keine';
+}
+
+function buildAvailablePlayersForCard(event) {
+  if (!event.scheduled_start_at || !event.scheduled_end_at) {
+    return buildCompactAvailablePlayersText(event.available_players_text);
+  }
+
+  const players = db.prepare(`
+    SELECT id, discord_user_id, username, global_name, alias
+    FROM players
+    WHERE is_archived = 0
+      AND roster_status IN ('main', 'sub')
+      AND (? IS NULL OR team_id = ?)
+    ORDER BY COALESCE(alias, global_name, username) COLLATE NOCASE ASC
+  `).all(event.team_id ?? null, event.team_id ?? null);
+
+  const availableNames = players
+    .filter(player => isPlayerAvailableForEvent(player.id, event))
+    .map(playerDisplay);
+
+  return availableNames.length ? truncateField(availableNames.join(', ')) : 'Keine';
 }
 
 function formatTimeOnly(dateTime) {
@@ -1177,10 +1239,16 @@ function buildTypeSelectRow(eventId, messageId, currentType) {
       .setPlaceholder('Neuen Typ auswählen')
       .addOptions(
         {
-          label: 'Offen / Noch unklar',
+          label: 'Offen',
           value: 'open',
-          description: 'Noch nicht entschieden, ob Scrim oder Prime League',
+          description: 'Terminart ist noch offen',
           default: (currentType || 'open') === 'open'
+        },
+        {
+          label: 'Flex',
+          value: 'flex',
+          description: 'Gemeinsame Flex-Queue',
+          default: currentType === 'flex'
         },
         {
           label: 'Scrim',
@@ -1427,6 +1495,8 @@ function playerCalendarTypeLabel(event) {
       return 'Scrims';
     case 'open':
       return 'Offen';
+    case 'flex':
+      return 'Flex';
     case 'other':
       return event.title || 'Sonstiges';
     default:
@@ -1572,26 +1642,23 @@ function buildEventCardPayload(eventId) {
       : '-';
 
   if (collapsed) {
-    const starterAssignments = assignments.filter(item => STARTER_ROLES.includes(item.role_label));
-    const lineupSummary = starterAssignments.length === 0
-      ? 'noch nicht gesetzt'
-      : `${starterAssignments.length}/${STARTER_ROLES.length} Positionen besetzt`;
-    const timeSummary = exactTime !== '-'
-      ? `**Fix:** ${exactTime}`
-      : `**Fenster:** ${formatDateTimeDE(event.window_start_at)} → ${formatDateTimeDE(event.window_end_at)}`;
+    const descriptionLines = [];
+
+    if (event.scheduled_start_at) {
+      descriptionLines.push(`🕒 **Uhrzeit:** ${formatTimeOnlyLabel(event.scheduled_start_at)}`);
+    }
+
+    descriptionLines.push(
+      `🎮 **Art:** ${eventTypeLabel(event.event_type)}`,
+      `👥 **Verfügbar:** ${buildAvailablePlayersForCard(event)}`,
+      `🔎 **Gesucht:** ${buildMissingStarterRolesText(assignments)}`,
+      `${statusEmoji(event.status)} **Status:** ${statusLabel(event.status)}`
+    );
 
     const embed = new EmbedBuilder()
       .setColor(statusColor(event.status))
-      .setTitle(`${statusEmoji(event.status)} ${event.title}`)
-      .setDescription([
-        `Kalender-ID: **#${event.id}**`,
-        `📅 **${formatDateLongDE(event.option_date)}**`,
-        `🕒 ${timeSummary}`,
-        `🎮 **${eventTypeLabel(event.event_type)}**${event.opponent_name ? ` gegen **${truncateField(event.opponent_name)}**` : ''}`,
-        `👥 Aufstellung: **${lineupSummary}**`
-      ].join('\n'))
-      .setFooter({ text: 'Zum Bearbeiten die Karte ausklappen.' })
-      .setTimestamp(new Date(event.updated_at || event.created_at || Date.now()));
+      .setTitle(`📅 ${formatDateLongDE(event.option_date)}`)
+      .setDescription(descriptionLines.join('\n'));
 
     return {
       embeds: [embed],
@@ -1840,6 +1907,38 @@ async function upsertAdminCardMessage(channel, eventId) {
 
   await syncPlayerCalendarCard(channel.client, eventId);
   return adminMessage;
+}
+
+async function refreshAllStoredAdminCards(client) {
+  const events = db.prepare(`
+    SELECT id, admin_channel_id, admin_message_id
+    FROM team_calendar_events
+    WHERE admin_channel_id IS NOT NULL
+      AND admin_message_id IS NOT NULL
+    ORDER BY option_date ASC, id ASC
+  `).all();
+
+  let refreshed = 0;
+
+  for (const event of events) {
+    try {
+      const channel = await client.channels.fetch(event.admin_channel_id);
+      if (!channel || !channel.isTextBased()) continue;
+
+      const message = await channel.messages.fetch(event.admin_message_id).catch(() => null);
+      if (!message) continue;
+
+      const payload = buildEventCardPayload(event.id);
+      if (!payload) continue;
+
+      await message.edit(payload);
+      refreshed++;
+    } catch (error) {
+      console.warn(`[Spieltermin] Admin-Karte #${event.id} konnte beim Start nicht aktualisiert werden:`, error.message);
+    }
+  }
+
+  return refreshed;
 }
 
 function ensureAdminPermission(interaction) {
@@ -2404,7 +2503,7 @@ async function handleModalSubmitInteraction(interaction, parts) {
 
     if (!nextType || !EVENT_TYPE_VALUES.includes(nextType)) {
       return interaction.reply({
-        content: 'Ungültiger Typ. Nutze `open`, `scrim`, `primeleague` oder `other`.',
+        content: 'Ungültiger Typ. Nutze `open`, `flex`, `scrim`, `primeleague` oder `other`.',
         flags: MessageFlags.Ephemeral
       });
     }
@@ -2751,7 +2850,8 @@ const command = {
             .setDescription('Optionaler Termin-Typ für die Vorschau')
             .setRequired(false)
             .addChoices(
-              { name: 'Offen / Noch unklar', value: 'open' },
+              { name: 'Offen', value: 'open' },
+              { name: 'Flex', value: 'flex' },
               { name: 'Scrim', value: 'scrim' },
               { name: 'Prime League', value: 'primeleague' },
               { name: 'Sonstiges', value: 'other' }
@@ -2802,7 +2902,8 @@ const command = {
             .setDescription('Typ des Termins')
             .setRequired(false)
             .addChoices(
-              { name: 'Offen / Noch unklar', value: 'open' },
+              { name: 'Offen', value: 'open' },
+              { name: 'Flex', value: 'flex' },
               { name: 'Scrim', value: 'scrim' },
               { name: 'Prime League', value: 'primeleague' },
               { name: 'Sonstiges', value: 'other' }
@@ -2884,7 +2985,8 @@ const command = {
             .setDescription('Optional: neuer Typ')
             .setRequired(false)
             .addChoices(
-              { name: 'Offen / Noch unklar', value: 'open' },
+              { name: 'Offen', value: 'open' },
+              { name: 'Flex', value: 'flex' },
               { name: 'Scrim', value: 'scrim' },
               { name: 'Prime League', value: 'primeleague' },
               { name: 'Sonstiges', value: 'other' }
@@ -3421,6 +3523,7 @@ const command = {
 
   buildEventCardPayload,
   upsertAdminCardMessage,
+  refreshAllStoredAdminCards,
   refreshStoredEventCard,
   statusLabel,
   eventTypeLabel,

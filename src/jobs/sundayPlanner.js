@@ -609,6 +609,36 @@ function syncSuggestionEvent(suggestion, teamId) {
   return existing.id;
 }
 
+async function clearPreviousPlannerOverviewMessages(channel) {
+  const recentMessages = await channel.messages.fetch({ limit: 100 }).catch(() => null);
+  if (!recentMessages) return 0;
+
+  const botUserId = channel.client.user?.id;
+  let deleted = 0;
+
+  for (const message of recentMessages.values()) {
+    if (!botUserId || message.author?.id !== botUserId) continue;
+
+    const content = String(message.content || '');
+    const isPlannerOverview =
+      content.includes('📋 **Wochenplanung – Rohübersicht**') ||
+      content.includes('**Fehlzeiten (') ||
+      content.includes('Grund: Wochen-Check-in:') ||
+      content.includes('• [Einmalig •') ||
+      content.includes('• [Regelmäßig]') ||
+      content.includes('- [Regelmäßig]') ||
+      content === '**📅 Termine im Planungszeitraum – chronologisch**' ||
+      content === 'Keine Termine im Planungszeitraum gefunden.';
+
+    if (!isPlannerOverview) continue;
+
+    const wasDeleted = await message.delete().then(() => true).catch(() => false);
+    if (wasDeleted) deleted++;
+  }
+
+  return deleted;
+}
+
 function splitLongMessage(text, maxLength = 1900) {
   if (text.length <= maxLength) return [text];
 
@@ -640,6 +670,8 @@ function plannerEventTypeLabel(eventType) {
       return 'Scrims';
     case 'open':
       return 'Offen';
+    case 'flex':
+      return 'Flex';
     case 'other':
       return 'Sonstiges';
     default:
@@ -684,6 +716,8 @@ function plannerEventTypeLabel(eventType) {
       return 'Scrims';
     case 'open':
       return 'Offen';
+    case 'flex':
+      return 'Flex';
     case 'other':
       return 'Sonstiges';
     default:
@@ -901,16 +935,6 @@ async function runSundayPlanner(client, options = {}) {
   overviewLines.push(`Erstellt am: **${new Date().toLocaleString('de-DE', { timeZone: 'Europe/Berlin' })}**`);
   overviewLines.push('');
 
-  overviewLines.push(`**Fehlzeiten (${formatDateDE(plannerStartDate)} – ${formatDateDE(windowEndDate)})**`);
-  if (mergedAbsenceItems.length === 0) {
-    overviewLines.push('- Keine eingetragenen einmaligen oder regelmäßigen Fehlzeiten.');
-  } else {
-    for (const item of mergedAbsenceItems) {
-      overviewLines.push(item.display_text);
-    }
-  }
-
-  overviewLines.push('');
   overviewLines.push('**🚨 Bereits eingetragene Termine im Planungszeitraum**');
   if (currentWeekManualEvents.length === 0) {
     overviewLines.push('- Keine bereits eingetragenen manuellen Termine im Planungszeitraum.');
@@ -938,6 +962,8 @@ async function runSundayPlanner(client, options = {}) {
   if (!adminChannel || !adminChannel.isTextBased()) {
     return { skipped: false, sent: false, reason: 'invalid_admin_channel' };
   }
+
+  await clearPreviousPlannerOverviewMessages(adminChannel);
 
   const overviewMessages = splitLongMessage(overviewLines.join('\n'));
   for (const message of overviewMessages) {

@@ -109,6 +109,14 @@ function registerCronJobs(client) {
 client.once('clientReady', async () => {
   console.log(`Eingeloggt als ${client.user.tag}`);
   await registerCommands();
+
+  try {
+    const refreshedCards = await spielterminCommand.refreshAllStoredAdminCards(client);
+    console.log(`[Spieltermin] ${refreshedCards} gespeicherte Admin-Karten aktualisiert.`);
+  } catch (error) {
+    console.error('[Spieltermin] Gespeicherte Admin-Karten konnten beim Start nicht aktualisiert werden:', error);
+  }
+
   registerCronJobs(client);
 });
 

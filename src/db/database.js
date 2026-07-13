@@ -188,7 +188,7 @@ db.exec(`
     is_auto_generated INTEGER NOT NULL DEFAULT 0,
     admin_channel_id TEXT,
     admin_message_id TEXT,
-    admin_card_collapsed INTEGER NOT NULL DEFAULT 0,
+    admin_card_collapsed INTEGER NOT NULL DEFAULT 1,
     player_channel_id TEXT,
     player_message_id TEXT,
     show_in_player_calendar INTEGER NOT NULL DEFAULT 0,
@@ -323,7 +323,7 @@ function migrateTeamCalendarEvents() {
   addColumnIfMissing('team_calendar_events', 'is_auto_generated', `INTEGER NOT NULL DEFAULT 0`);
   addColumnIfMissing('team_calendar_events', 'admin_channel_id', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'admin_message_id', `TEXT`);
-  addColumnIfMissing('team_calendar_events', 'admin_card_collapsed', `INTEGER NOT NULL DEFAULT 0`);
+  addColumnIfMissing('team_calendar_events', 'admin_card_collapsed', `INTEGER NOT NULL DEFAULT 1`);
   addColumnIfMissing('team_calendar_events', 'player_channel_id', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'player_message_id', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'show_in_player_calendar', `INTEGER NOT NULL DEFAULT 0`);
@@ -378,8 +378,40 @@ function migrateTeamCalendarEvents() {
   db.exec(`
     UPDATE team_calendar_events
     SET event_type = 'open'
-    WHERE event_type IS NULL OR trim(event_type) = '' OR event_type = 'scrim';
+    WHERE event_type IS NULL OR trim(event_type) = '';
   `);
+}
+
+function migrateAdminCardsCollapsedByDefault() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS app_migrations (
+      migration_key TEXT PRIMARY KEY,
+      applied_at TEXT NOT NULL
+    );
+  `);
+
+  const migrationKey = 'admin_cards_collapsed_by_default_v2';
+  const alreadyApplied = db.prepare(`
+    SELECT migration_key
+    FROM app_migrations
+    WHERE migration_key = ?
+  `).get(migrationKey);
+
+  if (alreadyApplied) return;
+
+  const applyMigration = db.transaction(() => {
+    db.prepare(`
+      UPDATE team_calendar_events
+      SET admin_card_collapsed = 1
+    `).run();
+
+    db.prepare(`
+      INSERT INTO app_migrations (migration_key, applied_at)
+      VALUES (?, ?)
+    `).run(migrationKey, new Date().toISOString());
+  });
+
+  applyMigration();
 }
 
 function dedupeSuggestionKeys() {
@@ -608,6 +640,7 @@ migratePlayers();
 migrateAvailabilityEntries();
 migrateAvailabilityRules();
 migrateTeamCalendarEvents();
+migrateAdminCardsCollapsedByDefault();
 dedupeSuggestionKeys();
 migrateTeamCalendarAssignments();
 migrateMultiTeam();
