@@ -1076,7 +1076,21 @@ function buildNewStandinModal(eventId, messageId, roleLabel) {
   return modal;
 }
 
-function buildEventActionRows(event) {
+function buildCardToggleRow(event, collapsed) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`spieltermin:${collapsed ? 'expand' : 'collapse'}:${event.id}`)
+      .setLabel(collapsed ? 'Ausklappen' : 'Einklappen')
+      .setEmoji(collapsed ? '🔽' : '🔼')
+      .setStyle(ButtonStyle.Secondary)
+  );
+}
+
+function buildEventActionRows(event, collapsed = false) {
+  if (collapsed) {
+    return [buildCardToggleRow(event, true)];
+  }
+
   const publishEnabled = Number(event.show_in_player_calendar) === 1;
 
   return [
@@ -1123,7 +1137,8 @@ function buildEventActionRows(event) {
         .setCustomId(`spieltermin:playervisibility:${event.id}`)
         .setLabel(publishEnabled ? 'Spielerkalender: AN' : 'Spielerkalender: AUS')
         .setStyle(publishEnabled ? ButtonStyle.Success : ButtonStyle.Secondary)
-    )
+    ),
+    buildCardToggleRow(event, false)
   ];
 }
 
@@ -1550,10 +1565,39 @@ function buildEventCardPayload(eventId) {
   if (!event) return null;
 
   const assignments = getAssignments(eventId);
+  const collapsed = Number(event.admin_card_collapsed) === 1;
   const exactTime =
     event.scheduled_start_at && event.scheduled_end_at
       ? `${formatDateTimeDE(event.scheduled_start_at)} → ${formatDateTimeDE(event.scheduled_end_at)}`
       : '-';
+
+  if (collapsed) {
+    const starterAssignments = assignments.filter(item => STARTER_ROLES.includes(item.role_label));
+    const lineupSummary = starterAssignments.length === 0
+      ? 'noch nicht gesetzt'
+      : `${starterAssignments.length}/${STARTER_ROLES.length} Positionen besetzt`;
+    const timeSummary = exactTime !== '-'
+      ? `**Fix:** ${exactTime}`
+      : `**Fenster:** ${formatDateTimeDE(event.window_start_at)} → ${formatDateTimeDE(event.window_end_at)}`;
+
+    const embed = new EmbedBuilder()
+      .setColor(statusColor(event.status))
+      .setTitle(`${statusEmoji(event.status)} ${event.title}`)
+      .setDescription([
+        `Kalender-ID: **#${event.id}**`,
+        `📅 **${formatDateLongDE(event.option_date)}**`,
+        `🕒 ${timeSummary}`,
+        `🎮 **${eventTypeLabel(event.event_type)}**${event.opponent_name ? ` gegen **${truncateField(event.opponent_name)}**` : ''}`,
+        `👥 Aufstellung: **${lineupSummary}**`
+      ].join('\n'))
+      .setFooter({ text: 'Zum Bearbeiten die Karte ausklappen.' })
+      .setTimestamp(new Date(event.updated_at || event.created_at || Date.now()));
+
+    return {
+      embeds: [embed],
+      components: buildEventActionRows(event, true)
+    };
+  }
 
   const teamOpgg = buildTeamOpggInfo(assignments);
   const teamOpggField = teamOpgg.ok
@@ -1633,7 +1677,7 @@ function buildEventCardPayload(eventId) {
 
   return {
     embeds: [embed],
-    components: buildEventActionRows(event)
+    components: buildEventActionRows(event, false)
   };
 }
 
@@ -1826,6 +1870,26 @@ async function handleButtonInteraction(interaction, parts) {
       content: 'Dieser Kalendereintrag existiert nicht mehr.',
       flags: MessageFlags.Ephemeral
     });
+  }
+
+  if (action === 'collapse' || action === 'expand') {
+    const collapsed = action === 'collapse' ? 1 : 0;
+
+    db.prepare(`
+      UPDATE team_calendar_events
+      SET admin_card_collapsed = ?
+      WHERE id = ?
+    `).run(collapsed, eventId);
+
+    const payload = buildEventCardPayload(eventId);
+    if (!payload) {
+      return interaction.reply({
+        content: 'Die Terminkarte konnte nicht aktualisiert werden.',
+        flags: MessageFlags.Ephemeral
+      });
+    }
+
+    return interaction.update(payload);
   }
 
   if (action === 'status') {
