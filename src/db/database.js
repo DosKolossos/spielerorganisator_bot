@@ -192,6 +192,11 @@ db.exec(`
     player_channel_id TEXT,
     player_message_id TEXT,
     show_in_player_calendar INTEGER NOT NULL DEFAULT 0,
+    discord_scheduled_event_id TEXT,
+    discord_scheduled_event_guild_id TEXT,
+    discord_scheduled_event_synced_at TEXT,
+    discord_scheduled_event_fingerprint TEXT,
+    discord_scheduled_event_error TEXT,
 
     start_at TEXT,
     end_at TEXT,
@@ -327,6 +332,11 @@ function migrateTeamCalendarEvents() {
   addColumnIfMissing('team_calendar_events', 'player_channel_id', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'player_message_id', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'show_in_player_calendar', `INTEGER NOT NULL DEFAULT 0`);
+  addColumnIfMissing('team_calendar_events', 'discord_scheduled_event_id', `TEXT`);
+  addColumnIfMissing('team_calendar_events', 'discord_scheduled_event_guild_id', `TEXT`);
+  addColumnIfMissing('team_calendar_events', 'discord_scheduled_event_synced_at', `TEXT`);
+  addColumnIfMissing('team_calendar_events', 'discord_scheduled_event_fingerprint', `TEXT`);
+  addColumnIfMissing('team_calendar_events', 'discord_scheduled_event_error', `TEXT`);
 
   addColumnIfMissing('team_calendar_events', 'start_at', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'end_at', `TEXT`);
@@ -693,6 +703,11 @@ db.exec(`
 db.exec(`
   CREATE INDEX IF NOT EXISTS idx_team_calendar_events_option_date
   ON team_calendar_events (option_date, status);
+`);
+
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_team_calendar_events_discord_scheduled_event
+  ON team_calendar_events (discord_scheduled_event_id);
 `);
 
 db.exec(`

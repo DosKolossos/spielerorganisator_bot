@@ -25,6 +25,7 @@ const { runSundayReminder } = require('./jobs/sundayReminder');
 const { runSundayPlanner } = require('./jobs/sundayPlanner');
 const { runBirthdayReminder } = require('./jobs/birthdayReminder');
 const { listTeams } = require('./services/teamService');
+const { syncAllDiscordScheduledEvents } = require('./services/discordScheduledEventService');
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds]
@@ -103,12 +104,34 @@ function registerCronJobs(client) {
     { timezone: 'Europe/Berlin' }
   );
 
+  cron.schedule(
+    '*/15 * * * *',
+    async () => {
+      try {
+        const summary = await syncAllDiscordScheduledEvents(client);
+        if (summary.created || summary.updated || summary.deleted || summary.errors) {
+          console.log('[Cron] Discord-Events synchronisiert:', summary);
+        }
+      } catch (error) {
+        console.error('[Cron] Discord-Event-Synchronisierung fehlgeschlagen:', error);
+      }
+    },
+    { timezone: 'Europe/Berlin' }
+  );
+
   console.log('Cronjobs registriert.');
 }
 
 client.once('clientReady', async () => {
   console.log(`Eingeloggt als ${client.user.tag}`);
   await registerCommands();
+
+  try {
+    const summary = await syncAllDiscordScheduledEvents(client);
+    console.log('[Discord-Event] Start-Synchronisierung abgeschlossen:', summary);
+  } catch (error) {
+    console.error('[Discord-Event] Start-Synchronisierung fehlgeschlagen:', error);
+  }
 
   try {
     const refreshedCards = await spielterminCommand.refreshAllStoredAdminCards(client);

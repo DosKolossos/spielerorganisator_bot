@@ -22,6 +22,12 @@ const {
   rosterStatusLabel
 } = require('../utils/rosterUtils');
 const { getTeamById, resolveTeamForInteraction } = require('../services/teamService');
+const {
+  deleteDiscordScheduledEvent,
+  discordScheduledEventUrl,
+  isEligibleForDiscordEvent,
+  syncDiscordScheduledEvent
+} = require('../services/discordScheduledEventService');
 
 const ROLE_ORDER = ['Top', 'Jgl', 'Mid', 'ADC', 'Supp', 'Sub1', 'Sub2'];
 const STARTER_ROLES = ['Top', 'Jgl', 'Mid', 'ADC', 'Supp'];
@@ -1660,6 +1666,21 @@ async function syncPlayerCalendarCard(client, eventId) {
   }
 }
 
+function buildDiscordScheduledEventField(event) {
+  const url = discordScheduledEventUrl(event);
+  if (url) return `[Discord-Event öffnen](${url})`;
+
+  if (event.discord_scheduled_event_error) {
+    return truncateField(`⚠️ ${event.discord_scheduled_event_error}`);
+  }
+
+  if (isEligibleForDiscordEvent(event)) {
+    return 'Wird automatisch erstellt';
+  }
+
+  return '-';
+}
+
 function buildEventCardPayload(eventId) {
   const event = getEventById(eventId);
   if (!event) return null;
@@ -1722,6 +1743,11 @@ function buildEventCardPayload(eventId) {
         inline: true
       },
       {
+        name: 'Discord-Event',
+        value: buildDiscordScheduledEventField(event),
+        inline: false
+      },
+      {
         name: 'Tag',
         value: formatDateLongDE(event.option_date),
         inline: false
@@ -1779,6 +1805,8 @@ function buildEventCardPayload(eventId) {
 }
 
 async function refreshSpecificCard(channel, messageId, eventId) {
+  await syncDiscordScheduledEvent(channel.client, eventId);
+
   const payload = buildEventCardPayload(eventId);
   if (!payload) return false;
 
@@ -1797,11 +1825,11 @@ async function refreshSpecificCard(channel, messageId, eventId) {
 }
 
 async function refreshStoredPlayerCard(client, eventId) {
-  const playerChannelId = getTeamById(event.team_id)?.player_calendar_channel_id || process.env.PLAYER_CALENDAR_CHANNEL_ID;
-  if (!playerChannelId) return false;
-
   const event = getEventById(eventId);
   if (!event) return false;
+
+  const playerChannelId = getTeamById(event.team_id)?.player_calendar_channel_id || process.env.PLAYER_CALENDAR_CHANNEL_ID;
+  if (!playerChannelId) return false;
 
   try {
     const channel = await client.channels.fetch(playerChannelId);
@@ -1828,6 +1856,7 @@ async function refreshStoredPlayerCard(client, eventId) {
 
 async function refreshStoredEventCard(client, eventId) {
   let refreshed = false;
+  await syncDiscordScheduledEvent(client, eventId);
   const event = getEventById(eventId);
 
   if (event?.admin_channel_id && event?.admin_message_id) {
@@ -1894,6 +1923,8 @@ async function upsertPlayerCardMessage(channel, eventId) {
 }
 
 async function upsertAdminCardMessage(channel, eventId) {
+  await syncDiscordScheduledEvent(channel.client, eventId);
+
   const event = getEventById(eventId);
   if (!event) return null;
 
@@ -1957,6 +1988,8 @@ async function refreshAllStoredAdminCards(client) {
 
       const message = await channel.messages.fetch(event.admin_message_id).catch(() => null);
       if (!message) continue;
+
+      await syncDiscordScheduledEvent(client, event.id);
 
       const payload = buildEventCardPayload(event.id);
       if (!payload) continue;
@@ -3230,6 +3263,13 @@ const command = {
       );
 
       const id = Number(result.lastInsertRowid);
+      const discordEventSync = await syncDiscordScheduledEvent(interaction.client, id);
+      const discordEventLine = discordEventSync.action === 'created'
+        ? '\nDiscord-Event: **automatisch erstellt**'
+        : discordEventSync.action === 'error' || discordEventSync.action === 'skipped'
+          ? `\nDiscord-Event: **nicht erstellt** (${discordEventSync.error || discordEventSync.reason})`
+          : '';
+
       return interaction.reply({
         content:
           `Spieltermin **#${id}** wurde erstellt.\n` +
@@ -3239,7 +3279,8 @@ const command = {
           `Status: **${statusLabel(status)}**\n` +
           `Zeit: **${formatDateTimeDE(startAt)}**\n` +
           `Hinweis: **${nextHint ?? '-'}**\n` +
-          `Admin-Karte: **wird erst zum Wochenstart erzeugt**`,
+          `Admin-Karte: **wird erst zum Wochenstart erzeugt**` +
+          discordEventLine,
         flags: MessageFlags.Ephemeral
       });
     }
@@ -3255,6 +3296,7 @@ const command = {
         });
       }
 
+      await deleteDiscordScheduledEvent(interaction.client, event);
       await deleteStoredAdminCard(interaction.client, id);
       await deleteStoredPlayerCard(interaction.client, id);
 
