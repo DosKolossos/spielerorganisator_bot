@@ -1228,7 +1228,17 @@ function buildEventActionRows(event, collapsed = false) {
         .setLabel(publishEnabled ? 'Spielerkalender: AN' : 'Spielerkalender: AUS')
         .setStyle(publishEnabled ? ButtonStyle.Success : ButtonStyle.Secondary)
     ),
-    buildCardToggleRow(event, false)
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`spieltermin:streamed:${event.id}`)
+        .setLabel(Number(event.is_streamed) === 1 ? '☑️ Wird gestreamt' : '⬜ Wird gestreamt')
+        .setStyle(Number(event.is_streamed) === 1 ? ButtonStyle.Success : ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`spieltermin:collapse:${event.id}`)
+        .setLabel('Einklappen')
+        .setEmoji('🔼')
+        .setStyle(ButtonStyle.Secondary)
+    )
   ];
 }
 
@@ -1678,7 +1688,11 @@ function buildDiscordScheduledEventField(event) {
     return 'Wird automatisch erstellt';
   }
 
-  return '-';
+  if (Number(event.is_streamed) === 1) {
+    return 'Benötigt Status **Fixed** sowie eine fixe Start- und Endzeit';
+  }
+
+  return 'Nicht als Stream markiert';
 }
 
 function buildEventCardPayload(eventId) {
@@ -1740,6 +1754,11 @@ function buildEventCardPayload(eventId) {
       {
         name: 'Gegner',
         value: truncateField(event.opponent_name ?? '-'),
+        inline: true
+      },
+      {
+        name: 'Wird gestreamt',
+        value: Number(event.is_streamed) === 1 ? '☑️ Ja' : '⬜ Nein',
         inline: true
       },
       {
@@ -2243,6 +2262,44 @@ async function handleButtonInteraction(interaction, parts) {
 
     modal.addComponents(new ActionRowBuilder().addComponents(input));
     return interaction.showModal(modal);
+  }
+
+  if (action === 'streamed') {
+    const nextValue = Number(event.is_streamed) === 1 ? 0 : 1;
+
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+    db.prepare(`
+      UPDATE team_calendar_events
+      SET is_streamed = ?,
+          updated_by_discord_user_id = ?,
+          updated_at = ?
+      WHERE id = ?
+    `).run(nextValue, interaction.user.id, new Date().toISOString(), eventId);
+
+    const syncResult = await syncDiscordScheduledEvent(interaction.client, eventId);
+    await refreshSpecificCard(interaction.channel, messageId, eventId);
+
+    let detail = '';
+    if (nextValue === 1) {
+      if (syncResult.action === 'created') {
+        detail = ' Das Discord-Event wurde erstellt.';
+      } else if (syncResult.action === 'updated' || syncResult.action === 'unchanged') {
+        detail = ' Das Discord-Event ist synchronisiert.';
+      } else if (syncResult.action === 'skipped' || syncResult.action === 'error') {
+        detail = ` Discord-Event noch nicht erstellt: ${syncResult.reason || syncResult.error || 'Voraussetzungen fehlen.'}`;
+      } else {
+        detail = ' Das Discord-Event entsteht, sobald Status **Fixed** und eine fixe Start- und Endzeit gesetzt sind.';
+      }
+    } else if (syncResult.action === 'deleted') {
+      detail = ' Das zugehörige Discord-Event wurde entfernt.';
+    }
+
+    return interaction.editReply({
+      content: nextValue === 1
+        ? `☑️ **#${eventId}** wurde als gestreamtes Ereignis markiert.${detail}`
+        : `⬜ **#${eventId}** wird nicht mehr als gestreamtes Ereignis geführt.${detail}`
+    });
   }
 
   if (action === 'playervisibility') {

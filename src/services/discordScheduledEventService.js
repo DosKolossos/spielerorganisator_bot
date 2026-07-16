@@ -128,14 +128,26 @@ function formatDateTimeDE(value) {
   return `${String(parts.day).padStart(2, '0')}.${String(parts.month).padStart(2, '0')}.${parts.year}, ${String(parts.hour).padStart(2, '0')}:${String(parts.minute).padStart(2, '0')} Uhr`;
 }
 
-function eventMeetingAt(event) {
-  return event.meeting_primeleague_at || event.scheduled_start_at;
+function eventTypeLabel(type) {
+  switch (type) {
+    case 'flex':
+      return 'Flex';
+    case 'scrim':
+      return 'Scrim';
+    case 'primeleague':
+      return 'Prime League';
+    case 'other':
+      return 'Sonstiges';
+    case 'open':
+    default:
+      return 'Offen';
+  }
 }
 
 function isEligibleForDiscordEvent(event) {
   return Boolean(
     event &&
-    event.event_type === 'primeleague' &&
+    Number(event.is_streamed) === 1 &&
     event.status === 'fixed' &&
     event.scheduled_start_at &&
     event.scheduled_end_at
@@ -144,8 +156,10 @@ function isEligibleForDiscordEvent(event) {
 
 function buildEventName(event, team) {
   const teamName = team?.name || team?.short_name || 'Team';
-  const opponent = String(event.opponent_name || '').trim() || 'Gegner offen';
-  return truncate(`Prime League: ${teamName} vs ${opponent}`, 100);
+  const opponent = String(event.opponent_name || '').trim();
+  const type = eventTypeLabel(event.event_type);
+  const matchup = opponent ? `${teamName} vs ${opponent}` : teamName;
+  return truncate(`${type}: ${matchup}`, 100);
 }
 
 function buildLineupDescription(assignments) {
@@ -164,9 +178,9 @@ function buildLineupDescription(assignments) {
 
 function buildEventDescription(event, team, assignments) {
   const lines = [
-    `**${team?.name || 'Prime-League-Team'}**`,
-    `Anpfiff: ${formatDateTimeDE(event.scheduled_start_at)}`,
-    `Treffpunkt: ${formatDateTimeDE(eventMeetingAt(event))}`,
+    `**${team?.name || 'Team'}**`,
+    `Art: ${eventTypeLabel(event.event_type)}`,
+    `Beginn: ${formatDateTimeDE(event.scheduled_start_at)}`,
     '',
     '**Aufstellung**',
     buildLineupDescription(assignments)
@@ -184,7 +198,7 @@ function buildEventDescription(event, team, assignments) {
 }
 
 function buildScheduledEventOptions(event, team, assignments) {
-  const scheduledStartTime = berlinDateTimeToDate(eventMeetingAt(event));
+  const scheduledStartTime = berlinDateTimeToDate(event.scheduled_start_at);
   const scheduledEndTime = berlinDateTimeToDate(event.scheduled_end_at);
 
   if (!scheduledStartTime || !scheduledEndTime || scheduledEndTime <= scheduledStartTime) {
@@ -199,9 +213,9 @@ function buildScheduledEventOptions(event, team, assignments) {
     privacyLevel: DISCORD_EVENT_PRIVACY_LEVEL_GUILD_ONLY,
     entityType: DISCORD_EVENT_ENTITY_TYPE_EXTERNAL,
     entityMetadata: {
-      location: truncate(`Prime League · ${team?.name || 'Online'}`, 100)
+      location: truncate(`Livestream · ${team?.name || eventTypeLabel(event.event_type)}`, 100)
     },
-    reason: `Automatisch synchronisiert aus Spieltermin #${event.id}`
+    reason: `Automatisch synchronisiert aus gestreamtem Spieltermin #${event.id}`
   };
 }
 
@@ -296,7 +310,7 @@ async function fetchExistingScheduledEvent(guild, event) {
   }
 }
 
-async function deleteExistingScheduledEvent(client, event, reason = 'Termin ist nicht mehr als fixer Prime-League-Termin markiert') {
+async function deleteExistingScheduledEvent(client, event, reason = 'Termin ist nicht mehr als gestreamtes, fixes Ereignis markiert') {
   if (!event?.discord_scheduled_event_id) {
     return { action: 'none', eventId: event?.id ?? null };
   }
@@ -334,7 +348,7 @@ async function syncDiscordScheduledEventUnlocked(client, eventId) {
   const options = buildScheduledEventOptions(event, team, assignments);
 
   if (!options) {
-    const error = 'Fixe Start-/Endzeit ist ungültig oder die Endzeit liegt nicht nach dem Treffpunkt.';
+    const error = 'Fixe Start-/Endzeit ist ungültig oder die Endzeit liegt nicht nach dem Beginn.';
     updateSyncState(event.id, { syncedAt: new Date().toISOString(), error });
     return { action: 'skipped', eventId, reason: error };
   }
@@ -351,7 +365,7 @@ async function syncDiscordScheduledEventUnlocked(client, eventId) {
     event = getEventById(eventId);
 
     if (!existing && options.scheduledStartTime.getTime() <= now + 60_000) {
-      const error = 'Treffpunkt liegt bereits in der Vergangenheit oder beginnt in weniger als einer Minute.';
+      const error = 'Beginn liegt bereits in der Vergangenheit oder ist in weniger als einer Minute.';
       updateSyncState(event.id, { syncedAt: new Date().toISOString(), error });
       return { action: 'skipped', eventId, reason: error };
     }
@@ -442,7 +456,7 @@ async function syncAllDiscordScheduledEvents(client) {
     FROM team_calendar_events
     WHERE discord_scheduled_event_id IS NOT NULL
        OR (
-         event_type = 'primeleague'
+         is_streamed = 1
          AND status = 'fixed'
          AND scheduled_start_at IS NOT NULL
          AND scheduled_end_at IS NOT NULL

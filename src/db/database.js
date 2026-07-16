@@ -192,6 +192,7 @@ db.exec(`
     player_channel_id TEXT,
     player_message_id TEXT,
     show_in_player_calendar INTEGER NOT NULL DEFAULT 0,
+    is_streamed INTEGER NOT NULL DEFAULT 0,
     discord_scheduled_event_id TEXT,
     discord_scheduled_event_guild_id TEXT,
     discord_scheduled_event_synced_at TEXT,
@@ -332,11 +333,20 @@ function migrateTeamCalendarEvents() {
   addColumnIfMissing('team_calendar_events', 'player_channel_id', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'player_message_id', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'show_in_player_calendar', `INTEGER NOT NULL DEFAULT 0`);
+  addColumnIfMissing('team_calendar_events', 'is_streamed', `INTEGER NOT NULL DEFAULT 0`);
   addColumnIfMissing('team_calendar_events', 'discord_scheduled_event_id', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'discord_scheduled_event_guild_id', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'discord_scheduled_event_synced_at', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'discord_scheduled_event_fingerprint', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'discord_scheduled_event_error', `TEXT`);
+
+  // Bestehende Discord-Events aus der früheren Prime-League-Automatik bleiben als gestreamt markiert.
+  db.exec(`
+    UPDATE team_calendar_events
+    SET is_streamed = 1
+    WHERE discord_scheduled_event_id IS NOT NULL
+      AND COALESCE(is_streamed, 0) = 0;
+  `);
 
   addColumnIfMissing('team_calendar_events', 'start_at', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'end_at', `TEXT`);
