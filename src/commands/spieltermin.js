@@ -1012,10 +1012,9 @@ function buildStarterLineupSelectRows(eventId, messageId) {
       });
     } else {
       options.push({
-        label: 'Ersatz besorgen',
+        label: 'Sub oder Standin auswählen',
         value: '__replacement__',
-        description: `Kein verfügbarer ${roleLabel}-Spieler gefunden`,
-        default: true
+        description: `Ersatz für ${roleLabel} auswählen oder neu anlegen`
       });
     }
 
