@@ -536,7 +536,21 @@ function getAssignments(eventId) {
       a.id,
       a.event_id,
       a.role_label,
-      a.player_label,
+      CASE
+        WHEN a.assignee_type = 'player' AND p.id IS NOT NULL THEN COALESCE(
+          NULLIF(TRIM(p.alias), ''),
+          NULLIF(TRIM(p.global_name), ''),
+          NULLIF(TRIM(p.username), ''),
+          NULLIF(TRIM(p.discord_user_id), ''),
+          a.player_label
+        )
+        WHEN a.assignee_type = 'standin' AND s.id IS NOT NULL THEN COALESCE(
+          NULLIF(TRIM(s.display_name), ''),
+          a.player_label
+        )
+        ELSE a.player_label
+      END AS player_label,
+      a.player_label AS stored_player_label,
       a.assignee_type,
       a.player_id,
       a.standin_id,
@@ -1846,6 +1860,13 @@ async function refreshStoredPlayerCard(client, eventId) {
   const event = getEventById(eventId);
   if (!event) return false;
 
+  if (Number(event.show_in_player_calendar) !== 1) {
+    if (event.player_message_id) {
+      await deleteStoredPlayerCard(client, eventId);
+    }
+    return false;
+  }
+
   const playerChannelId = getTeamById(event.team_id)?.player_calendar_channel_id || process.env.PLAYER_CALENDAR_CHANNEL_ID;
   if (!playerChannelId) return false;
 
@@ -2020,6 +2041,50 @@ async function refreshAllStoredAdminCards(client) {
   }
 
   return refreshed;
+}
+
+async function refreshPlayerReferences(client, playerId) {
+  const player = db.prepare(`
+    SELECT *
+    FROM players
+    WHERE id = ?
+  `).get(playerId);
+
+  if (!player) {
+    return { affectedEvents: 0, refreshedCards: 0, label: null };
+  }
+
+  const affectedEvents = db.prepare(`
+    SELECT DISTINCT event_id
+    FROM team_calendar_assignments
+    WHERE player_id = ?
+    ORDER BY event_id ASC
+  `).all(playerId);
+
+  const label = playerDisplay(player);
+  const now = new Date().toISOString();
+
+  db.prepare(`
+    UPDATE team_calendar_assignments
+    SET player_label = ?,
+        updated_at = ?
+    WHERE player_id = ?
+      AND assignee_type = 'player'
+  `).run(label, now, playerId);
+
+  let refreshedCards = 0;
+
+  for (const event of affectedEvents) {
+    if (await refreshStoredEventCard(client, event.event_id)) {
+      refreshedCards++;
+    }
+  }
+
+  return {
+    affectedEvents: affectedEvents.length,
+    refreshedCards,
+    label
+  };
 }
 
 function ensureAdminPermission(interaction) {
@@ -3658,6 +3723,7 @@ const command = {
   upsertAdminCardMessage,
   refreshAllStoredAdminCards,
   refreshStoredEventCard,
+  refreshPlayerReferences,
   statusLabel,
   eventTypeLabel,
   buildLineupText

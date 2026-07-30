@@ -32,10 +32,28 @@ function getEventById(eventId) {
 
 function getAssignments(eventId) {
   return db.prepare(`
-    SELECT role_label, player_label, assignee_type
-    FROM team_calendar_assignments
-    WHERE event_id = ?
-    ORDER BY CASE role_label
+    SELECT
+      a.role_label,
+      CASE
+        WHEN a.assignee_type = 'player' AND p.id IS NOT NULL THEN COALESCE(
+          NULLIF(TRIM(p.alias), ''),
+          NULLIF(TRIM(p.global_name), ''),
+          NULLIF(TRIM(p.username), ''),
+          NULLIF(TRIM(p.discord_user_id), ''),
+          a.player_label
+        )
+        WHEN a.assignee_type = 'standin' AND s.id IS NOT NULL THEN COALESCE(
+          NULLIF(TRIM(s.display_name), ''),
+          a.player_label
+        )
+        ELSE a.player_label
+      END AS player_label,
+      a.assignee_type
+    FROM team_calendar_assignments a
+    LEFT JOIN players p ON p.id = a.player_id
+    LEFT JOIN standins s ON s.id = a.standin_id
+    WHERE a.event_id = ?
+    ORDER BY CASE a.role_label
       WHEN 'Top' THEN 1
       WHEN 'Jgl' THEN 2
       WHEN 'Mid' THEN 3
@@ -44,7 +62,7 @@ function getAssignments(eventId) {
       WHEN 'Sub1' THEN 6
       WHEN 'Sub2' THEN 7
       ELSE 99
-    END, role_label ASC
+    END, a.role_label ASC
   `).all(eventId);
 }
 

@@ -3,6 +3,7 @@ const db = require('../db/database');
 const { requireAdmin } = require('../utils/permissions');
 const { logAdminAction, notifyUser } = require('../utils/adminTools');
 const { getTeamById } = require('../services/teamService');
+const { refreshPlayerReferences } = require('./spieltermin');
 const {
   ROSTER_STATUS_CHOICES,
   POSITION_CHOICES,
@@ -192,10 +193,16 @@ const command = {
         return interaction.reply({ content: 'Alias muss zwischen 2 und 32 Zeichen lang sein.', flags: MessageFlags.Ephemeral });
       }
 
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const player = upsertPlayer(user, { alias });
-      return interaction.reply({
-        content: `Alias gespeichert.\nDiscord: **${player.username}**\nAlias: **${player.alias}**`,
-        flags: MessageFlags.Ephemeral
+      const syncSummary = await refreshPlayerReferences(interaction.client, player.id);
+
+      return interaction.editReply({
+        content:
+          `Alias gespeichert.\n` +
+          `Discord: **${player.username}**\n` +
+          `Alias: **${player.alias}**\n` +
+          `Betroffene Termine synchronisiert: **${syncSummary.affectedEvents}**`
       });
     }
 
@@ -213,18 +220,20 @@ const command = {
         return interaction.reply({ content: 'Der Riot-Tag muss zwischen 2 und 10 Zeichen lang sein.', flags: MessageFlags.Ephemeral });
       }
 
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const player = upsertPlayer(user, {
         riot_game_name: riotGameName,
         riot_tag: riotTag,
         riot_region: riotRegion
       });
+      const syncSummary = await refreshPlayerReferences(interaction.client, player.id);
 
-      return interaction.reply({
+      return interaction.editReply({
         content:
           `Riot-Daten gespeichert.\n` +
           `Riot-ID: **${player.riot_game_name}#${player.riot_tag}**\n` +
-          `Region: **${(player.riot_region ?? 'euw').toUpperCase()}**`,
-        flags: MessageFlags.Ephemeral
+          `Region: **${(player.riot_region ?? 'euw').toUpperCase()}**\n` +
+          `Betroffene Termine synchronisiert: **${syncSummary.affectedEvents}**`
       });
     }
 
@@ -261,6 +270,8 @@ const command = {
         ? (secondaryPositionInput === '-' ? '__CLEAR__' : normalizePosition(secondaryPositionInput))
         : undefined;
 
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
       const now = new Date().toISOString();
       db.prepare(`
         UPDATE players
@@ -292,6 +303,7 @@ const command = {
       const updated = getPlayerByDiscordUserId(targetUser.id);
       const adminLabel = interaction.member?.displayName || interaction.user.username;
       const targetLabel = playerDisplay(updated);
+      const syncSummary = await refreshPlayerReferences(interaction.client, updated.id);
 
       await notifyUser(interaction.client, targetUser.id,
         `🛠️ Dein Profil wurde von **${adminLabel}** angepasst.\n${formatProfile(updated, 'Aktueller Stand')}`
@@ -307,9 +319,11 @@ const command = {
         details: 'Alias/Riot/Roster-Daten angepasst'
       });
 
-      return interaction.reply({
-        content: `Profil aktualisiert.\n${formatProfile(updated, `Profil von ${targetLabel}`)}`,
-        flags: MessageFlags.Ephemeral
+      return interaction.editReply({
+        content:
+          `Profil aktualisiert.\n` +
+          `${formatProfile(updated, `Profil von ${targetLabel}`)}\n` +
+          `Betroffene Termine synchronisiert: **${syncSummary.affectedEvents}**`
       });
     }
 
