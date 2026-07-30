@@ -1,8 +1,8 @@
-const { SlashCommandBuilder, MessageFlags } = require('discord.js');
+const { SlashCommandBuilder, MessageFlags, EmbedBuilder } = require('discord.js');
 const db = require('../db/database');
 const { requireAdmin } = require('../utils/permissions');
 const { logAdminAction, notifyUser } = require('../utils/adminTools');
-const { getTeamById } = require('../services/teamService');
+const { getTeamById, listTeams } = require('../services/teamService');
 const { refreshPlayerReferences } = require('./spieltermin');
 const {
   ROSTER_STATUS_CHOICES,
@@ -14,6 +14,7 @@ const {
 const {
   upsertPlayer,
   getPlayerByDiscordUserId,
+  getPlayerById,
   playerDisplay,
   archivePlayer,
   restorePlayer
@@ -32,6 +33,137 @@ const REGION_CHOICES = [
   { name: 'LAS', value: 'las' },
   { name: 'RU', value: 'ru' }
 ];
+
+const PLAYER_LIST_PAGE_SIZE = 10;
+
+function teamChoices() {
+  return listTeams({ activeOnly: false })
+    .slice(0, 25)
+    .map(team => ({
+      name: `${team.name}${team.is_default ? ' (Standard)' : ''}`,
+      value: String(team.id)
+    }));
+}
+
+function formatPlayerListEntry(player) {
+  const riotId = player.riot_game_name && player.riot_tag
+    ? `${player.riot_game_name}#${player.riot_tag}`
+    : '-';
+  const positions = [player.primary_position, player.secondary_position]
+    .filter(Boolean)
+    .join(' / ') || '-';
+
+  return [
+    `Discord: <@${player.discord_user_id}> · \`${player.discord_user_id}\``,
+    `Team: **${player.team_name || 'Nicht zugewiesen'}**`,
+    `Roster: **${rosterStatusLabel(player.roster_status)}** · Positionen: **${positions}**`,
+    `Riot-ID: **${riotId}** · Region: **${(player.riot_region || 'euw').toUpperCase()}**`,
+    `Datenbankstatus: **${player.is_archived ? 'Archiviert' : 'Aktiv'}**`
+  ].join('\n');
+}
+
+function buildPlayerListEmbed(interaction) {
+  const teamValue = interaction.options.getString('team');
+  const statusValue = interaction.options.getString('status');
+  const archiveValue = interaction.options.getString('archiviert') || 'alle';
+  const requestedPage = interaction.options.getInteger('seite') || 1;
+
+  const conditions = [];
+  const params = [];
+
+  if (teamValue) {
+    conditions.push('p.team_id = ?');
+    params.push(Number(teamValue));
+  }
+
+  if (statusValue) {
+    conditions.push(`COALESCE(p.roster_status, 'sub') = ?`);
+    params.push(statusValue);
+  }
+
+  if (archiveValue === 'aktiv') {
+    conditions.push('p.is_archived = 0');
+  } else if (archiveValue === 'archiviert') {
+    conditions.push('p.is_archived = 1');
+  }
+
+  const whereSql = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const total = Number(db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM players p
+    ${whereSql}
+  `).get(...params).count);
+
+  const totalPages = Math.max(1, Math.ceil(total / PLAYER_LIST_PAGE_SIZE));
+  const page = Math.min(Math.max(1, requestedPage), totalPages);
+  const offset = (page - 1) * PLAYER_LIST_PAGE_SIZE;
+
+  const players = db.prepare(`
+    SELECT p.*, t.name AS team_name
+    FROM players p
+    LEFT JOIN teams t ON t.id = p.team_id
+    ${whereSql}
+    ORDER BY
+      p.is_archived ASC,
+      COALESCE(t.is_default, 0) DESC,
+      COALESCE(t.name, 'ZZZ') COLLATE NOCASE ASC,
+      CASE COALESCE(p.roster_status, 'sub')
+        WHEN 'main' THEN 0
+        WHEN 'sub' THEN 1
+        WHEN 'coach' THEN 2
+        WHEN 'admin' THEN 3
+        WHEN 'inactive' THEN 4
+        ELSE 9
+      END ASC,
+      COALESCE(NULLIF(p.alias, ''), NULLIF(p.global_name, ''), p.username) COLLATE NOCASE ASC,
+      p.id ASC
+    LIMIT ? OFFSET ?
+  `).all(...params, PLAYER_LIST_PAGE_SIZE, offset);
+
+  const selectedTeam = teamValue ? getTeamById(Number(teamValue)) : null;
+  const filterParts = [
+    `Team: **${selectedTeam?.name || 'Alle'}**`,
+    `Roster-Status: **${statusValue ? rosterStatusLabel(statusValue) : 'Alle'}**`,
+    `Datenbankstatus: **${
+      archiveValue === 'aktiv'
+        ? 'Nur aktive'
+        : archiveValue === 'archiviert'
+          ? 'Nur archivierte'
+          : 'Alle'
+    }**`
+  ];
+
+  const embed = new EmbedBuilder()
+    .setTitle(`Spielerdatenbank · Seite ${page}/${totalPages}`)
+    .setDescription(
+      `Gefundene Spieler: **${total}**\n${filterParts.join(' · ')}\n\n` +
+      `Die Nummer vor dem Namen ist die feste Datenbank-ID.`
+    )
+    .setFooter({
+      text: totalPages > 1
+        ? `Weitere Seite: /profil admin-liste seite:${page < totalPages ? page + 1 : 1}`
+        : 'Details per Datenbank-ID: /profil admin-anzeigen-id'
+    })
+    .setTimestamp();
+
+  if (!players.length) {
+    embed.addFields({
+      name: 'Keine Treffer',
+      value: 'Für die gewählten Filter wurden keine Spieler gefunden.'
+    });
+  } else {
+    for (const player of players) {
+      const name = `#${player.id} • ${playerDisplay(player)}`.slice(0, 256);
+      embed.addFields({
+        name,
+        value: formatPlayerListEntry(player).slice(0, 1024),
+        inline: false
+      });
+    }
+  }
+
+  return { embed, page, totalPages, total };
+}
 
 function formatProfile(player, heading = 'Dein Profil') {
   const team = player.team_id ? getTeamById(player.team_id) : null;
@@ -106,6 +238,54 @@ const command = {
       sub
         .setName('anzeigen')
         .setDescription('Zeigt dein aktuelles Profil an.')
+    )
+    .addSubcommand(sub => {
+      sub
+        .setName('admin-liste')
+        .setDescription('Listet alle Spielerprofile aus der Datenbank auf.')
+        .addStringOption(option => {
+          option
+            .setName('team')
+            .setDescription('Optional nach Team filtern')
+            .setRequired(false);
+          for (const choice of teamChoices()) option.addChoices(choice);
+          return option;
+        })
+        .addStringOption(option => {
+          option
+            .setName('status')
+            .setDescription('Optional nach Roster-Status filtern')
+            .setRequired(false);
+          for (const choice of ROSTER_STATUS_CHOICES) option.addChoices(choice);
+          return option;
+        })
+        .addStringOption(option =>
+          option
+            .setName('archiviert')
+            .setDescription('Aktive und/oder archivierte Profile anzeigen')
+            .setRequired(false)
+            .addChoices(
+              { name: 'Alle', value: 'alle' },
+              { name: 'Nur aktive', value: 'aktiv' },
+              { name: 'Nur archivierte', value: 'archiviert' }
+            )
+        )
+        .addIntegerOption(option =>
+          option
+            .setName('seite')
+            .setDescription('Seitennummer, falls mehr als zehn Spieler vorhanden sind')
+            .setMinValue(1)
+            .setRequired(false)
+        );
+      return sub;
+    })
+    .addSubcommand(sub =>
+      sub
+        .setName('admin-anzeigen-id')
+        .setDescription('Zeigt ein Spielerprofil anhand seiner Datenbank-ID an.')
+        .addIntegerOption(option =>
+          option.setName('id').setDescription('Spieler-ID aus /profil admin-liste').setMinValue(1).setRequired(true)
+        )
     )
     .addSubcommand(sub =>
       sub
@@ -243,6 +423,33 @@ const command = {
     }
 
     if (!(await requireAdmin(interaction))) return;
+
+    if (subcommand === 'admin-liste') {
+      const { embed } = buildPlayerListEmbed(interaction);
+      return interaction.reply({
+        embeds: [embed],
+        allowedMentions: { parse: [] },
+        flags: MessageFlags.Ephemeral
+      });
+    }
+
+    if (subcommand === 'admin-anzeigen-id') {
+      const playerId = interaction.options.getInteger('id', true);
+      const player = getPlayerById(playerId);
+
+      if (!player) {
+        return interaction.reply({
+          content: `Spieler #${playerId} wurde in der Datenbank nicht gefunden.`,
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
+      return interaction.reply({
+        content: formatProfile(player, `Datenbankprofil #${player.id} von ${playerDisplay(player)}`),
+        allowedMentions: { parse: [] },
+        flags: MessageFlags.Ephemeral
+      });
+    }
 
     const targetUser = interaction.options.getUser('spieler', true);
     const targetPlayer = upsertPlayer(targetUser);

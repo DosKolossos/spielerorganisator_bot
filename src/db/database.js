@@ -239,6 +239,9 @@ db.exec(`
     preferred_position TEXT,
     note TEXT,
     is_active INTEGER NOT NULL DEFAULT 1,
+    promoted_to_player_id INTEGER,
+    promoted_at TEXT,
+    promoted_by_discord_user_id TEXT,
     created_by_discord_user_id TEXT NOT NULL,
     updated_by_discord_user_id TEXT NOT NULL,
     created_at TEXT NOT NULL,
@@ -486,6 +489,14 @@ function dedupeSuggestionKeys() {
   tx(duplicateGroups);
 }
 
+function migrateStandins() {
+  if (!tableExists('standins')) return;
+
+  addColumnIfMissing('standins', 'promoted_to_player_id', `INTEGER`);
+  addColumnIfMissing('standins', 'promoted_at', `TEXT`);
+  addColumnIfMissing('standins', 'promoted_by_discord_user_id', `TEXT`);
+}
+
 function migrateTeamCalendarAssignments() {
   if (!tableExists('team_calendar_assignments')) return;
 
@@ -663,6 +674,7 @@ migrateTeamCalendarEvents();
 migrateAdminCardsCollapsedByDefault();
 dedupeSuggestionKeys();
 migrateTeamCalendarAssignments();
+migrateStandins();
 migrateMultiTeam();
 
 db.exec(`
@@ -678,6 +690,11 @@ db.exec(`
 db.exec(`
   CREATE INDEX IF NOT EXISTS idx_standins_active
   ON standins (is_active, preferred_position);
+`);
+
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_standins_promoted_player
+  ON standins (promoted_to_player_id);
 `);
 
 db.exec(`

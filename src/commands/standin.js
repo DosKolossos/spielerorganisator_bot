@@ -1,7 +1,20 @@
 const { SlashCommandBuilder, MessageFlags } = require('discord.js');
 const db = require('../db/database');
 const { requireAdmin } = require('../utils/permissions');
-const { POSITION_CHOICES, normalizePosition, opggRegion } = require('../utils/rosterUtils');
+const { logAdminAction, notifyUser } = require('../utils/adminTools');
+const {
+  listTeams,
+  getTeamById,
+  resolveTeamForInteraction
+} = require('../services/teamService');
+const { playerDisplay, getPlayerByDiscordUserId } = require('../utils/playerUtils');
+const { refreshPlayerReferences } = require('./spieltermin');
+const {
+  POSITION_CHOICES,
+  normalizePosition,
+  rosterStatusLabel,
+  opggRegion
+} = require('../utils/rosterUtils');
 
 const REGION_CHOICES = [
   { name: 'EUW', value: 'euw' },
@@ -17,12 +30,31 @@ const REGION_CHOICES = [
   { name: 'RU', value: 'ru' }
 ];
 
+const PROMOTION_STATUS_CHOICES = [
+  { name: 'Main-Line-up', value: 'main' },
+  { name: 'Sub', value: 'sub' }
+];
+
+function teamChoices() {
+  return listTeams({ activeOnly: true })
+    .slice(0, 25)
+    .map(team => ({
+      name: `${team.name}${team.is_default ? ' (Standard)' : ''}`,
+      value: String(team.id)
+    }));
+}
+
 function standinDisplay(row) {
   return row.display_name || `${row.riot_game_name}#${row.riot_tag}`;
 }
 
 function formatStandin(row) {
-  const activeLabel = row.is_active ? 'Aktiv' : 'Archiviert';
+  const promoted = Number(row.promoted_to_player_id) > 0;
+  const activeLabel = promoted
+    ? `Befördert zu Spieler #${row.promoted_to_player_id}`
+    : row.is_active
+      ? 'Aktiv'
+      : 'Archiviert';
   const opgg = `https://op.gg/lol/summoners/${opggRegion(row.riot_region)}/${encodeURIComponent(`${row.riot_game_name}-${row.riot_tag}`)}`;
 
   return (
@@ -38,6 +70,135 @@ function formatStandin(row) {
 
 function getStandinById(id) {
   return db.prepare(`SELECT * FROM standins WHERE id = ?`).get(id);
+}
+
+function promoteStandin({
+  standin,
+  targetUser,
+  rosterStatus,
+  teamId,
+  primaryPosition,
+  secondaryPosition,
+  actorDiscordUserId
+}) {
+  const now = new Date().toISOString();
+
+  const transaction = db.transaction(() => {
+    let player = getPlayerByDiscordUserId(targetUser.id);
+
+    if (!player) {
+      const result = db.prepare(`
+        INSERT INTO players (
+          discord_user_id,
+          username,
+          global_name,
+          alias,
+          riot_game_name,
+          riot_tag,
+          riot_region,
+          roster_status,
+          primary_position,
+          secondary_position,
+          team_id,
+          is_archived,
+          archived_at,
+          archived_by_discord_user_id,
+          created_at,
+          updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, ?, ?)
+      `).run(
+        targetUser.id,
+        targetUser.username,
+        targetUser.globalName ?? null,
+        standin.display_name || null,
+        standin.riot_game_name,
+        standin.riot_tag,
+        opggRegion(standin.riot_region),
+        rosterStatus,
+        primaryPosition,
+        secondaryPosition,
+        teamId,
+        now,
+        now
+      );
+
+      player = db.prepare(`SELECT * FROM players WHERE id = ?`).get(result.lastInsertRowid);
+    } else {
+      db.prepare(`
+        UPDATE players
+        SET username = ?,
+            global_name = ?,
+            alias = COALESCE(NULLIF(trim(alias), ''), ?),
+            riot_game_name = ?,
+            riot_tag = ?,
+            riot_region = ?,
+            roster_status = ?,
+            primary_position = COALESCE(?, primary_position),
+            secondary_position = CASE
+              WHEN ? = '__CLEAR__' THEN NULL
+              ELSE COALESCE(?, secondary_position)
+            END,
+            team_id = ?,
+            is_archived = 0,
+            archived_at = NULL,
+            archived_by_discord_user_id = NULL,
+            updated_at = ?
+        WHERE id = ?
+      `).run(
+        targetUser.username,
+        targetUser.globalName ?? null,
+        standin.display_name || null,
+        standin.riot_game_name,
+        standin.riot_tag,
+        opggRegion(standin.riot_region),
+        rosterStatus,
+        primaryPosition,
+        secondaryPosition,
+        secondaryPosition,
+        teamId,
+        now,
+        player.id
+      );
+
+      player = db.prepare(`SELECT * FROM players WHERE id = ?`).get(player.id);
+    }
+
+    const assignmentResult = db.prepare(`
+      UPDATE team_calendar_assignments
+      SET assignee_type = 'player',
+          player_id = ?,
+          standin_id = NULL,
+          player_label = ?,
+          updated_at = ?
+      WHERE standin_id = ?
+    `).run(player.id, playerDisplay(player), now, standin.id);
+
+    db.prepare(`
+      UPDATE standins
+      SET is_active = 0,
+          promoted_to_player_id = ?,
+          promoted_at = ?,
+          promoted_by_discord_user_id = ?,
+          updated_by_discord_user_id = ?,
+          updated_at = ?
+      WHERE id = ?
+    `).run(
+      player.id,
+      now,
+      actorDiscordUserId,
+      actorDiscordUserId,
+      now,
+      standin.id
+    );
+
+    return {
+      player,
+      migratedAssignments: assignmentResult.changes
+    };
+  });
+
+  return transaction();
 }
 
 module.exports = {
@@ -75,8 +236,56 @@ module.exports = {
     .addSubcommand(sub =>
       sub
         .setName('list')
-        .setDescription('Zeigt alle aktiven Standins an.')
+        .setDescription('Zeigt alle aktiven, archivierten und beförderten Standins an.')
     )
+    .addSubcommand(sub => {
+      sub
+        .setName('befoerdern')
+        .setDescription('Befördert einen Standin zu einem regulären Roster-Mitglied.')
+        .addIntegerOption(option =>
+          option.setName('id').setDescription('Standin-ID aus /standin list').setRequired(true)
+        )
+        .addUserOption(option =>
+          option
+            .setName('spieler')
+            .setDescription('Discord-Nutzer, mit dem das Roster-Profil verknüpft wird')
+            .setRequired(true)
+        )
+        .addStringOption(option => {
+          option
+            .setName('status')
+            .setDescription('Roster-Status nach der Beförderung (Standard: Sub)')
+            .setRequired(false);
+          for (const choice of PROMOTION_STATUS_CHOICES) option.addChoices(choice);
+          return option;
+        })
+        .addStringOption(option => {
+          option
+            .setName('team')
+            .setDescription('Zielteam; standardmäßig das Team des Standins bzw. dieses Kanals')
+            .setRequired(false);
+          for (const choice of teamChoices()) option.addChoices(choice);
+          return option;
+        })
+        .addStringOption(option => {
+          option
+            .setName('hauptposition')
+            .setDescription('Hauptposition; standardmäßig die Standin-Position')
+            .setRequired(false);
+          for (const choice of POSITION_CHOICES) option.addChoices(choice);
+          return option;
+        })
+        .addStringOption(option => {
+          option
+            .setName('nebenposition')
+            .setDescription('Optionale Nebenposition')
+            .setRequired(false)
+            .addChoices({ name: 'Keine', value: '-' });
+          for (const choice of POSITION_CHOICES) option.addChoices(choice);
+          return option;
+        });
+      return sub;
+    })
     .addSubcommand(sub =>
       sub
         .setName('archive')
@@ -132,6 +341,15 @@ module.exports = {
 
       let standin;
       if (existing) {
+        if (existing.promoted_to_player_id) {
+          return interaction.reply({
+            content:
+              `Dieser Standin wurde bereits zu Spieler **#${existing.promoted_to_player_id}** befördert. ` +
+              `Änderungen bitte am Spielerprofil vornehmen.`,
+            flags: MessageFlags.Ephemeral
+          });
+        }
+
         db.prepare(`
           UPDATE standins
           SET display_name = ?,
@@ -176,15 +394,163 @@ module.exports = {
       const rows = db.prepare(`
         SELECT *
         FROM standins
-        ORDER BY is_active DESC, COALESCE(preferred_position, 'ZZZ') ASC, display_name COLLATE NOCASE ASC
+        ORDER BY
+          CASE
+            WHEN promoted_to_player_id IS NOT NULL THEN 2
+            WHEN is_active = 1 THEN 0
+            ELSE 1
+          END ASC,
+          COALESCE(preferred_position, 'ZZZ') ASC,
+          display_name COLLATE NOCASE ASC
       `).all();
 
       if (!rows.length) {
         return interaction.reply({ content: 'Es sind noch keine Standins hinterlegt.', flags: MessageFlags.Ephemeral });
       }
 
-      const lines = rows.map(formatStandin);
-      return interaction.reply({ content: lines.join('\n\n'), flags: MessageFlags.Ephemeral });
+      const chunks = [];
+      let current = '';
+
+      for (const row of rows) {
+        const block = formatStandin(row);
+        if (current && current.length + block.length + 2 > 1900) {
+          chunks.push(current);
+          current = block;
+        } else {
+          current = current ? `${current}\n\n${block}` : block;
+        }
+      }
+      if (current) chunks.push(current);
+
+      await interaction.reply({
+        content: chunks[0],
+        flags: MessageFlags.Ephemeral
+      });
+
+      for (const chunk of chunks.slice(1)) {
+        await interaction.followUp({
+          content: chunk,
+          flags: MessageFlags.Ephemeral
+        });
+      }
+      return;
+    }
+
+    if (subcommand === 'befoerdern') {
+      const id = interaction.options.getInteger('id', true);
+      const targetUser = interaction.options.getUser('spieler', true);
+      const standin = getStandinById(id);
+
+      if (!standin) {
+        return interaction.reply({
+          content: `Standin #${id} wurde nicht gefunden.`,
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
+      if (standin.promoted_to_player_id) {
+        return interaction.reply({
+          content: `Standin **${standinDisplay(standin)}** wurde bereits zu Spieler **#${standin.promoted_to_player_id}** befördert.`,
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
+      const duplicateRiotPlayer = db.prepare(`
+        SELECT *
+        FROM players
+        WHERE discord_user_id <> ?
+          AND lower(COALESCE(riot_game_name, '')) = lower(?)
+          AND lower(COALESCE(riot_tag, '')) = lower(?)
+          AND lower(COALESCE(riot_region, 'euw')) = lower(?)
+        LIMIT 1
+      `).get(
+        targetUser.id,
+        standin.riot_game_name,
+        standin.riot_tag,
+        opggRegion(standin.riot_region)
+      );
+
+      if (duplicateRiotPlayer) {
+        return interaction.reply({
+          content:
+            `Die Riot-ID **${standin.riot_game_name}#${standin.riot_tag}** ist bereits mit ` +
+            `Spieler **#${duplicateRiotPlayer.id} (${playerDisplay(duplicateRiotPlayer)})** verknüpft. ` +
+            `Die Beförderung wurde nicht durchgeführt, damit kein doppeltes Profil entsteht.`,
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
+      const teamOption = interaction.options.getString('team');
+      const interactionTeam = resolveTeamForInteraction(interaction);
+      const teamId = teamOption
+        ? Number(teamOption)
+        : standin.team_id || interactionTeam?.id || null;
+      const team = teamId ? getTeamById(teamId) : null;
+
+      if (!team) {
+        return interaction.reply({
+          content: 'Es konnte kein Zielteam ermittelt werden. Bitte gib beim Befehl ein Team an.',
+          flags: MessageFlags.Ephemeral
+        });
+      }
+
+      const rosterStatus = interaction.options.getString('status') || 'sub';
+      const primaryPosition = normalizePosition(
+        interaction.options.getString('hauptposition') || standin.preferred_position
+      );
+      const secondaryInput = interaction.options.getString('nebenposition');
+      const secondaryPosition = secondaryInput === '-'
+        ? '__CLEAR__'
+        : normalizePosition(secondaryInput);
+
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+      const result = promoteStandin({
+        standin,
+        targetUser,
+        rosterStatus,
+        teamId: team.id,
+        primaryPosition,
+        secondaryPosition,
+        actorDiscordUserId: interaction.user.id
+      });
+
+      const syncSummary = await refreshPlayerReferences(interaction.client, result.player.id);
+      const adminLabel = interaction.member?.displayName || interaction.user.username;
+
+      await notifyUser(
+        interaction.client,
+        targetUser.id,
+        `🎉 Du wurdest von **${adminLabel}** vom Standin zum Roster-Mitglied von **${team.name}** befördert.\n` +
+        `Status: **${rosterStatusLabel(result.player.roster_status)}**\n` +
+        `Riot-ID: **${result.player.riot_game_name}#${result.player.riot_tag}**`
+      );
+
+      await logAdminAction(interaction.client, {
+        actorDiscordUserId: interaction.user.id,
+        actorLabel: adminLabel,
+        targetDiscordUserId: targetUser.id,
+        targetLabel: playerDisplay(result.player),
+        entityType: 'standin',
+        entityId: standin.id,
+        actionType: 'befördert',
+        details:
+          `Zu Spieler #${result.player.id}, Team ${team.name}, Status ${rosterStatusLabel(result.player.roster_status)}, ` +
+          `${result.migratedAssignments} Aufstellungen migriert`
+      });
+
+      return interaction.editReply({
+        content:
+          `🎉 **${standinDisplay(standin)}** wurde erfolgreich zum Roster-Mitglied befördert.\n` +
+          `Spielerprofil: **#${result.player.id} • ${playerDisplay(result.player)}**\n` +
+          `Discord: ${targetUser}\n` +
+          `Team: **${team.name}**\n` +
+          `Status: **${rosterStatusLabel(result.player.roster_status)}**\n` +
+          `Positionen: **${result.player.primary_position || '-'} / ${result.player.secondary_position || '-'}**\n` +
+          `Riot-ID: **${result.player.riot_game_name}#${result.player.riot_tag}**\n` +
+          `Übernommene Aufstellungen: **${result.migratedAssignments}**\n` +
+          `Synchronisierte Termine: **${syncSummary.affectedEvents}**`
+      });
     }
 
     if (subcommand === 'archive' || subcommand === 'restore') {
@@ -192,6 +558,15 @@ module.exports = {
       const standin = getStandinById(id);
       if (!standin) {
         return interaction.reply({ content: `Standin #${id} wurde nicht gefunden.`, flags: MessageFlags.Ephemeral });
+      }
+
+      if (subcommand === 'restore' && standin.promoted_to_player_id) {
+        return interaction.reply({
+          content:
+            `Dieser Standin wurde bereits zu Spieler **#${standin.promoted_to_player_id}** befördert und kann nicht wieder als Standin aktiviert werden. ` +
+            `Verwalte stattdessen das zugehörige Spielerprofil.`,
+          flags: MessageFlags.Ephemeral
+        });
       }
 
       const isActive = subcommand === 'restore' ? 1 : 0;
