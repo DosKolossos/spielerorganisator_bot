@@ -1,5 +1,5 @@
 const db = require('../db/database');
-const { upsertAdminCardMessage } = require('../commands/spieltermin');
+const { upsertAdminCardMessage, refreshStoredEventCard } = require('../commands/spieltermin');
 const { displayName, formatRosterGroups, normalizeRosterStatus } = require('../utils/rosterUtils');
 const { getTeamById, getDefaultTeam } = require('../services/teamService');
 
@@ -997,6 +997,81 @@ async function runSundayPlanner(client, options = {}) {
   };
 }
 
+async function refreshPlannerDates(client, { teamId, dates }) {
+  const team = getTeamById(teamId);
+  if (!team || !team.is_active) {
+    return { refreshed: 0, skipped: true, reason: 'team_not_found' };
+  }
+
+  const uniqueDates = [...new Set((dates || []).filter(Boolean))].sort();
+  if (uniqueDates.length === 0) {
+    return { refreshed: 0, skipped: true, reason: 'no_dates' };
+  }
+
+  const players = db.prepare(`
+    SELECT id, discord_user_id, username, global_name, alias, roster_status, primary_position, secondary_position
+    FROM players
+    WHERE is_archived = 0
+      AND team_id = ?
+    ORDER BY id ASC
+  `).all(teamId);
+
+  const rules = db.prepare(`
+    SELECT
+      r.id, r.player_id, r.weekday_mask, r.rule_type, r.time_value, r.note,
+      r.recurrence_type, r.anchor_date, r.suspended_from, r.suspended_until,
+      p.discord_user_id, p.username, p.global_name, p.alias, p.roster_status,
+      p.primary_position, p.secondary_position
+    FROM availability_rules r
+    INNER JOIN players p ON p.id = r.player_id
+    WHERE r.active = 1
+      AND p.is_archived = 0
+      AND p.team_id = ?
+    ORDER BY p.id ASC, r.id ASC
+  `).all(teamId);
+
+  let refreshed = 0;
+  for (const dateStr of uniqueDates) {
+    // Live-Updates gelten nur für Tage, für die der Planer bereits eine Karte
+    // angelegt hat. Vor dem sonntäglichen Planner-Lauf entstehen so keine
+    // verfrühten Terminoptionen.
+    const existing = db.prepare(`
+      SELECT id
+      FROM team_calendar_events
+      WHERE team_id = ?
+        AND option_date = ?
+        AND is_auto_generated = 1
+      ORDER BY id DESC
+      LIMIT 1
+    `).get(teamId, dateStr);
+    if (!existing) continue;
+
+    const entries = db.prepare(`
+      SELECT
+        e.id, e.player_id, e.entry_type, e.start_at, e.end_at, e.reason,
+        e.approval_status, p.discord_user_id, p.username, p.global_name,
+        p.alias, p.roster_status, p.primary_position, p.secondary_position
+      FROM availability_entries e
+      INNER JOIN players p ON p.id = e.player_id
+      WHERE e.end_at >= ?
+        AND e.start_at <= ?
+        AND e.approval_status <> 'rejected'
+        AND p.is_archived = 0
+        AND p.team_id = ?
+      ORDER BY e.start_at ASC
+    `).all(`${dateStr} 00:00`, `${dateStr} 23:59`, teamId);
+
+    const suggestion = buildDailySuggestion(players, entries, rules, dateStr);
+    if (!suggestion) continue;
+
+    const eventId = syncSuggestionEvent(suggestion, teamId);
+    await refreshStoredEventCard(client, eventId);
+    refreshed++;
+  }
+
+  return { refreshed, skipped: false, teamId, dates: uniqueDates };
+}
+
 async function clearCurrentWeekPostedCards(client, teamId, weekStartDate, weekEndDate) {
   const events = db.prepare(`
     SELECT
@@ -1048,4 +1123,4 @@ async function clearCurrentWeekPostedCards(client, teamId, weekStartDate, weekEn
   }
 }
 
-module.exports = { runSundayPlanner };
+module.exports = { runSundayPlanner, refreshPlannerDates };

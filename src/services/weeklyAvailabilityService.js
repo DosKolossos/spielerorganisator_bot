@@ -18,6 +18,39 @@ const { getTeamById, resolveTeamForInteraction } = require('./teamService');
 const PREFIX = 'wavail';
 const DAYS_PER_WEEK = 7;
 const MAX_RANGE_DAYS = 35;
+const plannerRefreshQueues = new Map();
+
+function schedulePlannerRefresh(client, teamId, dates) {
+  if (!client || !teamId) return;
+
+  let queue = plannerRefreshQueues.get(teamId);
+  if (!queue) {
+    queue = { dates: new Set(), timer: null };
+    plannerRefreshQueues.set(teamId, queue);
+  }
+
+  for (const dateStr of dates || []) {
+    if (dateStr) queue.dates.add(dateStr);
+  }
+
+  if (queue.timer) clearTimeout(queue.timer);
+  queue.timer = setTimeout(async () => {
+    const queuedDates = [...queue.dates];
+    plannerRefreshQueues.delete(teamId);
+
+    try {
+      // Lazy laden, damit weeklyAvailabilityService und sundayPlanner sich
+      // beim Programmstart nicht gegenseitig als Modul benötigen.
+      const { refreshPlannerDates } = require('../jobs/sundayPlanner');
+      const result = await refreshPlannerDates(client, { teamId, dates: queuedDates });
+      if (result.refreshed > 0) {
+        console.log(`[Verfügbarkeit] ${result.refreshed} Planner-Karte(n) für Team ${teamId} live aktualisiert.`);
+      }
+    } catch (error) {
+      console.error(`[Verfügbarkeit] Live-Aktualisierung für Team ${teamId} fehlgeschlagen:`, error);
+    }
+  }, 1500);
+}
 
 function addDaysIso(dateStr, days) {
   const [year, month, day] = dateStr.split('-').map(Number);
@@ -824,6 +857,7 @@ async function handleInteraction(interaction) {
       const player = upsertPlayer(interaction.user, { team_id: resolveTeamForInteraction(interaction)?.id });
       toggleDayState(player, interaction.user.id, dateStr, weekStartDate);
       await openEditor(interaction, weekStartDate);
+      schedulePlannerRefresh(interaction.client, player.team_id, [dateStr]);
       return true;
     }
 
@@ -831,6 +865,7 @@ async function handleInteraction(interaction) {
       const player = upsertPlayer(interaction.user, { team_id: resolveTeamForInteraction(interaction)?.id });
       resetWeek(player.id, weekStartDate);
       await openEditor(interaction, weekStartDate);
+      schedulePlannerRefresh(interaction.client, player.team_id, getWeekDates(weekStartDate));
       return true;
     }
 
@@ -838,6 +873,7 @@ async function handleInteraction(interaction) {
       const player = upsertPlayer(interaction.user, { team_id: resolveTeamForInteraction(interaction)?.id });
       setAllDays(player.id, interaction.user.id, weekStartDate, { kind: 'unavailable' });
       await openEditor(interaction, weekStartDate);
+      schedulePlannerRefresh(interaction.client, player.team_id, getWeekDates(weekStartDate));
       return true;
     }
 
@@ -845,6 +881,7 @@ async function handleInteraction(interaction) {
       const player = upsertPlayer(interaction.user, { team_id: resolveTeamForInteraction(interaction)?.id });
       resetWeek(player.id, weekStartDate);
       await openEditor(interaction, weekStartDate);
+      schedulePlannerRefresh(interaction.client, player.team_id, getWeekDates(weekStartDate));
       return true;
     }
 
@@ -884,6 +921,7 @@ async function handleInteraction(interaction) {
         ...buildEditorPayload(player, weekStartDate),
         flags: MessageFlags.Ephemeral
       });
+      schedulePlannerRefresh(interaction.client, player.team_id, [dateStr]);
       return true;
     }
   }
