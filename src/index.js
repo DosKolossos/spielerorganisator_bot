@@ -26,6 +26,7 @@ const { runSundayPlanner } = require('./jobs/sundayPlanner');
 const { runBirthdayReminder } = require('./jobs/birthdayReminder');
 const { listTeams } = require('./services/teamService');
 const { syncAllDiscordScheduledEvents } = require('./services/discordScheduledEventService');
+const { syncUpcomingOpponents } = require('./services/archiveService');
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds]
@@ -119,6 +120,19 @@ function registerCronJobs(client) {
     { timezone: 'Europe/Berlin' }
   );
 
+  cron.schedule(
+    '*/2 * * * *',
+    async () => {
+      try {
+        const summary = await syncUpcomingOpponents();
+        if (summary.pending || summary.errors) console.log('[Gegner-Archiv] Synchronisierung:', summary);
+      } catch (error) {
+        console.error('[Gegner-Archiv] Synchronisierung fehlgeschlagen:', error);
+      }
+    },
+    { timezone: 'Europe/Berlin' }
+  );
+
   console.log('Cronjobs registriert.');
 }
 
@@ -138,6 +152,13 @@ client.once('clientReady', async () => {
     console.log(`[Spieltermin] ${refreshedCards} gespeicherte Admin-Karten aktualisiert.`);
   } catch (error) {
     console.error('[Spieltermin] Gespeicherte Admin-Karten konnten beim Start nicht aktualisiert werden:', error);
+  }
+
+  try {
+    const archiveSummary = await syncUpcomingOpponents();
+    console.log('[Gegner-Archiv] Start-Synchronisierung:', archiveSummary);
+  } catch (error) {
+    console.error('[Gegner-Archiv] Start-Synchronisierung fehlgeschlagen:', error);
   }
 
   registerCronJobs(client);
