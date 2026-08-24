@@ -5,6 +5,13 @@ function focusSlug(team) {
   return value.includes('shiny') ? 'shiny' : 'main';
 }
 
+function eventSchedule(event) {
+  return event.scheduled_start_at
+    || event.start_at
+    || event.window_start_at
+    || (event.option_date ? `${event.option_date}T12:00:00+02:00` : null);
+}
+
 async function sendToArchive(event) {
   if (!process.env.ARCHIVE_API_URL || !process.env.ARCHIVE_BRIDGE_TOKEN) return { skipped: true };
   const team = db.prepare('SELECT * FROM teams WHERE id = ?').get(event.team_id);
@@ -18,7 +25,9 @@ async function sendToArchive(event) {
       focusTeamSlug: focusSlug(team),
       organizerEventId: String(event.id),
       opponentName: event.opponent_name,
-      opggUrl: event.opgg_url
+      opggUrl: event.opgg_url,
+      scheduledAt: eventSchedule(event),
+      eventStatus: event.status
     })
   });
   const data = await response.json().catch(() => ({}));
@@ -29,7 +38,8 @@ async function sendToArchive(event) {
 async function syncUpcomingOpponents() {
   if (!process.env.ARCHIVE_API_URL || !process.env.ARCHIVE_BRIDGE_TOKEN) return { configured: false, checked: 0 };
   const events = db.prepare(`
-    SELECT id, team_id, opponent_name, opgg_url
+    SELECT id, team_id, opponent_name, opgg_url, status,
+           option_date, window_start_at, scheduled_start_at, start_at
     FROM team_calendar_events
     WHERE trim(COALESCE(opponent_name, '')) <> ''
       AND trim(COALESCE(opgg_url, '')) <> ''
