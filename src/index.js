@@ -147,12 +147,9 @@ client.once('clientReady', async () => {
     console.error('[Discord-Event] Start-Synchronisierung fehlgeschlagen:', error);
   }
 
-  try {
-    const refreshedCards = await spielterminCommand.refreshAllStoredAdminCards(client);
-    console.log(`[Spieltermin] ${refreshedCards} gespeicherte Admin-Karten aktualisiert.`);
-  } catch (error) {
-    console.error('[Spieltermin] Gespeicherte Admin-Karten konnten beim Start nicht aktualisiert werden:', error);
-  }
+  // Zeitkritische Jobs sofort aktivieren. Das Aktualisieren vieler alter
+  // Discord-Karten darf weder Archiv-Sync noch Cronjobs blockieren.
+  registerCronJobs(client);
 
   try {
     const archiveSummary = await syncUpcomingOpponents();
@@ -161,7 +158,13 @@ client.once('clientReady', async () => {
     console.error('[Gegner-Archiv] Start-Synchronisierung fehlgeschlagen:', error);
   }
 
-  registerCronJobs(client);
+  spielterminCommand.refreshAllStoredAdminCards(client)
+    .then(refreshedCards => {
+      console.log(`[Spieltermin] ${refreshedCards} gespeicherte Admin-Karten aktualisiert.`);
+    })
+    .catch(error => {
+      console.error('[Spieltermin] Gespeicherte Admin-Karten konnten beim Start nicht aktualisiert werden:', error);
+    });
 });
 
 client.on('interactionCreate', async interaction => {
