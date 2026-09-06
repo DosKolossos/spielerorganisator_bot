@@ -98,6 +98,21 @@ function formatDateTimeDE(dateTime) {
   return `${formatDateDE(dateStr)}, ${timeStr}`;
 }
 
+function currentDateTimeInBerlin() {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Berlin',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23'
+  }).formatToParts(new Date());
+
+  const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute}`;
+}
+
 function formatDateLongDE(dateStr) {
   const [year, month, day] = dateStr.split('-').map(Number);
   return new Intl.DateTimeFormat('de-DE', {
@@ -1606,6 +1621,104 @@ async function deleteStoredAdminCard(client, eventId) {
   return true;
 }
 
+function clearStoredAdminCardReference(eventId, messageId) {
+  db.prepare(`
+    UPDATE team_calendar_events
+    SET admin_channel_id = NULL,
+        admin_message_id = NULL,
+        updated_at = ?
+    WHERE id = ?
+      AND admin_message_id = ?
+  `).run(new Date().toISOString(), eventId, messageId);
+}
+
+async function cleanupExpiredAdminCards(client) {
+  const berlinNow = currentDateTimeInBerlin();
+  const events = db.prepare(`
+    SELECT
+      id,
+      admin_channel_id,
+      admin_message_id,
+      COALESCE(
+        NULLIF(scheduled_end_at, ''),
+        NULLIF(window_end_at, ''),
+        NULLIF(end_at, ''),
+        option_date || ' 23:59'
+      ) AS expires_at
+    FROM team_calendar_events
+    WHERE admin_channel_id IS NOT NULL
+      AND admin_message_id IS NOT NULL
+      AND COALESCE(
+        NULLIF(scheduled_end_at, ''),
+        NULLIF(window_end_at, ''),
+        NULLIF(end_at, ''),
+        option_date || ' 23:59'
+      ) < ?
+    ORDER BY expires_at ASC, id ASC
+  `).all(berlinNow);
+
+  const summary = {
+    scanned: events.length,
+    deleted: 0,
+    alreadyMissing: 0,
+    errors: 0
+  };
+
+  for (const event of events) {
+    let channel;
+
+    try {
+      channel = await client.channels.fetch(event.admin_channel_id);
+    } catch (error) {
+      console.warn(
+        `[Spieltermin] Admin-Karte #${event.id} konnte nicht bereinigt werden: Kanal nicht erreichbar.`,
+        error.message
+      );
+      summary.errors++;
+      continue;
+    }
+
+    if (!channel || !channel.isTextBased()) {
+      console.warn(`[Spieltermin] Admin-Karte #${event.id} konnte nicht bereinigt werden: ungültiger Kanal.`);
+      summary.errors++;
+      continue;
+    }
+
+    let message;
+    try {
+      message = await channel.messages.fetch(event.admin_message_id);
+    } catch (error) {
+      const errorCode = error?.code ?? error?.rawError?.code;
+      if (Number(errorCode) === 10008) {
+        clearStoredAdminCardReference(event.id, event.admin_message_id);
+        summary.alreadyMissing++;
+        continue;
+      }
+
+      console.warn(
+        `[Spieltermin] Admin-Karte #${event.id} konnte nicht geladen werden und bleibt für einen späteren Versuch gespeichert.`,
+        error.message
+      );
+      summary.errors++;
+      continue;
+    }
+
+    try {
+      await message.delete();
+      clearStoredAdminCardReference(event.id, event.admin_message_id);
+      summary.deleted++;
+    } catch (error) {
+      console.warn(
+        `[Spieltermin] Abgelaufene Admin-Karte #${event.id} konnte nicht gelöscht werden.`,
+        error.message
+      );
+      summary.errors++;
+    }
+  }
+
+  return summary;
+}
+
 async function deleteStoredPlayerCard(client, eventId) {
   const event = getEventById(eventId);
   if (!event?.player_channel_id || !event?.player_message_id) {
@@ -1729,7 +1842,6 @@ function buildEventCardPayload(eventId) {
     descriptionLines.push(
       `🎮 **Art:** ${eventTypeLabel(event.event_type)}`,
       `👥 **Verfügbar:** ${buildAvailablePlayersForCard(event)}`,
-      `🔎 **Gesucht:** ${buildMissingStarterRolesText(assignments)}`,
       `${statusEmoji(event.status)} **Status:** ${statusLabel(event.status)}`
     );
 
@@ -3722,6 +3834,7 @@ const command = {
   buildEventCardPayload,
   upsertAdminCardMessage,
   refreshAllStoredAdminCards,
+  cleanupExpiredAdminCards,
   refreshStoredEventCard,
   refreshPlayerReferences,
   statusLabel,
