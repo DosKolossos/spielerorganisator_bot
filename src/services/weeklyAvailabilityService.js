@@ -414,16 +414,17 @@ function getEitherOrChoice(playerId, weekStartDate) {
   `).get(playerId, weekStartDate) || null;
 }
 
-function getEitherOrAssignedDates(playerId, firstDate, secondDate) {
+function getEitherOrAssignedDates(playerId, teamId, firstDate, secondDate) {
   return db.prepare(`
     SELECT DISTINCT e.option_date
     FROM team_calendar_assignments a
     INNER JOIN team_calendar_events e ON e.id = a.event_id
     WHERE a.player_id = ?
+      AND e.team_id = ?
       AND e.option_date IN (?, ?)
       AND e.status <> 'cancelled'
     ORDER BY e.option_date ASC
-  `).all(playerId, firstDate, secondDate).map(row => row.option_date);
+  `).all(playerId, teamId, firstDate, secondDate).map(row => row.option_date);
 }
 
 function setEitherOrChoice(playerId, actorDiscordUserId, weekStartDate, firstDate, secondDate) {
@@ -1069,7 +1070,12 @@ async function handleInteraction(interaction) {
         return true;
       }
 
-      const assignedDates = getEitherOrAssignedDates(player.id, selectedDates[0], selectedDates[1]);
+      const assignedDates = getEitherOrAssignedDates(
+        player.id,
+        player.team_id,
+        selectedDates[0],
+        selectedDates[1]
+      );
       if (assignedDates.length > 1) {
         await interaction.update(buildEditorPayload(player, weekStartDate, {
           notice:
