@@ -42,9 +42,13 @@ function schedulePlannerRefresh(client, teamId, dates) {
       // Lazy laden, damit weeklyAvailabilityService und sundayPlanner sich
       // beim Programmstart nicht gegenseitig als Modul benötigen.
       const { refreshPlannerDates } = require('../jobs/sundayPlanner');
+      const { refreshStoredAdminCardsForDates } = require('../commands/spieltermin');
       const result = await refreshPlannerDates(client, { teamId, dates: queuedDates });
-      if (result.refreshed > 0) {
-        console.log(`[Verfügbarkeit] ${result.refreshed} Planner-Karte(n) für Team ${teamId} live aktualisiert.`);
+      const refreshedAdminCards = await refreshStoredAdminCardsForDates(client, teamId, queuedDates);
+      if (result.refreshed > 0 || refreshedAdminCards > 0) {
+        console.log(
+          `[Verfügbarkeit] Team ${teamId}: ${result.refreshed} Planner-Termine und ${refreshedAdminCards} Admin-Karten live aktualisiert.`
+        );
       }
     } catch (error) {
       console.error(`[Verfügbarkeit] Live-Aktualisierung für Team ${teamId} fehlgeschlagen:`, error);
@@ -400,6 +404,74 @@ function getWeeklyEntries(playerId, weekStartDate) {
   `).all(playerId, `${weekStartDate} 00:00`, `${weekEndDate} 23:59`);
 }
 
+function getEitherOrChoice(playerId, weekStartDate) {
+  return db.prepare(`
+    SELECT *
+    FROM weekly_availability_choices
+    WHERE player_id = ?
+      AND week_start_date = ?
+    LIMIT 1
+  `).get(playerId, weekStartDate) || null;
+}
+
+function getEitherOrAssignedDates(playerId, firstDate, secondDate) {
+  return db.prepare(`
+    SELECT DISTINCT e.option_date
+    FROM team_calendar_assignments a
+    INNER JOIN team_calendar_events e ON e.id = a.event_id
+    WHERE a.player_id = ?
+      AND e.option_date IN (?, ?)
+      AND e.status <> 'cancelled'
+    ORDER BY e.option_date ASC
+  `).all(playerId, firstDate, secondDate).map(row => row.option_date);
+}
+
+function setEitherOrChoice(playerId, actorDiscordUserId, weekStartDate, firstDate, secondDate) {
+  const [dateA, dateB] = [firstDate, secondDate].sort();
+  const now = new Date().toISOString();
+
+  db.prepare(`
+    INSERT INTO weekly_availability_choices (
+      player_id,
+      week_start_date,
+      first_date,
+      second_date,
+      created_by_discord_user_id,
+      created_at,
+      updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(player_id, week_start_date)
+    DO UPDATE SET
+      first_date = excluded.first_date,
+      second_date = excluded.second_date,
+      created_by_discord_user_id = excluded.created_by_discord_user_id,
+      updated_at = excluded.updated_at
+  `).run(playerId, weekStartDate, dateA, dateB, actorDiscordUserId, now, now);
+
+  return getEitherOrChoice(playerId, weekStartDate);
+}
+
+function clearEitherOrChoice(playerId, weekStartDate) {
+  return db.prepare(`
+    DELETE FROM weekly_availability_choices
+    WHERE player_id = ?
+      AND week_start_date = ?
+  `).run(playerId, weekStartDate).changes > 0;
+}
+
+function clearEitherOrChoiceForDate(playerId, dateStr) {
+  return db.prepare(`
+    DELETE FROM weekly_availability_choices
+    WHERE player_id = ?
+      AND (first_date = ? OR second_date = ?)
+  `).run(playerId, dateStr, dateStr).changes > 0;
+}
+
+function formatEitherOrDate(dateStr) {
+  return `${getWeekdayShort(dateStr)}, ${formatDateShort(dateStr)}`;
+}
+
 function getWeeklyEntriesForDate(entries, dateStr) {
   return entries
     .filter(entry => entry.start_at.startsWith(`${dateStr} `) || entry.end_at.startsWith(`${dateStr} `))
@@ -458,25 +530,36 @@ function buildEditorEmbed(player, weekStartDate) {
   const weekDates = getWeekDates(weekStartDate);
   const weekEndDate = weekDates[weekDates.length - 1];
   const entries = getWeeklyEntries(player.id, weekStartDate);
+  const choice = getEitherOrChoice(player.id, weekStartDate);
   const lines = weekDates.map(dateStr => {
     const dayEntries = getWeeklyEntriesForDate(entries, dateStr);
-    return formatDayLine(dateStr, deriveStateFromEntries(dayEntries));
+    const linked = choice && (choice.first_date === dateStr || choice.second_date === dateStr);
+    return `${formatDayLine(dateStr, deriveStateFromEntries(dayEntries))}${linked ? ' 🔗' : ''}`;
   });
+  const choiceText = choice
+    ? `\n\n🔗 **Nur an einem dieser Tage einplanen:**\n${formatEitherOrDate(choice.first_date)} **oder** ${formatEitherOrDate(choice.second_date)}`
+    : '';
 
   return new EmbedBuilder()
     .setTitle(`🗓️ Deine Woche – ${playerDisplay(player)}`)
-    .setDescription(`**${formatDateDE(weekStartDate)} – ${formatDateDE(weekEndDate)}**\n\n${lines.join('\n')}`)
-    .setFooter({ text: 'Tagesbutton = ✅/❌ umschalten · Zeitfenster für eingeschränkte Verfügbarkeit' });
+    .setDescription(`**${formatDateDE(weekStartDate)} – ${formatDateDE(weekEndDate)}**\n\n${lines.join('\n')}${choiceText}`)
+    .setFooter({ text: 'Tagesbutton = ✅/❌ · Zeitfenster = eingeschränkt · 🔗 = nur einer der verknüpften Tage' });
 }
 
 function buildEditorComponents(player, weekStartDate, options = {}) {
   const weekDates = getWeekDates(weekStartDate);
   const entries = getWeeklyEntries(player.id, weekStartDate);
+  const choice = getEitherOrChoice(player.id, weekStartDate);
   const withTimeSelect = options.withTimeSelect === true;
+  const withEitherOrSelect = options.withEitherOrSelect === true;
+
+  const states = new Map(weekDates.map(dateStr => [
+    dateStr,
+    deriveStateFromEntries(getWeeklyEntriesForDate(entries, dateStr))
+  ]));
 
   const dayButtons = weekDates.map(dateStr => {
-    const dayEntries = getWeeklyEntriesForDate(entries, dateStr);
-    const state = deriveStateFromEntries(dayEntries);
+    const state = states.get(dateStr);
 
     return new ButtonBuilder()
       .setCustomId(`${PREFIX}:toggle:${weekStartDate}:${dateStr}`)
@@ -511,6 +594,10 @@ function buildEditorComponents(player, weekStartDate, options = {}) {
     new ButtonBuilder()
       .setCustomId(`${PREFIX}:time:${weekStartDate}`)
       .setLabel('🕒 Zeitfenster')
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId(`${PREFIX}:either:${weekStartDate}`)
+      .setLabel(choice ? '🔗 Tage ändern' : '🔗 Entweder/oder')
       .setStyle(ButtonStyle.Primary)
   ));
 
@@ -526,11 +613,40 @@ function buildEditorComponents(player, weekStartDate, options = {}) {
     ));
   }
 
+  if (withEitherOrSelect) {
+    const selectableDates = weekDates.filter(dateStr => states.get(dateStr).kind !== 'unavailable');
+
+    if (selectableDates.length >= 2) {
+      rows.push(new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId(`${PREFIX}:eitherdays:${weekStartDate}`)
+          .setPlaceholder('Genau zwei mögliche Tage auswählen')
+          .setMinValues(2)
+          .setMaxValues(2)
+          .addOptions(selectableDates.map(dateStr => ({
+            label: formatEitherOrDate(dateStr),
+            value: dateStr,
+            default: Boolean(choice && (choice.first_date === dateStr || choice.second_date === dateStr))
+          })))
+      ));
+    }
+
+    if (choice) {
+      rows.push(new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`${PREFIX}:eitherclear:${weekStartDate}`)
+          .setLabel('Verknüpfung löschen')
+          .setStyle(ButtonStyle.Danger)
+      ));
+    }
+  }
+
   return rows;
 }
 
 function buildEditorPayload(player, weekStartDate, options = {}) {
   return {
+    content: options.notice || null,
     embeds: [buildEditorEmbed(player, weekStartDate)],
     components: buildEditorComponents(player, weekStartDate, options)
   };
@@ -648,6 +764,9 @@ function setDayState(playerId, actorDiscordUserId, dateStr, state) {
   if (state.kind !== 'available') {
     insertWeeklyCheckinEntries({ playerId, actorDiscordUserId, dateStr, state });
   }
+  if (state.kind === 'unavailable') {
+    clearEitherOrChoiceForDate(playerId, dateStr);
+  }
 }
 
 function toggleDayState(player, actorDiscordUserId, dateStr, weekStartDate) {
@@ -681,6 +800,7 @@ function resetWeek(playerId, weekStartDate) {
       AND start_at >= ?
       AND start_at <= ?
   `).run(playerId, `${weekStartDate} 00:00`, `${weekEndDate} 23:59`);
+  clearEitherOrChoice(playerId, weekStartDate);
 }
 
 function parseCustomId(customId) {
@@ -889,12 +1009,96 @@ async function handleInteraction(interaction) {
       await openEditor(interaction, weekStartDate, { withTimeSelect: true });
       return true;
     }
+
+    if (action === 'either') {
+      const player = upsertPlayer(interaction.user, { team_id: resolveTeamForInteraction(interaction)?.id });
+      const entries = getWeeklyEntries(player.id, weekStartDate);
+      const selectableDates = getWeekDates(weekStartDate).filter(dateStr =>
+        deriveStateFromEntries(getWeeklyEntriesForDate(entries, dateStr)).kind !== 'unavailable'
+      );
+
+      if (selectableDates.length < 2) {
+        await interaction.update(buildEditorPayload(player, weekStartDate, {
+          notice: 'Markiere zuerst mindestens zwei Tage als verfügbar oder zeitlich eingeschränkt.'
+        }));
+        return true;
+      }
+
+      await interaction.update(buildEditorPayload(player, weekStartDate, { withEitherOrSelect: true }));
+      return true;
+    }
+
+    if (action === 'eitherclear') {
+      const player = upsertPlayer(interaction.user, { team_id: resolveTeamForInteraction(interaction)?.id });
+      const previous = getEitherOrChoice(player.id, weekStartDate);
+      clearEitherOrChoice(player.id, weekStartDate);
+      await interaction.update(buildEditorPayload(player, weekStartDate, {
+        notice: 'Die Entweder-oder-Verknüpfung wurde gelöscht.'
+      }));
+      if (previous) {
+        schedulePlannerRefresh(interaction.client, player.team_id, [previous.first_date, previous.second_date]);
+      }
+      return true;
+    }
   }
 
   if (interaction.isStringSelectMenu()) {
     if (action === 'timeday') {
       const dateStr = interaction.values[0];
       await interaction.showModal(buildTimeWindowModal(weekStartDate, dateStr));
+      return true;
+    }
+
+    if (action === 'eitherdays') {
+      const player = upsertPlayer(interaction.user, { team_id: resolveTeamForInteraction(interaction)?.id });
+      const selectedDates = [...new Set(interaction.values)].sort();
+      const weekDates = new Set(getWeekDates(weekStartDate));
+      const entries = getWeeklyEntries(player.id, weekStartDate);
+      const validSelection =
+        selectedDates.length === 2 &&
+        selectedDates.every(dateStr =>
+          weekDates.has(dateStr) &&
+          deriveStateFromEntries(getWeeklyEntriesForDate(entries, dateStr)).kind !== 'unavailable'
+        );
+
+      if (!validSelection) {
+        await interaction.update(buildEditorPayload(player, weekStartDate, {
+          notice: 'Bitte wähle genau zwei verfügbare Tage aus.',
+          withEitherOrSelect: true
+        }));
+        return true;
+      }
+
+      const assignedDates = getEitherOrAssignedDates(player.id, selectedDates[0], selectedDates[1]);
+      if (assignedDates.length > 1) {
+        await interaction.update(buildEditorPayload(player, weekStartDate, {
+          notice:
+            'Diese Verknüpfung kann nicht gespeichert werden, weil du bereits an beiden Tagen im Line-up stehst. ' +
+            'Bitte kläre zuerst mit einem Admin, an welchem Termin du nicht eingeplant wirst.',
+          withEitherOrSelect: true
+        }));
+        return true;
+      }
+
+      const previous = getEitherOrChoice(player.id, weekStartDate);
+      const saved = setEitherOrChoice(
+        player.id,
+        interaction.user.id,
+        weekStartDate,
+        selectedDates[0],
+        selectedDates[1]
+      );
+
+      await interaction.update(buildEditorPayload(player, weekStartDate, {
+        notice: `Gespeichert: Du wirst nur an **${formatEitherOrDate(saved.first_date)} oder ${formatEitherOrDate(saved.second_date)}** eingeplant.`
+      }));
+
+      const refreshDates = new Set([saved.first_date, saved.second_date]);
+      if (previous) {
+        refreshDates.add(previous.first_date);
+        refreshDates.add(previous.second_date);
+      }
+      schedulePlannerRefresh(interaction.client, player.team_id, [...refreshDates]);
       return true;
     }
   }

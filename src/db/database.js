@@ -112,6 +112,22 @@ db.exec(`
 `);
 
 db.exec(`
+  CREATE TABLE IF NOT EXISTS weekly_availability_choices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    player_id INTEGER NOT NULL,
+    week_start_date TEXT NOT NULL,
+    first_date TEXT NOT NULL,
+    second_date TEXT NOT NULL,
+    created_by_discord_user_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(player_id, week_start_date),
+    CHECK(first_date < second_date),
+    FOREIGN KEY(player_id) REFERENCES players(id)
+  );
+`);
+
+db.exec(`
   CREATE TABLE IF NOT EXISTS admin_audit_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     actor_discord_user_id TEXT NOT NULL,
@@ -720,6 +736,11 @@ db.exec(`
 db.exec(`
   CREATE INDEX IF NOT EXISTS idx_availability_rules_player_active
   ON availability_rules (player_id, active);
+`);
+
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_weekly_availability_choices_dates
+  ON weekly_availability_choices (player_id, first_date, second_date);
 `);
 
 db.exec(`
