@@ -121,6 +121,21 @@ function registerCronJobs(client) {
   );
 
   cron.schedule(
+    '*/15 * * * *',
+    async () => {
+      try {
+        const summary = await spielterminCommand.cleanupExpiredAdminCards(client);
+        if (summary.deleted || summary.alreadyMissing || summary.errors) {
+          console.log('[Cron] Abgelaufene Admin-Karten bereinigt:', summary);
+        }
+      } catch (error) {
+        console.error('[Cron] Bereinigung abgelaufener Admin-Karten fehlgeschlagen:', error);
+      }
+    },
+    { timezone: 'Europe/Berlin' }
+  );
+
+  cron.schedule(
     '*/2 * * * *',
     async () => {
       try {
@@ -158,13 +173,21 @@ client.once('clientReady', async () => {
     console.error('[Gegner-Archiv] Start-Synchronisierung fehlgeschlagen:', error);
   }
 
-  spielterminCommand.refreshAllStoredAdminCards(client)
-    .then(refreshedCards => {
+  (async () => {
+    try {
+      const cleanupSummary = await spielterminCommand.cleanupExpiredAdminCards(client);
+      console.log('[Spieltermin] Abgelaufene Admin-Karten beim Start bereinigt:', cleanupSummary);
+    } catch (error) {
+      console.error('[Spieltermin] Abgelaufene Admin-Karten konnten beim Start nicht bereinigt werden:', error);
+    }
+
+    try {
+      const refreshedCards = await spielterminCommand.refreshAllStoredAdminCards(client);
       console.log(`[Spieltermin] ${refreshedCards} gespeicherte Admin-Karten aktualisiert.`);
-    })
-    .catch(error => {
+    } catch (error) {
       console.error('[Spieltermin] Gespeicherte Admin-Karten konnten beim Start nicht aktualisiert werden:', error);
-    });
+    }
+  })();
 });
 
 client.on('interactionCreate', async interaction => {
