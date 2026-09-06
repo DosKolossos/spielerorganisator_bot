@@ -906,6 +906,74 @@ function isPlayerAvailableForEvent(playerId, event) {
   );
 }
 
+function getEitherOrAssignmentConflict(playerId, event) {
+  if (!playerId || !event?.id || !event?.option_date) return null;
+
+  return db.prepare(`
+    SELECT
+      choice.first_date,
+      choice.second_date,
+      other.id AS conflicting_event_id,
+      other.option_date AS conflicting_date,
+      other.title AS conflicting_title
+    FROM weekly_availability_choices choice
+    INNER JOIN team_calendar_events other
+      ON other.team_id = ?
+     AND other.option_date = CASE
+       WHEN choice.first_date = ? THEN choice.second_date
+       ELSE choice.first_date
+     END
+     AND other.id <> ?
+     AND other.status <> 'cancelled'
+    INNER JOIN team_calendar_assignments assignment
+      ON assignment.event_id = other.id
+     AND assignment.player_id = choice.player_id
+    WHERE choice.player_id = ?
+      AND (choice.first_date = ? OR choice.second_date = ?)
+    ORDER BY other.id ASC
+    LIMIT 1
+  `).get(event.team_id, event.option_date, event.id, playerId, event.option_date, event.option_date) || null;
+}
+
+function formatEitherOrDate(dateStr) {
+  return formatDateLongDE(dateStr);
+}
+
+function eitherOrConflictMessage(playerLabel, conflict) {
+  return (
+    `⛔ **${playerLabel}** ist bereits am **${formatEitherOrDate(conflict.conflicting_date)}** ` +
+    `bei Termin **#${conflict.conflicting_event_id}** eingeplant. ` +
+    'Wegen der Entweder-oder-Angabe ist eine Einplanung an beiden Tagen nicht möglich.'
+  );
+}
+
+function buildEitherOrConstraintText(event) {
+  if (!event?.option_date || !event?.team_id) return null;
+
+  const choices = db.prepare(`
+    SELECT
+      choice.first_date,
+      choice.second_date,
+      player.username,
+      player.global_name,
+      player.alias
+    FROM weekly_availability_choices choice
+    INNER JOIN players player ON player.id = choice.player_id
+    WHERE player.team_id = ?
+      AND player.is_archived = 0
+      AND (choice.first_date = ? OR choice.second_date = ?)
+    ORDER BY COALESCE(player.alias, player.global_name, player.username) COLLATE NOCASE ASC
+  `).all(event.team_id, event.option_date, event.option_date);
+
+  if (!choices.length) return null;
+
+  return choices
+    .map(choice =>
+      `${playerDisplay(choice)}: ${formatEitherOrDate(choice.first_date)} oder ${formatEitherOrDate(choice.second_date)}`
+    )
+    .join('\n');
+}
+
 function candidatePositionRank(candidate, roleLabel) {
   const primary = candidate.primary_position || candidate.preferred_position;
   const secondary = candidate.secondary_position;
@@ -930,13 +998,14 @@ function getTeamLineupPlayers(event) {
   `).all(event.team_id)
     .map(player => ({
       ...player,
-      is_available: isPlayerAvailableForEvent(player.id, event)
+      is_available: isPlayerAvailableForEvent(player.id, event),
+      either_or_conflict: getEitherOrAssignmentConflict(player.id, event)
     }));
 }
 
 function getSuggestedPlayers(event) {
   return getTeamLineupPlayers(event)
-    .filter(player => player.is_available);
+    .filter(player => player.is_available && !player.either_or_conflict);
 }
 
 function unavailableAssignmentWarning(candidate, event) {
@@ -946,8 +1015,15 @@ function unavailableAssignmentWarning(candidate, event) {
 }
 
 function saveLineupAssignment(eventId, roleLabel, candidate) {
-  const now = new Date().toISOString();
+  const event = getEventById(eventId);
   const isStandin = candidate.candidate_type === 'standin';
+
+  if (!isStandin) {
+    const conflict = getEitherOrAssignmentConflict(candidate.id, event);
+    if (conflict) return { saved: false, conflict };
+  }
+
+  const now = new Date().toISOString();
   db.prepare(`
     INSERT INTO team_calendar_assignments (
       event_id, role_label, player_label, assignee_type,
@@ -970,6 +1046,8 @@ function saveLineupAssignment(eventId, roleLabel, candidate) {
     now,
     now
   );
+
+  return { saved: true, conflict: null };
 }
 
 function generateLineupSuggestion(eventId, { overwrite = false } = {}) {
@@ -1013,7 +1091,11 @@ function generateLineupSuggestion(eventId, { overwrite = false } = {}) {
       continue;
     }
 
-    saveLineupAssignment(eventId, roleLabel, candidate);
+    const saveResult = saveLineupAssignment(eventId, roleLabel, candidate);
+    if (!saveResult.saved) {
+      missing.push(roleLabel);
+      continue;
+    }
     usedPlayerIds.add(candidate.id);
     assigned++;
   }
@@ -1382,7 +1464,8 @@ function getLineupCandidates(roleLabel, event) {
   `).all(event?.team_id).map(player => ({
     ...player,
     candidate_type: 'player',
-    is_available: isPlayerAvailableForEvent(player.id, event)
+    is_available: isPlayerAvailableForEvent(player.id, event),
+    either_or_conflict: getEitherOrAssignmentConflict(player.id, event)
   }));
 
   const standins = db.prepare(`
@@ -1415,15 +1498,21 @@ function getLineupCandidates(roleLabel, event) {
 function candidateOption(candidate, roleLabel) {
   const isStandin = candidate.candidate_type === 'standin';
   const isUnavailable = !isStandin && candidate.is_available === false;
+  const isEitherOrBlocked = !isStandin && Boolean(candidate.either_or_conflict);
   const prefix = isStandin ? '[Standin]' : `[${rosterStatusLabel(candidate.roster_status)}]`;
   const pos = candidate.primary_position || candidate.preferred_position || '-';
   const secondary = candidate.secondary_position ? `/${candidate.secondary_position}` : '';
   const riot = candidate.riot_game_name && candidate.riot_tag ? `${candidate.riot_game_name}#${candidate.riot_tag}` : 'Riot-ID fehlt';
   const matchHint = positionMatchesRole(candidate, roleLabel) ? 'passt zur Position' : 'andere Position';
-  const availabilityHint = isUnavailable ? '⚠️ abwesend' : (!isStandin && candidate.is_available === true ? 'verfügbar' : null);
+  const availabilityHint = isEitherOrBlocked
+    ? `⛔ bereits ${formatDateDE(candidate.either_or_conflict.conflicting_date)} eingeplant`
+    : isUnavailable
+      ? '⚠️ abwesend'
+      : (!isStandin && candidate.is_available === true ? 'verfügbar' : null);
+  const warningPrefix = isEitherOrBlocked ? '⛔ ' : isUnavailable ? '⚠️ ' : '';
 
   return {
-    label: `${isUnavailable ? '⚠️ ' : ''}${prefix} ${displayName(candidate)}`.slice(0, 100),
+    label: `${warningPrefix}${prefix} ${displayName(candidate)}`.slice(0, 100),
     value: `${isStandin ? 'standin' : 'player'}:${candidate.id}`,
     description: [availabilityHint, `${pos}${secondary}`, riot, matchHint].filter(Boolean).join(' • ').slice(0, 100)
   };
@@ -1502,6 +1591,7 @@ async function applyLineupChanges(eventId, roleMap) {
   const teamId = event?.team_id ?? null;
   const now = new Date().toISOString();
   let changed = 0;
+  const conflicts = [];
 
   for (const [roleLabel, rawValue] of roleMap.entries()) {
     const trimmed = String(rawValue || '').trim();
@@ -1518,26 +1608,28 @@ async function applyLineupChanges(eventId, roleMap) {
 
     const matchedPlayer = findPlayerByLabel(trimmed, teamId);
     const matchedStandin = matchedPlayer ? null : findStandinByLabel(trimmed);
-    const assigneeType = matchedPlayer ? 'player' : matchedStandin ? 'standin' : 'manual';
-    const playerLabel = matchedPlayer
-      ? playerDisplay(matchedPlayer)
-      : matchedStandin
-        ? matchedStandin.display_name
-        : trimmed;
+
+    if (matchedPlayer || matchedStandin) {
+      const candidate = matchedPlayer
+        ? { ...matchedPlayer, candidate_type: 'player' }
+        : { ...matchedStandin, candidate_type: 'standin' };
+      const saveResult = saveLineupAssignment(eventId, roleLabel, candidate);
+
+      if (!saveResult.saved) {
+        conflicts.push(`${roleLabel}: ${eitherOrConflictMessage(playerDisplay(matchedPlayer), saveResult.conflict)}`);
+        continue;
+      }
+
+      changed++;
+      continue;
+    }
 
     db.prepare(`
       INSERT INTO team_calendar_assignments (
-        event_id,
-        role_label,
-        player_label,
-        assignee_type,
-        player_id,
-        standin_id,
-        note,
-        created_at,
-        updated_at
+        event_id, role_label, player_label, assignee_type,
+        player_id, standin_id, note, created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
+      VALUES (?, ?, ?, 'manual', NULL, NULL, NULL, ?, ?)
       ON CONFLICT(event_id, role_label)
       DO UPDATE SET
         player_label = excluded.player_label,
@@ -1545,20 +1637,11 @@ async function applyLineupChanges(eventId, roleMap) {
         player_id = excluded.player_id,
         standin_id = excluded.standin_id,
         updated_at = excluded.updated_at
-    `).run(
-      eventId,
-      roleLabel,
-      playerLabel,
-      assigneeType,
-      matchedPlayer?.id ?? null,
-      matchedStandin?.id ?? null,
-      now,
-      now
-    );
+    `).run(eventId, roleLabel, trimmed, now, now);
     changed++;
   }
 
-  return changed;
+  return { changed, conflicts };
 }
 
 function playerCalendarTypeLabel(event) {
@@ -1826,6 +1909,7 @@ function buildEventCardPayload(eventId) {
   if (!event) return null;
 
   const assignments = getAssignments(eventId);
+  const eitherOrText = buildEitherOrConstraintText(event);
   const collapsed = Number(event.admin_card_collapsed) === 1;
   const exactTime =
     event.scheduled_start_at && event.scheduled_end_at
@@ -1844,6 +1928,10 @@ function buildEventCardPayload(eventId) {
       `👥 **Verfügbar:** ${buildAvailablePlayersForCard(event)}`,
       `${statusEmoji(event.status)} **Status:** ${statusLabel(event.status)}`
     );
+
+    if (eitherOrText) {
+      descriptionLines.push(`🔗 **Entweder/oder:**\n${eitherOrText}`);
+    }
 
     const embed = new EmbedBuilder()
       .setColor(statusColor(event.status))
@@ -1941,6 +2029,14 @@ function buildEventCardPayload(eventId) {
       text: 'Standard-Treffpunkt: Scrim 15 Min vorher / Prime League 30 Min vorher'
     })
     .setTimestamp(new Date(event.updated_at || event.created_at || Date.now()));
+
+  if (eitherOrText) {
+    embed.addFields({
+      name: 'Entweder/oder',
+      value: truncateField(eitherOrText),
+      inline: false
+    });
+  }
 
   return {
     embeds: [embed],
@@ -2119,6 +2215,41 @@ async function upsertAdminCardMessage(channel, eventId) {
 
   await syncPlayerCalendarCard(channel.client, eventId);
   return adminMessage;
+}
+
+async function refreshStoredAdminCardsForDates(client, teamId, dates) {
+  const uniqueDates = [...new Set((dates || []).filter(Boolean))];
+  if (!teamId || uniqueDates.length === 0) return 0;
+
+  const placeholders = uniqueDates.map(() => '?').join(', ');
+  const events = db.prepare(`
+    SELECT id, admin_channel_id, admin_message_id
+    FROM team_calendar_events
+    WHERE team_id = ?
+      AND option_date IN (${placeholders})
+      AND admin_channel_id IS NOT NULL
+      AND admin_message_id IS NOT NULL
+    ORDER BY option_date ASC, id ASC
+  `).all(teamId, ...uniqueDates);
+
+  let refreshed = 0;
+  for (const event of events) {
+    try {
+      const channel = await client.channels.fetch(event.admin_channel_id);
+      if (!channel || !channel.isTextBased()) continue;
+
+      const message = await channel.messages.fetch(event.admin_message_id).catch(() => null);
+      const payload = buildEventCardPayload(event.id);
+      if (!message || !payload) continue;
+
+      await message.edit(payload);
+      refreshed++;
+    } catch (error) {
+      console.warn(`[Spieltermin] Admin-Karte #${event.id} konnte nach der Verfügbarkeitsänderung nicht aktualisiert werden:`, error.message);
+    }
+  }
+
+  return refreshed;
 }
 
 async function refreshAllStoredAdminCards(client) {
@@ -2614,8 +2745,16 @@ async function handleStringSelectInteraction(interaction, parts) {
       return interaction.update({ content: 'Die ausgewählte Person wurde nicht gefunden.', components: [] });
     }
 
+    const saveResult = saveLineupAssignment(eventId, roleLabel, candidate);
+    if (!saveResult.saved) {
+      return interaction.update(buildAutoLineupPayload(
+        eventId,
+        messageId,
+        eitherOrConflictMessage(displayName(candidate), saveResult.conflict)
+      ));
+    }
+
     db.prepare(`DELETE FROM team_calendar_assignments WHERE event_id = ? AND player_id = ? AND role_label <> ?`).run(eventId, candidate.candidate_type === 'player' ? candidate.id : -1, roleLabel);
-    saveLineupAssignment(eventId, roleLabel, candidate);
     await refreshSpecificCard(interaction.channel, messageId, eventId);
     const warning = unavailableAssignmentWarning(candidate, event);
     return interaction.update(buildAutoLineupPayload(eventId, messageId, `**${roleLabel}** wurde auf **${displayName(candidate)}** gesetzt.${warning}`));
@@ -2638,7 +2777,15 @@ async function handleStringSelectInteraction(interaction, parts) {
       return interaction.update({ content: 'Die ausgewählte Person wurde nicht gefunden.', components: [] });
     }
 
-    saveLineupAssignment(eventId, roleLabel, candidate);
+    const saveResult = saveLineupAssignment(eventId, roleLabel, candidate);
+    if (!saveResult.saved) {
+      return interaction.update(buildAutoLineupPayload(
+        eventId,
+        messageId,
+        eitherOrConflictMessage(displayName(candidate), saveResult.conflict)
+      ));
+    }
+
     await refreshSpecificCard(interaction.channel, messageId, eventId);
     const warning = unavailableAssignmentWarning(candidate, event);
     return interaction.update(buildAutoLineupPayload(eventId, messageId, `Ersatz für **${roleLabel}**: **${displayName(candidate)}**.${warning}`));
@@ -2708,36 +2855,18 @@ async function handleStringSelectInteraction(interaction, parts) {
         });
       }
 
-      db.prepare(`
-        INSERT INTO team_calendar_assignments (
-          event_id,
-          role_label,
-          player_label,
-          assignee_type,
-          player_id,
-          standin_id,
-          note,
-          created_at,
-          updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
-        ON CONFLICT(event_id, role_label)
-        DO UPDATE SET
-          player_label = excluded.player_label,
-          assignee_type = excluded.assignee_type,
-          player_id = excluded.player_id,
-          standin_id = excluded.standin_id,
-          updated_at = excluded.updated_at
-      `).run(
-        eventId,
-        roleLabel,
-        label,
-        assigneeType,
-        playerId,
-        standinId,
-        now,
-        now
-      );
+      const saveResult = saveLineupAssignment(eventId, roleLabel, {
+        ...assignee,
+        candidate_type: assigneeType === 'standin' ? 'standin' : 'player'
+      });
+
+      if (!saveResult.saved) {
+        return interaction.update(buildLineupManagerPayload(
+          eventId,
+          messageId,
+          eitherOrConflictMessage(label, saveResult.conflict)
+        ));
+      }
 
       const warning = assigneeType === 'player' && !isPlayerAvailableForEvent(playerId, event)
         ? ' ⚠️ **Hinweis:** Dieser Spieler ist für den Termin als abwesend eingetragen.'
@@ -3032,7 +3161,7 @@ async function handleModalSubmitInteraction(interaction, parts) {
       });
     }
 
-    const changed = await applyLineupChanges(eventId, parsedLineup);
+    const { changed, conflicts } = await applyLineupChanges(eventId, parsedLineup);
     const assignments = getAssignments(eventId);
 
     await refreshSpecificCard(interaction.channel, messageId, eventId);
@@ -3042,7 +3171,8 @@ async function handleModalSubmitInteraction(interaction, parts) {
         (changed === 0
           ? 'Es wurden keine Rollen geändert.\n'
           : `Lineup für **#${eventId}** wurde aktualisiert.\n`) +
-        `Aktuell: **${buildLineupText(assignments)}**`,
+        (conflicts.length ? `\n${conflicts.join('\n')}\n` : '') +
+        `Aktuell: **${buildLineupText(assignments)}**`, 
       flags: MessageFlags.Ephemeral
     });
   }
@@ -3719,9 +3849,7 @@ const command = {
         });
       }
 
-      const lineupEvent = getEventById(id);
-      const lineupTeamId = lineupEvent?.team_id ?? null;
-      const roleMap = {
+      const roleMap = new Map(Object.entries({
         Top: interaction.options.getString('top'),
         Jgl: interaction.options.getString('jgl'),
         Mid: interaction.options.getString('mid'),
@@ -3729,68 +3857,9 @@ const command = {
         Supp: interaction.options.getString('supp'),
         Sub1: interaction.options.getString('sub1'),
         Sub2: interaction.options.getString('sub2')
-      };
+      }).filter(([, value]) => value !== null));
 
-      const now = new Date().toISOString();
-      let changed = 0;
-
-      for (const [roleLabel, value] of Object.entries(roleMap)) {
-        if (value === null) continue;
-
-        const trimmed = value.trim();
-
-        if (trimmed === '-' || trimmed === '') {
-          db.prepare(`
-            DELETE FROM team_calendar_assignments
-            WHERE event_id = ?
-              AND role_label = ?
-          `).run(id, roleLabel);
-          changed++;
-          continue;
-        }
-
-        const matchedPlayer = findPlayerByLabel(trimmed, lineupTeamId);
-        const matchedStandin = matchedPlayer ? null : findStandinByLabel(trimmed);
-        const assigneeType = matchedPlayer ? 'player' : matchedStandin ? 'standin' : 'manual';
-        const playerLabel = matchedPlayer
-          ? playerDisplay(matchedPlayer)
-          : matchedStandin
-            ? matchedStandin.display_name
-            : trimmed;
-
-        db.prepare(`
-          INSERT INTO team_calendar_assignments (
-            event_id,
-            role_label,
-            player_label,
-            assignee_type,
-            player_id,
-            standin_id,
-            note,
-            created_at,
-            updated_at
-          )
-          VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
-          ON CONFLICT(event_id, role_label)
-          DO UPDATE SET
-            player_label = excluded.player_label,
-            assignee_type = excluded.assignee_type,
-            player_id = excluded.player_id,
-            standin_id = excluded.standin_id,
-            updated_at = excluded.updated_at
-        `).run(
-          id,
-          roleLabel,
-          playerLabel,
-          assigneeType,
-          matchedPlayer?.id ?? null,
-          matchedStandin?.id ?? null,
-          now,
-          now
-        );
-        changed++;
-      }
-
+      const { changed, conflicts } = await applyLineupChanges(id, roleMap);
       const assignments = getAssignments(id);
       await refreshStoredEventCard(interaction.client, id);
 
@@ -3799,7 +3868,8 @@ const command = {
           (changed === 0
             ? 'Es wurden keine Rollen geändert.\n'
             : `Lineup für **#${id}** wurde aktualisiert.\n`) +
-          `Aktuell: **${buildLineupText(assignments)}**`,
+          (conflicts.length ? `\n${conflicts.join('\n')}\n` : '') +
+          `Aktuell: **${buildLineupText(assignments)}**`, 
         flags: MessageFlags.Ephemeral
       });
     }
@@ -3834,6 +3904,7 @@ const command = {
   buildEventCardPayload,
   upsertAdminCardMessage,
   refreshAllStoredAdminCards,
+  refreshStoredAdminCardsForDates,
   cleanupExpiredAdminCards,
   refreshStoredEventCard,
   refreshPlayerReferences,
