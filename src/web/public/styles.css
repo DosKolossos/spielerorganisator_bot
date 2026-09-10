@@ -64,6 +64,40 @@ h1 { font-size: clamp(2.1rem, 5vw, 4.2rem); line-height: 0.95; margin: 0; letter
   color: var(--muted);
   background: rgba(84, 216, 220, 0.06);
 }
+.login-panel {
+  width: min(520px, 100%);
+  margin: 40px auto;
+  padding: 28px;
+  text-align: center;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: rgba(13, 32, 43, 0.86);
+}
+.login-panel h2 { margin: 0; font-size: 1.65rem; }
+.login-panel > p:not(.eyebrow), .login-panel small { color: var(--muted); }
+.login-panel small { display: block; margin-top: 16px; }
+.login-button {
+  display: inline-flex;
+  margin-top: 10px;
+  padding: 11px 16px;
+  border-radius: 10px;
+  color: white;
+  background: #5865f2;
+  font-weight: 750;
+  text-decoration: none;
+}
+.login-button:hover { background: #6d78f5; }
+.planner-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+.planner-toolbar a { color: var(--aqua); text-decoration: none; }
+[hidden] { display: none !important; }
 .preview-notice strong { color: var(--aqua); margin-right: 8px; }
 .team-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; padding-bottom: 48px; }
 .team-panel {
