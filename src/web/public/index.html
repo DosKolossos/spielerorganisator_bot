@@ -24,6 +24,18 @@
     </header>
 
     <main>
+      <section id="login" class="login-panel" hidden>
+        <p class="eyebrow">GESCHÜTZTER BEREICH</p>
+        <h2>Mit Discord anmelden</h2>
+        <p>Der Teamplaner ist nur für freigeschaltete Coaches und Server-Administratoren sichtbar.</p>
+        <a class="login-button" href="/auth/login">Discord-Anmeldung öffnen</a>
+        <small id="login-status"></small>
+      </section>
+      <div id="planner" hidden>
+        <div class="planner-toolbar">
+          <span id="signed-in-user"></span>
+          <a href="/auth/logout">Abmelden</a>
+        </div>
       <aside class="preview-notice">
         <strong>Vorschau</strong>
         Diese erste Version zeigt echte Planerdaten, erlaubt aber noch keine Änderungen.
@@ -31,6 +43,7 @@
       <section id="teams" class="team-grid" aria-live="polite">
         <div class="loading">Termine werden geladen …</div>
       </section>
+      </div>
     </main>
 
     <template id="team-template">
