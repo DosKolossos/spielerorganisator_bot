@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>SchiggyGang Planer</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header class="hero">
+      <div>
+        <p class="eyebrow">SCHIGGYGANG ESPORTS</p>
+        <h1>Teamplaner</h1>
+        <p class="subtitle">Mainteam und Shinys in einer gemeinsamen Live-Ansicht.</p>
+      </div>
+      <div class="connection" aria-live="polite">
+        <span id="live-dot" class="dot"></span>
+        <div>
+          <strong id="live-label">Verbindung wird hergestellt</strong>
+          <small id="last-update">Noch keine Daten</small>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <aside class="preview-notice">
+        <strong>Vorschau</strong>
+        Diese erste Version zeigt echte Planerdaten, erlaubt aber noch keine Änderungen.
+      </aside>
+      <section id="teams" class="team-grid" aria-live="polite">
+        <div class="loading">Termine werden geladen …</div>
+      </section>
+    </main>
+
+    <template id="team-template">
+      <article class="team-panel">
+        <div class="team-heading">
+          <div>
+            <p class="team-kicker">TEAM</p>
+            <h2></h2>
+          </div>
+          <span class="event-count"></span>
+        </div>
+        <div class="events"></div>
+      </article>
+    </template>
+
+    <template id="event-template">
+      <article class="event-card">
+        <div class="event-topline">
+          <time class="event-date"></time>
+          <div class="badges"></div>
+        </div>
+        <h3></h3>
+        <p class="event-opponent"></p>
+        <dl class="event-meta"></dl>
+        <div class="event-section lineup-section">
+          <h4>Aufstellung</h4>
+          <div class="lineup"></div>
+        </div>
+        <div class="event-section availability-section">
+          <h4>Verfügbarkeit</h4>
+          <p class="availability"></p>
+          <div class="either-or"></div>
+        </div>
+        <a class="opgg-link" target="_blank" rel="noopener noreferrer">OP.GG öffnen</a>
+      </article>
+    </template>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>
