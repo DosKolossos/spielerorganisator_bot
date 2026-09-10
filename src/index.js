@@ -27,6 +27,7 @@ const { runBirthdayReminder } = require('./jobs/birthdayReminder');
 const { listTeams } = require('./services/teamService');
 const { syncAllDiscordScheduledEvents } = require('./services/discordScheduledEventService');
 const { syncUpcomingOpponents } = require('./services/archiveService');
+const { startPlannerWebServer } = require('./web/plannerServer');
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds]
@@ -230,5 +231,9 @@ client.on('interactionCreate', async interaction => {
     }
   }
 });
+
+// Die Webvorschau lauscht standardmäßig nur auf 127.0.0.1 und ist damit
+// ohne vorgeschalteten, authentifizierten Reverse-Proxy nicht öffentlich.
+startPlannerWebServer({ client });
 
 client.login(process.env.DISCORD_TOKEN);
