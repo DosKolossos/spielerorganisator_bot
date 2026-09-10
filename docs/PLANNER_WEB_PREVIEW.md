@@ -25,5 +25,22 @@ Gesundheitsprüfung:
 curl --fail http://127.0.0.1:3100/healthz
 ```
 
-Die öffentliche Subdomain wird erst nach Discord-Authentifizierung über einen
-HTTPS-Reverse-Proxy auf diesen lokalen Port weitergeleitet.
+## Discord-Anmeldung
+
+Vor der öffentlichen Freigabe werden folgende Umgebungsvariablen benötigt:
+
+- `DISCORD_CLIENT_SECRET`: Client Secret der vorhandenen Discord-Anwendung
+- `PLANNER_SESSION_SECRET`: zufälliger geheimer Wert mit mindestens 32 Byte
+- `PLANNER_PUBLIC_URL=https://planner.schiggygang.de`
+
+Als OAuth2-Weiterleitungsadresse muss in Discord exakt diese Adresse eingetragen sein:
+
+```text
+https://planner.schiggygang.de/auth/callback
+```
+
+Die Anmeldung fordert ausschließlich `identify` und `guilds.members.read` an.
+Zugriff erhalten der Serverbesitzer, Benutzer mit Administrator- oder
+Server-verwalten-Recht sowie Mitglieder mit der konfigurierten Admin-Rolle
+(standardmäßig `Schillok | Coaches`). Erst danach wird der HTTPS-Reverse-Proxy
+auf den lokalen Port weitergeleitet.

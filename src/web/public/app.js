@@ -4,6 +4,10 @@ const eventTemplate = document.querySelector('#event-template');
 const liveDot = document.querySelector('#live-dot');
 const liveLabel = document.querySelector('#live-label');
 const lastUpdate = document.querySelector('#last-update');
+const loginPanel = document.querySelector('#login');
+const loginStatus = document.querySelector('#login-status');
+const planner = document.querySelector('#planner');
+const signedInUser = document.querySelector('#signed-in-user');
 
 const dateFormatter = new Intl.DateTimeFormat('de-DE', {
   weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric'
@@ -177,5 +181,32 @@ function connectLiveUpdates() {
   };
 }
 
-loadInitialData();
-connectLiveUpdates();
+async function start() {
+  try {
+    const response = await fetch('/auth/me', { cache: 'no-store' });
+    if (response.status === 503) {
+      loginPanel.hidden = false;
+      loginStatus.textContent = 'Die Discord-Anmeldung wird noch eingerichtet.';
+      liveLabel.textContent = 'Einrichtung läuft';
+      return;
+    }
+    if (!response.ok) {
+      loginPanel.hidden = false;
+      liveLabel.textContent = 'Anmeldung erforderlich';
+      lastUpdate.textContent = 'Noch nicht angemeldet';
+      return;
+    }
+    const session = await response.json();
+    signedInUser.textContent = `Angemeldet als ${session.user.username}`;
+    planner.hidden = false;
+    await loadInitialData();
+    connectLiveUpdates();
+  } catch (error) {
+    loginPanel.hidden = false;
+    loginStatus.textContent = 'Der Anmeldestatus konnte nicht geladen werden.';
+    liveLabel.textContent = 'Verbindungsfehler';
+    console.error(error);
+  }
+}
+
+start();

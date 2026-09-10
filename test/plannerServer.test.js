@@ -64,9 +64,14 @@ test('Snapshot trennt Teams und enthält Aufstellung sowie Entweder-oder-Angabe'
 
 test('Webserver liefert Healthcheck, API und Oberfläche aus', async t => {
   const database = createTestDatabase();
+  const authenticator = {
+    handle: async () => false,
+    requireSession: () => ({ user: { id: 'test' } })
+  };
   const server = startPlannerWebServer({
     client: { isReady: () => true },
     database,
+    authenticator,
     host: '127.0.0.1',
     port: 0
   });

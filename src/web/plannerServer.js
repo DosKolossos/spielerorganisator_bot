@@ -1,6 +1,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const { createPlannerAuth } = require('./plannerAuth');
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const STATIC_FILES = new Map([
@@ -144,17 +145,26 @@ function applySecurityHeaders(response) {
   );
 }
 
-function startPlannerWebServer({ client, port, host, database } = {}) {
+function startPlannerWebServer({ client, port, host, database, authenticator } = {}) {
   if (process.env.PLANNER_WEB_ENABLED === 'false') return null;
 
   const listenPort = Number(port ?? process.env.PLANNER_WEB_PORT ?? 3100);
   const listenHost = host ?? process.env.PLANNER_WEB_HOST ?? '127.0.0.1';
   const plannerDb = database || require('../db/database');
+  const auth = authenticator || createPlannerAuth({ client });
   const liveClients = new Set();
 
-  const server = http.createServer((request, response) => {
+  const server = http.createServer(async (request, response) => {
     applySecurityHeaders(response);
     const url = new URL(request.url, 'http://localhost');
+
+    try {
+      if (await auth.handle(request, response, url)) return;
+    } catch (error) {
+      console.error('[Planner-Web] Authentifizierungsfehler:', error);
+      sendJson(response, 500, { error: 'authentication_failed' });
+      return;
+    }
 
     if (request.method !== 'GET') {
       sendJson(response, 405, { error: 'method_not_allowed' });
@@ -167,11 +177,13 @@ function startPlannerWebServer({ client, port, host, database } = {}) {
     }
 
     if (url.pathname === '/api/planner') {
+      if (!auth.requireSession(request, response)) return;
       sendJson(response, 200, buildPlannerSnapshot(client, plannerDb));
       return;
     }
 
     if (url.pathname === '/api/live') {
+      if (!auth.requireSession(request, response)) return;
       response.writeHead(200, {
         'Content-Type': 'text/event-stream; charset=utf-8',
         'Cache-Control': 'no-cache, no-transform',
