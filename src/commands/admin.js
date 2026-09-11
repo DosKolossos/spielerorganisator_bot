@@ -58,11 +58,11 @@ function canHandleInteraction(interaction) {
 
 function buildPlannerResultMessage(result) {
   if (!result.sent) {
-    return `Planner-Test abgeschlossen, aber nichts gesendet: ${result.reason || 'unbekannter Grund'}`;
+    return `Planer-Woche abgeschlossen, aber nichts gesendet: ${result.reason || 'unbekannter Grund'}`;
   }
 
   return (
-    `Planner-Test abgeschlossen.\n` +
+    `Planer-Woche im Admin-Kanal erstellt beziehungsweise aktualisiert.\n` +
     `Zeitraum: **${formatDateDE(result.startDate)} – ${formatDateDE(result.endDate)}**\n` +
     `Nachrichten/Karten: **${result.messages}**\n` +
     `Fehlzeiten: **${result.absenceCount}**\n` +
@@ -115,6 +115,7 @@ async function handleInteraction(interaction) {
     try {
       const result = await runSundayPlanner(interaction.client, {
         force: true,
+        publishAdminCards: true,
         teamId: team.id,
         startDate: normalized.startDate,
         endDate: normalized.endDate
@@ -124,9 +125,9 @@ async function handleInteraction(interaction) {
         content: `**${team.name}**\n${buildPlannerResultMessage(result)}`
       });
     } catch (error) {
-      console.error('[Admin] Planner-Test fehlgeschlagen:', error);
+      console.error('[Admin] Planer-Woche fehlgeschlagen:', error);
       await interaction.editReply({
-        content: 'Planner-Test ist fehlgeschlagen. Schau in die Logs.'
+        content: 'Planer-Woche ist fehlgeschlagen. Schau in die Logs.'
       });
     }
 
@@ -145,6 +146,9 @@ module.exports = {
     )
     .addSubcommand(sub =>
       sub.setName('test-planner').setDescription('Startet den Sonntags-Planer sofort mit auswählbarem Zeitraum.')
+    )
+    .addSubcommand(sub =>
+      sub.setName('planer-woche').setDescription('Erzeugt oder aktualisiert eine Woche im Admin-Kanal.')
     ),
 
   canHandleInteraction,
@@ -170,7 +174,7 @@ module.exports = {
       return;
     }
 
-    if (subcommand === 'test-planner') {
+    if (subcommand === 'test-planner' || subcommand === 'planer-woche') {
       try {
         await interaction.showModal(buildPlannerRangeModal());
       } catch (error) {
