@@ -61,22 +61,11 @@ Serverbesitzer, Server-Administratoren und Mitglieder mit der Rolle
 
 ## Drafter.lol
 
-Die manuelle Speicherung und das Kopieren eines Drafter-Links funktionieren ohne
-weitere Konfiguration. Für „Neu generieren“ muss der auf der Drafter.lol-Seite
-erzeugte API-Token ausschließlich auf dem Server hinterlegt werden:
+Die Oberfläche öffnet Drafter.lol direkt. Der dort manuell erzeugte Serienlink
+wird anschließend im Termin gespeichert und kann für den Gegner kopiert werden.
+Ein kostenpflichtiger API-Schlüssel ist nicht erforderlich. Nach einer
+Gegneränderung wird ein vorhandener Link als möglicherweise veraltet markiert.
 
-```text
-DRAFTER_API_TOKEN=...
-```
-
-Optional:
-
-```text
-DRAFTER_API_URL=https://api.drafter.lol/api/series
-DRAFTER_HOME_TEAM_NAME=SchiggyGang
-```
-
-Der Token gehört weder ins Repository noch in Discord. Für Prime-League-Termine
-wird absichtlich kein Drafter erzeugt oder verlangt; die Oberfläche zeigt ihn als
-externen Punkt an. Gegner-OP.GG, Gegneraufstellung und Ergebnis werden bei PRM erst
-nach dem Termin als Archiv-Nacharbeit angeboten.
+Für Prime-League-Termine wird absichtlich kein Drafter verlangt; die Oberfläche
+zeigt ihn als externen Punkt an. Gegner-OP.GG, Gegneraufstellung und Ergebnis
+werden bei PRM erst nach dem Termin als Archiv-Nacharbeit angeboten.
