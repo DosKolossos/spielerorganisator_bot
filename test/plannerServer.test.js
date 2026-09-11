@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { DatabaseSync } = require('node:sqlite');
 const { buildPlannerSnapshot, startPlannerWebServer } = require('../src/web/plannerServer');
-const { updateEvent, exportPreview, exportWeek, undoExport, copyPreviousWeek } = require('../src/services/plannerWebService');
+const { updateEvent, exportPreview, exportWeek, undoExport, copyPreviousWeek, createStandin } = require('../src/services/plannerWebService');
 
 function createTestDatabase() {
   const database = new DatabaseSync(':memory:');
@@ -17,7 +17,11 @@ function createTestDatabase() {
       window_end_at TEXT, scheduled_start_at TEXT, scheduled_end_at TEXT,
       meeting_scrim_at TEXT, meeting_primeleague_at TEXT,
       available_players_text TEXT, opgg_url TEXT, note TEXT,
-      is_streamed INTEGER, updated_at TEXT
+      is_streamed INTEGER, updated_at TEXT, planner_state TEXT NOT NULL DEFAULT 'open',
+      match_format TEXT NOT NULL DEFAULT '3_games', fearless_mode INTEGER NOT NULL DEFAULT 1,
+      drafter_url TEXT, drafter_opponent_name TEXT, opponent_lineup_json TEXT,
+      result_text TEXT, show_in_player_calendar INTEGER NOT NULL DEFAULT 0,
+      updated_by_discord_user_id TEXT, last_exported_at TEXT
     );
     CREATE TABLE team_calendar_assignments (
       id INTEGER PRIMARY KEY AUTOINCREMENT, event_id INTEGER, role_label TEXT,
@@ -32,21 +36,40 @@ function createTestDatabase() {
     CREATE TABLE weekly_availability_choices (
       player_id INTEGER, first_date TEXT, second_date TEXT
     );
+    CREATE TABLE availability_entries (
+      player_id INTEGER, start_at TEXT, end_at TEXT, reason TEXT,
+      approval_status TEXT, updated_at TEXT
+    );
+    CREATE TABLE standins (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, display_name TEXT, riot_game_name TEXT,
+      riot_tag TEXT, riot_region TEXT, preferred_position TEXT, note TEXT,
+      is_active INTEGER, promoted_to_player_id INTEGER, team_id INTEGER,
+      created_by_discord_user_id TEXT, updated_by_discord_user_id TEXT,
+      created_at TEXT, updated_at TEXT
+    );
 
     INSERT INTO teams VALUES (1, 'SchiggyGang Main', 'main', 'MAIN', 1, 1);
     INSERT INTO teams VALUES (2, 'SchiggyGang Shinys', 'shinys', 'SHINY', 1, 0);
-    INSERT INTO team_calendar_events VALUES (
+    INSERT INTO team_calendar_events (
+      id, team_id, title, opponent_name, event_type, status, option_date,
+      window_start_at, window_end_at, scheduled_start_at, scheduled_end_at,
+      meeting_scrim_at, meeting_primeleague_at, available_players_text,
+      opgg_url, note, is_streamed, updated_at, planner_state, match_format,
+      fearless_mode, show_in_player_calendar
+    ) VALUES (
       10, 1, 'Scrim', 'Beispiel Gaming', 'scrim', 'confirmed',
       '2099-04-06', '2099-04-06T20:00:00+02:00', '2099-04-06T22:00:00+02:00',
       '2099-04-06T20:00:00+02:00', '2099-04-06T22:00:00+02:00',
       '2099-04-06T19:45:00+02:00', NULL, '5 verfügbar',
-      'https://www.op.gg/multisearch/euw', NULL, 0, '2099-04-01T12:00:00Z'
+      'https://www.op.gg/multisearch/euw', NULL, 0, '2099-04-01T12:00:00Z',
+      'preplanned', '3_games', 1, 0
     );
     INSERT INTO team_calendar_assignments (
       event_id, role_label, player_label, assignee_type, player_id, created_at, updated_at
     ) VALUES (10, 'Top', 'Joe Kurt', 'player', 7, '2099-04-01', '2099-04-01');
     INSERT INTO players VALUES (7, 1, 'Joe Kurt', NULL, 'joe', 'discord-7', 'main', 'Top', NULL, 0);
     INSERT INTO weekly_availability_choices VALUES (7, '2099-04-06', '2099-04-08');
+    INSERT INTO availability_entries VALUES (7, '2099-04-06 00:00', '2099-04-06 18:00', 'später', 'approved', '2099-04-01');
   `);
   return database;
 }
@@ -59,11 +82,12 @@ test('Snapshot trennt Teams und enthält Aufstellung sowie Entweder-oder-Angabe'
   assert.equal(snapshot.teams.length, 2);
   assert.equal(snapshot.teams[0].events[0].opponent, 'Beispiel Gaming');
   assert.deepEqual(snapshot.teams[0].events[0].lineup, [
-    { role: 'Top', player: 'Joe Kurt', type: 'player', playerId: 7 }
+    { role: 'Top', player: 'Joe Kurt', type: 'player', playerId: 7, standinId: null }
   ]);
   assert.deepEqual(snapshot.teams[0].events[0].eitherOr, [
     { player: 'Joe Kurt', playerId: 7, firstDate: '2099-04-06', secondDate: '2099-04-08' }
   ]);
+  assert.equal(snapshot.teams[0].roster[0].days['2099-04-06'].restriction, 'ab 18:00');
   assert.equal(snapshot.teams[1].events.length, 0);
   database.close();
 });
@@ -93,6 +117,45 @@ test('Aufgabenlogik erkennt die gespeicherte eigene Aufstellung', () => {
     week: '2099-04-06', today: '2099-04-05'
   });
   assert.equal(snapshot.tasks[0].label, 'Drafter fehlt');
+  database.close();
+});
+
+test('Open-Platzhalter erzeugen keine Aufgaben und sind nicht bearbeitbar', () => {
+  const database = createTestDatabase();
+  database.prepare(`UPDATE team_calendar_events SET event_type = 'open' WHERE id = 10`).run();
+  const snapshot = buildPlannerSnapshot({ isReady: () => true }, database, {
+    week: '2099-04-06', today: '2099-04-05'
+  });
+  assert.equal(snapshot.tasks.length, 0);
+  assert.throws(() => updateEvent(database, 10, { title: 'Nicht erlaubt' }, 'coach'), /event_not_editable/);
+  database.prepare(`UPDATE team_calendar_events SET event_type = 'scrim', planner_state = 'open' WHERE id = 10`).run();
+  assert.throws(() => updateEvent(database, 10, { title: 'Auch nicht erlaubt' }, 'coach'), /event_not_editable/);
+  database.close();
+});
+
+test('Teamgebundener Stand-in kann im Planner angelegt werden', () => {
+  const database = createTestDatabase();
+  const standin = createStandin(database, {
+    teamId: 1, displayName: 'Ersatz', riotGameName: 'Ersatzname', riotTag: 'EUW', preferredPosition: 'Jgl'
+  }, 'coach');
+  assert.equal(standin.teamId, 1);
+  assert.equal(standin.preferredPosition, 'Jgl');
+  assert.equal(database.prepare('SELECT team_id FROM standins WHERE id = ?').get(standin.id).team_id, 1);
+  updateEvent(database, 10, {
+    lineup: [
+      { role: 'Top', preserve: true },
+      { role: 'Jgl', standinId: standin.id },
+      { role: 'Mid' }, { role: 'ADC' }, { role: 'Supp' }
+    ]
+  }, 'coach');
+  const assignment = database.prepare(`
+    SELECT assignee_type, player_id, standin_id, player_label
+    FROM team_calendar_assignments WHERE event_id = 10 AND role_label = 'Jgl'
+  `).get();
+  assert.equal(assignment.assignee_type, 'standin');
+  assert.equal(assignment.player_id, null);
+  assert.equal(assignment.standin_id, standin.id);
+  assert.equal(assignment.player_label, 'Ersatz');
   database.close();
 });
 
@@ -169,16 +232,6 @@ test('Webserver liefert Healthcheck, API und Oberfläche aus', async t => {
 test('Terminbearbeitung validiert Auswahlfelder und Export erfasst nur Planner-Karten', async () => {
   const database = createTestDatabase();
   database.exec(`
-    ALTER TABLE team_calendar_events ADD COLUMN planner_state TEXT NOT NULL DEFAULT 'open';
-    ALTER TABLE team_calendar_events ADD COLUMN match_format TEXT NOT NULL DEFAULT '3_games';
-    ALTER TABLE team_calendar_events ADD COLUMN fearless_mode INTEGER NOT NULL DEFAULT 1;
-    ALTER TABLE team_calendar_events ADD COLUMN drafter_url TEXT;
-    ALTER TABLE team_calendar_events ADD COLUMN drafter_opponent_name TEXT;
-    ALTER TABLE team_calendar_events ADD COLUMN opponent_lineup_json TEXT;
-    ALTER TABLE team_calendar_events ADD COLUMN result_text TEXT;
-    ALTER TABLE team_calendar_events ADD COLUMN show_in_player_calendar INTEGER NOT NULL DEFAULT 0;
-    ALTER TABLE team_calendar_events ADD COLUMN updated_by_discord_user_id TEXT;
-    ALTER TABLE team_calendar_events ADD COLUMN last_exported_at TEXT;
     CREATE TABLE planner_exports (
       id INTEGER PRIMARY KEY AUTOINCREMENT, week_start_date TEXT,
       actor_discord_user_id TEXT, changes_json TEXT, created_at TEXT,
@@ -227,6 +280,9 @@ test('Terminbearbeitung validiert Auswahlfelder und Export erfasst nur Planner-K
   const undone = await undoExport({}, database, '2099-04-06', 'coach-1', async () => {});
   assert.equal(undone.restored, 1);
   assert.equal(database.prepare('SELECT show_in_player_calendar FROM team_calendar_events WHERE id = 10').get().show_in_player_calendar, 0);
+
+  database.prepare(`UPDATE team_calendar_events SET event_type = 'open', planner_state = 'preplanned' WHERE id = 10`).run();
+  assert.equal(exportPreview(database, '2099-04-06').total, 0);
 
   database.close();
 });
