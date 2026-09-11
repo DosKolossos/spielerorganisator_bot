@@ -761,6 +761,15 @@ function insertWeeklyCheckinEntries({ playerId, actorDiscordUserId, dateStr, sta
 }
 
 function setDayState(playerId, actorDiscordUserId, dateStr, state) {
+  const before = deriveStateFromEntries(getWeeklyEntriesForDate(
+    db.prepare(`
+      SELECT * FROM availability_entries
+      WHERE player_id = ? AND source = 'weekly_checkin'
+        AND end_at >= ? AND start_at <= ?
+      ORDER BY start_at ASC
+    `).all(playerId, `${dateStr} 00:00`, `${dateStr} 23:59`),
+    dateStr
+  ));
   deleteWeeklyCheckinForDay(playerId, dateStr);
   if (state.kind !== 'available') {
     insertWeeklyCheckinEntries({ playerId, actorDiscordUserId, dateStr, state });
@@ -768,6 +777,50 @@ function setDayState(playerId, actorDiscordUserId, dateStr, state) {
   if (state.kind === 'unavailable') {
     clearEitherOrChoiceForDate(playerId, dateStr);
   }
+  logLatePlannerChange(playerId, actorDiscordUserId, dateStr, before, state);
+}
+
+function berlinDateTime() {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Europe/Berlin', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
+  }).formatToParts(new Date()).filter(part => part.type !== 'literal').map(part => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
+}
+
+function plannerCutoffFor(dateStr) {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  const target = new Date(Date.UTC(year, month - 1, day));
+  const weekday = target.getUTCDay() || 7;
+  target.setUTCDate(target.getUTCDate() - weekday);
+  return `${target.toISOString().slice(0, 10)} 20:00`;
+}
+
+function stateSummary(state) {
+  if (state.kind === 'available') return 'verfügbar';
+  if (state.kind === 'unavailable') return 'nicht verfügbar';
+  if (state.kind === 'window') return `${state.from || '?'}–${state.until || '?'} verfügbar`;
+  return 'teilweise verfügbar';
+}
+
+function logLatePlannerChange(playerId, actorDiscordUserId, dateStr, before, after) {
+  if (berlinDateTime() < plannerCutoffFor(dateStr) || JSON.stringify(before) === JSON.stringify(after)) return;
+  const player = db.prepare(`SELECT id, team_id, alias, global_name, username FROM players WHERE id = ?`).get(playerId);
+  if (!player) return;
+  const name = player.alias || player.global_name || player.username || `Spieler #${player.id}`;
+  db.prepare(`
+    INSERT INTO planner_change_log (
+      team_id, player_id, change_type, summary, details_json,
+      actor_discord_user_id, created_at
+    ) VALUES (?, ?, 'late_availability', ?, ?, ?, ?)
+  `).run(
+    player.team_id,
+    playerId,
+    `${name}: ${dateStr} nach Planungsbeginn auf „${stateSummary(after)}“ geändert`,
+    JSON.stringify({ date: dateStr, before, after }),
+    actorDiscordUserId,
+    new Date().toISOString()
+  );
 }
 
 function toggleDayState(player, actorDiscordUserId, dateStr, weekStartDate) {
