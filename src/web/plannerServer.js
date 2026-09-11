@@ -10,7 +10,6 @@ const {
   exportPreview,
   exportWeek,
   undoExport,
-  generateDrafter,
   copyPreviousWeek
 } = require('../services/plannerWebService');
 
@@ -102,17 +101,10 @@ function startPlannerWebServer({ client, port, host, database, authenticator } =
       }
       const body = await parseBody(request);
       const eventMatch = url.pathname.match(/^\/api\/events\/(\d+)$/);
-      const drafterMatch = url.pathname.match(/^\/api\/events\/(\d+)\/drafter$/);
       if (eventMatch && request.method === 'PATCH') {
         const event = updateEvent(plannerDb, Number(eventMatch[1]), body, session.user.id);
         await require('../commands/spieltermin').refreshStoredEventCard(client, event.id);
         sendJson(response, 200, { event });
-        return;
-      }
-      if (drafterMatch && request.method === 'POST') {
-        const result = await generateDrafter(plannerDb, Number(drafterMatch[1]), session.user.id);
-        await require('../commands/spieltermin').refreshStoredEventCard(client, Number(drafterMatch[1]));
-        sendJson(response, 200, result);
         return;
       }
       if (url.pathname === '/api/export' && request.method === 'POST') {
