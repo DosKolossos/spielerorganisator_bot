@@ -20,7 +20,8 @@
         <section id="matchday" class="panel"><div class="section-title"><h2>Matchday</h2><span class="hint">heute und morgen</span></div><div id="matchday-items" class="matchday-grid"></div></section>
       </div>
     </main>
-    <dialog id="event-dialog"><form id="event-form"><div class="dialog-heading"><div><p class="eyebrow">TERMIN BEARBEITEN</p><h2 id="event-dialog-title"></h2></div><button type="button" class="icon-button" data-close>×</button></div><input id="event-id" type="hidden"><div class="form-grid">
+    <dialog id="event-dialog"><form id="event-form"><div class="dialog-heading"><div><p id="event-dialog-mode" class="eyebrow">TERMIN BEARBEITEN</p><h2 id="event-dialog-title"></h2></div><button type="button" class="icon-button" data-close>×</button></div><input id="event-id" type="hidden"><input id="event-team-id" type="hidden"><div class="form-grid">
+      <label>Datum<input id="event-date" type="date" required></label><label>Beginn<input id="event-time" type="time" value="19:00" required></label>
       <label>Titel<input id="event-title" maxlength="120"></label><label>Gegner<input id="event-opponent" maxlength="120"></label>
       <label>Terminart<select id="event-type"><option value="open">Offen</option><option value="scrim">Scrim</option><option value="primeleague">PRM</option><option value="training">Training</option><option value="flex">Flex</option><option value="other">Sonstiges</option></select></label>
       <label>Status<select id="event-status"><option value="pending">Offen</option><option value="fixed">Fix</option><option value="cancelled">Abgesagt</option></select></label>
