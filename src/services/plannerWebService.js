@@ -138,7 +138,9 @@ function buildPlannerSnapshot(client, database, options = {}) {
       ${optionalEvent('result_text')}, ${optionalEvent('show_in_player_calendar')}
     FROM team_calendar_events
     WHERE status NOT IN ('deleted', 'cancelled') AND option_date BETWEEN ? AND ?
-    ORDER BY option_date, COALESCE(scheduled_start_at, window_start_at), id
+    ORDER BY option_date,
+      substr(replace(COALESCE(scheduled_start_at, window_start_at), 'T', ' '), 12, 5),
+      id
   `).all(weekStart, weekEnd);
 
   const assignmentColumns = columns(database, 'team_calendar_assignments');

@@ -20,6 +20,12 @@ function eventTitle(event) {
   return event.title;
 }
 
+function compareEvents(left, right) {
+  const leftKey = `${left.date || ''} ${String(left.startsAt || '').slice(11, 16)}`;
+  const rightKey = `${right.date || ''} ${String(right.startsAt || '').slice(11, 16)}`;
+  return leftKey.localeCompare(rightKey) || Number(left.id || 0) - Number(right.id || 0);
+}
+
 function element(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -59,7 +65,9 @@ function eventCard(event) {
 }
 
 function editableEventsForDay(team, date) {
-  return team.events.filter(event => event.date === date && event.type !== 'open' && event.plannerState !== 'open');
+  return team.events
+    .filter(event => event.date === date && event.type !== 'open' && event.plannerState !== 'open')
+    .sort(compareEvents);
 }
 
 function chooseLineupEvent(events) {
@@ -114,7 +122,7 @@ function renderTeam(team, dates) {
     const day = element('div', 'day-cell add-event-cell');
     day.dataset.teamId = team.id;
     day.dataset.date = date;
-    const items = team.events.filter(event => event.date === date && event.type !== 'open' && event.plannerState !== 'open');
+    const items = editableEventsForDay(team, date);
     if (!items.length) day.append(element('span', 'empty-day', '+ Termin'));
     else items.forEach(event => day.append(eventCard(event)));
     eventsRow.append(day);
@@ -176,7 +184,8 @@ function renderMatchday() {
     .flatMap(team => team.events.map(event => ({ ...event, team: team.shortName || team.name })))
     .filter(event => dates.has(event.date))
     .filter(event => event.type !== 'open' && !['open', 'excluded'].includes(event.plannerState))
-    .filter(event => scheduledStatuses.has(event.status) || ['preplanned', 'published'].includes(event.plannerState));
+    .filter(event => scheduledStatuses.has(event.status) || ['preplanned', 'published'].includes(event.plannerState))
+    .sort(compareEvents);
   if (!events.length) return root.append(element('p', 'empty-copy', 'Heute und morgen ist nichts angesetzt.'));
   events.forEach(event => { const item = eventCard(event); item.prepend(element('span', 'team-tag', event.team)); root.append(item); });
 }

@@ -178,6 +178,17 @@ test('Termin kann aus einem leeren Kalenderfeld mit 19 Uhr angelegt werden', () 
   database.close();
 });
 
+test('Termine mit verschiedenen Datumsformaten bleiben chronologisch', () => {
+  const database = createTestDatabase();
+  createEvent(database, {
+    teamId: 1, date: '2099-04-06', startTime: '19:00', type: 'training',
+    title: 'Früher Termin', plannerState: 'preplanned'
+  }, 'coach');
+  const snapshot = buildPlannerSnapshot({ isReady: () => true }, database, { week: '2099-04-06' });
+  assert.deepEqual(snapshot.teams[0].events.map(event => String(event.startsAt).slice(11, 16)), ['19:00', '20:00']);
+  database.close();
+});
+
 test('Vorwoche kopieren übernimmt Struktur, aber keine Gegnerdaten', () => {
   const database = new DatabaseSync(':memory:');
   database.exec(`
