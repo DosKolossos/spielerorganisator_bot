@@ -757,7 +757,7 @@ function formatPlannerManualEvent(event, { urgent = false } = {}) {
 }
 
 async function runSundayPlanner(client, options = {}) {
-  const { force = false } = options;
+  const { force = false, publishAdminCards = false } = options;
   const team = options.teamId ? getTeamById(options.teamId) : getDefaultTeam();
   if (!team || !team.is_active) {
     return { skipped: false, sent: false, reason: 'team_not_found' };
@@ -861,11 +861,6 @@ async function runSundayPlanner(client, options = {}) {
   const suggestions = [];
   const weekEndDate = windowEndDate;
 
-  // Zuerst alle vorhandenen Karten des Zeitraums entfernen. Das ist wichtig
-  // für Altbestände, bei denen bereits zwei automatische Datensätze und damit
-  // zwei Discord-Nachrichten für denselben Tag existieren.
-  await clearCurrentWeekPostedCards(client, teamId, plannerStartDate, weekEndDate);
-
   for (const dateStr of windowDates) {
     const suggestion = buildDailySuggestion(players, upcomingEntries, rules, dateStr);
     if (!suggestion) continue;
@@ -930,6 +925,23 @@ async function runSundayPlanner(client, options = {}) {
   ORDER BY option_date ASC, COALESCE(scheduled_start_at, window_start_at) ASC, id ASC
 `).all(teamId, weekEndDate);
 
+  if (!publishAdminCards) {
+    return {
+      skipped: false,
+      sent: false,
+      reason: 'database_only',
+      teamId,
+      teamName: team.name,
+      startDate: plannerStartDate,
+      endDate: windowEndDate,
+      windowDays: plannerWindowDays,
+      messages: 0,
+      absenceCount: mergedAbsenceItems.length,
+      suggestionCount: suggestions.length,
+      weekEventCount: orderedWeekEvents.length
+    };
+  }
+
   const overviewLines = [];
   overviewLines.push('📋 **Wochenplanung – Rohübersicht**');
   overviewLines.push(`Erstellt am: **${new Date().toLocaleString('de-DE', { timeZone: 'Europe/Berlin' })}**`);
@@ -976,7 +988,7 @@ async function runSundayPlanner(client, options = {}) {
     await adminChannel.send('Keine Termine im Planungszeitraum gefunden.');
   } else {
     for (const event of orderedWeekEvents) {
-      await upsertAdminCardMessage(adminChannel, event.id);
+      await upsertAdminCardMessage(adminChannel, event.id, { syncPlayerCalendar: false });
     }
   }
 
@@ -1070,57 +1082,6 @@ async function refreshPlannerDates(client, { teamId, dates }) {
   }
 
   return { refreshed, skipped: false, teamId, dates: uniqueDates };
-}
-
-async function clearCurrentWeekPostedCards(client, teamId, weekStartDate, weekEndDate) {
-  const events = db.prepare(`
-    SELECT
-      id,
-      admin_channel_id,
-      admin_message_id,
-      player_channel_id,
-      player_message_id
-    FROM team_calendar_events
-    WHERE team_id = ?
-      AND option_date >= ?
-      AND option_date <= ?
-  `).all(teamId, weekStartDate, weekEndDate);
-
-  for (const event of events) {
-    if (event.admin_channel_id && event.admin_message_id) {
-      try {
-        const channel = await client.channels.fetch(event.admin_channel_id);
-        if (channel && channel.isTextBased()) {
-          const message = await channel.messages.fetch(event.admin_message_id).catch(() => null);
-          if (message) {
-            await message.delete().catch(() => null);
-          }
-        }
-      } catch (_) { }
-    }
-
-    if (event.player_channel_id && event.player_message_id) {
-      try {
-        const channel = await client.channels.fetch(event.player_channel_id);
-        if (channel && channel.isTextBased()) {
-          const message = await channel.messages.fetch(event.player_message_id).catch(() => null);
-          if (message) {
-            await message.delete().catch(() => null);
-          }
-        }
-      } catch (_) { }
-    }
-
-    db.prepare(`
-      UPDATE team_calendar_events
-      SET admin_channel_id = NULL,
-          admin_message_id = NULL,
-          player_channel_id = NULL,
-          player_message_id = NULL,
-          updated_at = ?
-      WHERE id = ?
-    `).run(new Date().toISOString(), event.id);
-  }
 }
 
 module.exports = { runSundayPlanner, refreshPlannerDates };
