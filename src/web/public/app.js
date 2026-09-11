@@ -14,6 +14,12 @@ const stateLabels = { open: 'Offen', preplanned: 'Vorgeplant', published: 'Verö
 const dateLabel = value => new Intl.DateTimeFormat('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit', timeZone: 'UTC' }).format(new Date(`${value}T12:00:00Z`));
 const timeLabel = value => value ? `${String(value).slice(11, 16)} Uhr` : 'offen';
 
+function eventTitle(event) {
+  if (event.opponent) return `vs. ${event.opponent}`;
+  if (!event.title || /^Terminoption\s*[–-]/i.test(event.title)) return typeLabels[event.type] || 'Termin';
+  return event.title;
+}
+
 function element(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -40,7 +46,7 @@ function eventCard(event) {
   card.type = 'button';
   card.dataset.eventId = event.id;
   const top = element('span', 'event-top');
-  top.append(element('strong', '', event.opponent ? `vs. ${event.opponent}` : event.title || typeLabels[event.type]), element('span', 'state-pill', stateLabels[event.plannerState]));
+  top.append(element('strong', '', eventTitle(event)), element('span', 'state-pill', stateLabels[event.plannerState]));
   card.append(top, element('span', 'event-detail', `${timeLabel(event.startsAt)} · ${typeLabels[event.type] || event.type}`));
   if (event.result) card.append(element('span', 'result', `Ergebnis ${event.result}`));
   if (event.lineup.length) card.append(element('span', 'mini-lineup', event.lineup.map(slot => slot.player).join(' · ')));
@@ -53,8 +59,17 @@ function eventCard(event) {
 function availabilityCell(day) {
   const cell = element('span', `availability ${day.state}`);
   cell.title = day.eitherOr ? `${day.label} · Entweder/oder mit ${dateLabel(day.eitherOr.firstDate === day.date ? day.eitherOr.secondDate : day.eitherOr.firstDate)}` : day.label;
-  cell.textContent = `${day.state === 'available' ? '●' : day.state === 'partial' ? '◐' : '–'}${day.eitherOr ? ' ↔' : ''}`;
+  cell.append(element('span', 'availability-symbol', `${day.state === 'available' ? '●' : day.state === 'partial' ? '◐' : '–'}${day.eitherOr ? ' ↔' : ''}`));
+  if (day.state === 'partial' && day.restriction) cell.append(element('small', 'availability-restriction', day.restriction));
   return cell;
+}
+
+function eventEntry(event) {
+  const wrapper = element('div', 'event-entry');
+  const lineup = element('button', 'lineup-quick', 'Aufstellung');
+  lineup.type = 'button'; lineup.dataset.lineupEventId = event.id;
+  wrapper.append(eventCard(event), lineup);
+  return wrapper;
 }
 
 function renderTeam(team, dates) {
@@ -74,9 +89,9 @@ function renderTeam(team, dates) {
   eventsRow.append(element('div', 'row-label muted', 'Termine'));
   for (const date of dates) {
     const day = element('div', 'day-cell');
-    const items = team.events.filter(event => event.date === date);
+    const items = team.events.filter(event => event.date === date && event.type !== 'open' && event.plannerState !== 'open');
     if (!items.length) day.append(element('span', 'empty-day', '—'));
-    else items.forEach(event => day.append(eventCard(event)));
+    else items.forEach(event => day.append(eventEntry(event)));
     eventsRow.append(day);
   }
   section.append(eventsRow);
@@ -110,6 +125,7 @@ function renderTeam(team, dates) {
 function renderTasks(tasks) {
   const root = $('#tasks'); root.replaceChildren();
   const openTasks = tasks.filter(task => task.level !== 'complete');
+  const badge = $('#task-count'); badge.textContent = String(openTasks.length); badge.hidden = openTasks.length === 0;
   if (!openTasks.length) return root.append(element('p', 'empty-copy success-copy', '✓ Alle Aufgaben erledigt.'));
   openTasks.forEach(task => {
     const button = element('button', `task task-${task.level}`, `${task.level === 'complete' ? '✓' : task.level === 'external' ? '↗' : '!' } ${task.label} · ${dateLabel(task.date)}`);
@@ -120,6 +136,7 @@ function renderTasks(tasks) {
 function renderChanges(changes) {
   const root = $('#changes'); root.replaceChildren();
   const open = changes.filter(change => !change.acknowledgedAt);
+  const badge = $('#change-count'); badge.textContent = String(open.length); badge.hidden = open.length === 0;
   if (!open.length) return root.append(element('p', 'empty-copy', 'Keine neuen Änderungen.'));
   open.slice(0, 6).forEach(change => root.append(element('div', 'change', change.summary)));
 }
@@ -133,7 +150,7 @@ function renderMatchday() {
   const events = snapshot.teams
     .flatMap(team => team.events.map(event => ({ ...event, team: team.shortName || team.name })))
     .filter(event => dates.has(event.date))
-    .filter(event => event.type !== 'open' && event.plannerState !== 'excluded')
+    .filter(event => event.type !== 'open' && !['open', 'excluded'].includes(event.plannerState))
     .filter(event => scheduledStatuses.has(event.status) || ['preplanned', 'published'].includes(event.plannerState));
   if (!events.length) return root.append(element('p', 'empty-copy', 'Heute und morgen ist nichts angesetzt.'));
   events.forEach(event => { const item = eventCard(event); item.prepend(element('span', 'team-tag', event.team)); root.append(item); });
@@ -156,16 +173,18 @@ function render(data) {
 function findEvent(id) { return snapshot.teams.flatMap(team => team.events).find(event => event.id === Number(id)); }
 function findEventTeam(id) { return snapshot.teams.find(team => team.events.some(event => event.id === Number(id))); }
 
-function openEvent(id) {
+function openEvent(id, options = {}) {
   const event = findEvent(id); if (!event) return;
+  if (event.type === 'open' || event.plannerState === 'open') return toast('Offene Terminoptionen werden erst in Discord zu einem echten Termin gemacht.', true);
   const team = findEventTeam(id);
-  $('#event-id').value = event.id; $('#event-dialog-title').textContent = `${dateLabel(event.date)} · ${event.title}`;
+  $('#event-id').value = event.id; $('#event-dialog-title').textContent = `${dateLabel(event.date)} · ${eventTitle(event)}`;
   $('#event-title').value = event.title || ''; $('#event-opponent').value = event.opponent || ''; $('#event-type').value = event.type || 'open';
   $('#event-status').value = [...$('#event-status').options].some(option => option.value === event.status) ? event.status : 'pending';
   $('#event-planner-state').value = event.plannerState; $('#event-format').value = event.matchFormat; $('#event-fearless').value = event.fearless ? '1' : '0';
   $('#event-opgg').value = event.opggUrl || ''; $('#event-drafter').value = event.drafterUrl || ''; $('#event-result').value = event.result || ''; $('#event-note').value = event.note || '';
   $('#drafter-hint').textContent = event.type === 'primeleague' ? 'Bei PRM bleibt der Drafter extern und wird hier nicht benötigt.' : (event.drafterStale ? 'Der Gegner wurde geändert. Bitte einen neuen Drafter erstellen und den Link ersetzen.' : 'Drafter.lol öffnen, erstellen und den Link hier einfügen.');
   $('#open-drafter').hidden = event.type === 'primeleague';
+  $('#standin-display-name').value = ''; $('#standin-game-name').value = ''; $('#standin-tag').value = ''; $('#standin-position').value = '';
   const ownLineup = $('#own-lineup'); ownLineup.replaceChildren();
   roles.forEach(role => {
     const label = element('label', '', role);
@@ -174,9 +193,14 @@ function openEvent(id) {
     for (const player of team?.roster || []) {
       select.append(new Option(`${player.name} (${player.rosterStatus === 'main' ? 'Main' : 'Sub'})`, `player:${player.id}`));
     }
+    for (const standin of team?.standins || []) {
+      select.append(new Option(`${standin.name} (Stand-in)`, `standin:${standin.id}`));
+    }
     const assigned = event.lineup.find(item => item.role === role);
     if (assigned?.playerId && [...select.options].some(option => option.value === `player:${assigned.playerId}`)) {
       select.value = `player:${assigned.playerId}`;
+    } else if (assigned?.standinId && [...select.options].some(option => option.value === `standin:${assigned.standinId}`)) {
+      select.value = `standin:${assigned.standinId}`;
     } else if (assigned) {
       select.append(new Option(`${assigned.player} (${assigned.type === 'standin' ? 'Stand-in' : 'bestehend'})`, 'preserve', true, true));
     }
@@ -184,7 +208,8 @@ function openEvent(id) {
   });
   const lineup = $('#opponent-lineup'); lineup.replaceChildren();
   roles.forEach(role => { const label = element('label', '', role); const input = document.createElement('input'); input.dataset.role = role; input.value = event.opponentLineup.find(item => item.role === role)?.player || ''; label.append(input); lineup.append(label); });
-  $('#form-message').textContent = ''; eventDialog.showModal();
+  $('#new-standin').open = false; $('#form-message').textContent = ''; eventDialog.showModal();
+  if (options.focusLineup) requestAnimationFrame(() => $('#own-lineup-fieldset').scrollIntoView({ behavior: 'smooth', block: 'start' }));
 }
 
 async function loadWeek(week) {
@@ -195,23 +220,59 @@ async function loadWeek(week) {
   liveStream.onerror = () => { $('#live-dot').classList.remove('online'); $('#live-label').textContent = 'Live-Verbindung wird erneuert'; };
 }
 
-calendar.addEventListener('click', event => { const card = event.target.closest('[data-event-id]'); if (card) openEvent(card.dataset.eventId); });
-$('#tasks').addEventListener('click', event => { const item = event.target.closest('[data-event-id]'); if (item) openEvent(item.dataset.eventId); });
+calendar.addEventListener('click', event => {
+  const lineup = event.target.closest('[data-lineup-event-id]');
+  if (lineup) return openEvent(lineup.dataset.lineupEventId, { focusLineup: true });
+  const card = event.target.closest('[data-event-id]'); if (card) openEvent(card.dataset.eventId);
+});
+$('#tasks').addEventListener('click', event => { const item = event.target.closest('[data-event-id]'); if (item) { $('#tasks-notification').open = false; openEvent(item.dataset.eventId); } });
 $('#matchday-items').addEventListener('click', event => { const card = event.target.closest('[data-event-id]'); if (card) openEvent(card.dataset.eventId); });
 document.querySelectorAll('[data-close]').forEach(button => button.addEventListener('click', () => eventDialog.close()));
 document.querySelectorAll('[data-export-close]').forEach(button => button.addEventListener('click', () => exportDialog.close()));
+document.querySelectorAll('.notification-menu').forEach(menu => menu.addEventListener('toggle', () => {
+  if (!menu.open) return;
+  document.querySelectorAll('.notification-menu').forEach(other => { if (other !== menu) other.open = false; });
+}));
 
 $('#event-type').addEventListener('change', () => { const prm = $('#event-type').value === 'primeleague'; $('#open-drafter').hidden = prm; $('#drafter-hint').textContent = prm ? 'Bei PRM wird kein Drafter hinterlegt.' : 'Drafter.lol öffnen, erstellen und den Link hier einfügen.'; });
 $('#copy-drafter').addEventListener('click', async () => { if (!$('#event-drafter').value) return toast('Noch kein Drafter-Link vorhanden.', true); await navigator.clipboard.writeText($('#event-drafter').value); toast('Drafter-Link kopiert.'); });
+$('#create-standin').addEventListener('click', async () => {
+  const eventId = $('#event-id').value;
+  const team = findEventTeam(eventId);
+  const body = {
+    teamId: team?.id,
+    displayName: $('#standin-display-name').value,
+    riotGameName: $('#standin-game-name').value,
+    riotTag: $('#standin-tag').value,
+    riotRegion: 'euw',
+    preferredPosition: $('#standin-position').value
+  };
+  try {
+    const result = await api('/api/standins', { method: 'POST', body: JSON.stringify(body) });
+    for (const select of $('#own-lineup').querySelectorAll('select')) {
+      select.append(new Option(`${result.standin.name} (Stand-in)`, `standin:${result.standin.id}`));
+      if (result.standin.preferredPosition === select.dataset.role) select.value = `standin:${result.standin.id}`;
+    }
+    $('#standin-display-name').value = ''; $('#standin-game-name').value = ''; $('#standin-tag').value = ''; $('#standin-position').value = '';
+    $('#new-standin').open = false;
+    if (team) team.standins.push(result.standin);
+    toast('Sub/Stand-in angelegt und zur Auswahl hinzugefügt.');
+  } catch (error) {
+    $('#form-message').textContent = error.message === 'standin_already_exists'
+      ? 'Diese Riot-ID ist bereits als Stand-in gespeichert.'
+      : error.message === 'invalid_standin' ? 'Bitte Anzeigename, Riot Game Name und Riot-Tag vollständig eingeben.' : error.message;
+  }
+});
 $('#event-form').addEventListener('submit', async event => {
   event.preventDefault();
   const lineup = [...$('#own-lineup').querySelectorAll('select')].map(select => ({
     role: select.dataset.role,
     preserve: select.value === 'preserve',
-    playerId: select.value.startsWith('player:') ? Number(select.value.slice(7)) : null
+    playerId: select.value.startsWith('player:') ? Number(select.value.slice(7)) : null,
+    standinId: select.value.startsWith('standin:') ? Number(select.value.slice(8)) : null
   }));
-  const selectedPlayerIds = lineup.map(item => item.playerId).filter(Boolean);
-  if (new Set(selectedPlayerIds).size !== selectedPlayerIds.length) {
+  const selectedCandidates = lineup.map(item => item.playerId ? `player:${item.playerId}` : item.standinId ? `standin:${item.standinId}` : null).filter(Boolean);
+  if (new Set(selectedCandidates).size !== selectedCandidates.length) {
     $('#form-message').textContent = 'Ein Spieler kann nicht auf mehreren Positionen gleichzeitig stehen.';
     return;
   }
