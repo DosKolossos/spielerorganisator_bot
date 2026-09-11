@@ -10,7 +10,8 @@ const {
   exportPreview,
   exportWeek,
   undoExport,
-  copyPreviousWeek
+  copyPreviousWeek,
+  createStandin
 } = require('../services/plannerWebService');
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -117,6 +118,10 @@ function startPlannerWebServer({ client, port, host, database, authenticator } =
       }
       if (url.pathname === '/api/weeks/copy-previous' && request.method === 'POST') {
         sendJson(response, 200, copyPreviousWeek(plannerDb, body.week, session.user.id));
+        return;
+      }
+      if (url.pathname === '/api/standins' && request.method === 'POST') {
+        sendJson(response, 201, { standin: createStandin(plannerDb, body, session.user.id) });
         return;
       }
       if (url.pathname === '/api/changes/acknowledge' && request.method === 'POST') {
