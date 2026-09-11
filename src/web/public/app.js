@@ -65,7 +65,7 @@ function renderTeam(team, dates) {
   heading.append(title);
   for (const date of dates) {
     const day = element('div', `day-heading ${team.fullLineup[date] ? 'full-lineup' : ''}`);
-    day.append(element('strong', '', dateLabel(date)), element('small', '', team.fullLineup[date] ? '✓ alle 5 verfügbar' : 'Line-up prüfen'));
+    day.append(element('strong', '', dateLabel(date)), element('small', '', team.fullLineup[date] ? '✓ alle 5 verfügbar' : 'Verfügbarkeit prüfen'));
     heading.append(day);
   }
   section.append(heading);
@@ -109,8 +109,9 @@ function renderTeam(team, dates) {
 
 function renderTasks(tasks) {
   const root = $('#tasks'); root.replaceChildren();
-  if (!tasks.length) return root.append(element('p', 'empty-copy', 'Keine dringenden Aufgaben.'));
-  tasks.forEach(task => {
+  const openTasks = tasks.filter(task => task.level !== 'complete');
+  if (!openTasks.length) return root.append(element('p', 'empty-copy success-copy', '✓ Alle Aufgaben erledigt.'));
+  openTasks.forEach(task => {
     const button = element('button', `task task-${task.level}`, `${task.level === 'complete' ? '✓' : task.level === 'external' ? '↗' : '!' } ${task.label} · ${dateLabel(task.date)}`);
     button.type = 'button'; button.dataset.eventId = task.eventId; root.append(button);
   });
@@ -128,7 +129,12 @@ function renderMatchday() {
   const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Berlin' }).format(new Date());
   const tomorrow = new Date(`${today}T12:00:00Z`); tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
   const dates = new Set([today, tomorrow.toISOString().slice(0, 10)]);
-  const events = snapshot.teams.flatMap(team => team.events.map(event => ({ ...event, team: team.shortName || team.name }))).filter(event => dates.has(event.date));
+  const scheduledStatuses = new Set(['planned', 'confirmed', 'scheduled', 'fixed', 'completed']);
+  const events = snapshot.teams
+    .flatMap(team => team.events.map(event => ({ ...event, team: team.shortName || team.name })))
+    .filter(event => dates.has(event.date))
+    .filter(event => event.type !== 'open' && event.plannerState !== 'excluded')
+    .filter(event => scheduledStatuses.has(event.status) || ['preplanned', 'published'].includes(event.plannerState));
   if (!events.length) return root.append(element('p', 'empty-copy', 'Heute und morgen ist nichts angesetzt.'));
   events.forEach(event => { const item = eventCard(event); item.prepend(element('span', 'team-tag', event.team)); root.append(item); });
 }
@@ -148,9 +154,11 @@ function render(data) {
 }
 
 function findEvent(id) { return snapshot.teams.flatMap(team => team.events).find(event => event.id === Number(id)); }
+function findEventTeam(id) { return snapshot.teams.find(team => team.events.some(event => event.id === Number(id))); }
 
 function openEvent(id) {
   const event = findEvent(id); if (!event) return;
+  const team = findEventTeam(id);
   $('#event-id').value = event.id; $('#event-dialog-title').textContent = `${dateLabel(event.date)} · ${event.title}`;
   $('#event-title').value = event.title || ''; $('#event-opponent').value = event.opponent || ''; $('#event-type').value = event.type || 'open';
   $('#event-status').value = [...$('#event-status').options].some(option => option.value === event.status) ? event.status : 'pending';
@@ -158,6 +166,22 @@ function openEvent(id) {
   $('#event-opgg').value = event.opggUrl || ''; $('#event-drafter').value = event.drafterUrl || ''; $('#event-result').value = event.result || ''; $('#event-note').value = event.note || '';
   $('#drafter-hint').textContent = event.type === 'primeleague' ? 'Bei PRM bleibt der Drafter extern und wird hier nicht benötigt.' : (event.drafterStale ? 'Der Gegner wurde geändert. Bitte einen neuen Drafter erstellen und den Link ersetzen.' : 'Drafter.lol öffnen, erstellen und den Link hier einfügen.');
   $('#open-drafter').hidden = event.type === 'primeleague';
+  const ownLineup = $('#own-lineup'); ownLineup.replaceChildren();
+  roles.forEach(role => {
+    const label = element('label', '', role);
+    const select = document.createElement('select'); select.dataset.role = role;
+    select.append(new Option('Nicht besetzt', ''));
+    for (const player of team?.roster || []) {
+      select.append(new Option(`${player.name} (${player.rosterStatus === 'main' ? 'Main' : 'Sub'})`, `player:${player.id}`));
+    }
+    const assigned = event.lineup.find(item => item.role === role);
+    if (assigned?.playerId && [...select.options].some(option => option.value === `player:${assigned.playerId}`)) {
+      select.value = `player:${assigned.playerId}`;
+    } else if (assigned) {
+      select.append(new Option(`${assigned.player} (${assigned.type === 'standin' ? 'Stand-in' : 'bestehend'})`, 'preserve', true, true));
+    }
+    label.append(select); ownLineup.append(label);
+  });
   const lineup = $('#opponent-lineup'); lineup.replaceChildren();
   roles.forEach(role => { const label = element('label', '', role); const input = document.createElement('input'); input.dataset.role = role; input.value = event.opponentLineup.find(item => item.role === role)?.player || ''; label.append(input); lineup.append(label); });
   $('#form-message').textContent = ''; eventDialog.showModal();
@@ -173,6 +197,7 @@ async function loadWeek(week) {
 
 calendar.addEventListener('click', event => { const card = event.target.closest('[data-event-id]'); if (card) openEvent(card.dataset.eventId); });
 $('#tasks').addEventListener('click', event => { const item = event.target.closest('[data-event-id]'); if (item) openEvent(item.dataset.eventId); });
+$('#matchday-items').addEventListener('click', event => { const card = event.target.closest('[data-event-id]'); if (card) openEvent(card.dataset.eventId); });
 document.querySelectorAll('[data-close]').forEach(button => button.addEventListener('click', () => eventDialog.close()));
 document.querySelectorAll('[data-export-close]').forEach(button => button.addEventListener('click', () => exportDialog.close()));
 
@@ -180,8 +205,18 @@ $('#event-type').addEventListener('change', () => { const prm = $('#event-type')
 $('#copy-drafter').addEventListener('click', async () => { if (!$('#event-drafter').value) return toast('Noch kein Drafter-Link vorhanden.', true); await navigator.clipboard.writeText($('#event-drafter').value); toast('Drafter-Link kopiert.'); });
 $('#event-form').addEventListener('submit', async event => {
   event.preventDefault();
+  const lineup = [...$('#own-lineup').querySelectorAll('select')].map(select => ({
+    role: select.dataset.role,
+    preserve: select.value === 'preserve',
+    playerId: select.value.startsWith('player:') ? Number(select.value.slice(7)) : null
+  }));
+  const selectedPlayerIds = lineup.map(item => item.playerId).filter(Boolean);
+  if (new Set(selectedPlayerIds).size !== selectedPlayerIds.length) {
+    $('#form-message').textContent = 'Ein Spieler kann nicht auf mehreren Positionen gleichzeitig stehen.';
+    return;
+  }
   const opponentLineup = [...$('#opponent-lineup').querySelectorAll('input')].map(input => ({ role: input.dataset.role, player: input.value.trim() })).filter(item => item.player);
-  const body = { title: $('#event-title').value, opponent: $('#event-opponent').value, type: $('#event-type').value, status: $('#event-status').value, plannerState: $('#event-planner-state').value, matchFormat: $('#event-format').value, fearless: $('#event-fearless').value === '1', opggUrl: $('#event-opgg').value, drafterUrl: $('#event-drafter').value, opponentLineup, result: $('#event-result').value, note: $('#event-note').value };
+  const body = { title: $('#event-title').value, opponent: $('#event-opponent').value, type: $('#event-type').value, status: $('#event-status').value, plannerState: $('#event-planner-state').value, matchFormat: $('#event-format').value, fearless: $('#event-fearless').value === '1', opggUrl: $('#event-opgg').value, drafterUrl: $('#event-drafter').value, lineup, opponentLineup, result: $('#event-result').value, note: $('#event-note').value };
   try { await api(`/api/events/${$('#event-id').value}`, { method: 'PATCH', body: JSON.stringify(body) }); eventDialog.close(); toast('Termin gespeichert und mit Discord abgeglichen.'); await loadWeek(selectedWeek); } catch (error) { $('#form-message').textContent = error.message; }
 });
 
