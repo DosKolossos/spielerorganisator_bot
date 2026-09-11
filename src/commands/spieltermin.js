@@ -2212,7 +2212,8 @@ async function upsertPlayerCardMessage(channel, eventId) {
   return sentMessage;
 }
 
-async function upsertAdminCardMessage(channel, eventId) {
+async function upsertAdminCardMessage(channel, eventId, options = {}) {
+  const { syncPlayerCalendar = true } = options;
   await syncDiscordScheduledEvent(channel.client, eventId);
 
   const event = getEventById(eventId);
@@ -2256,7 +2257,9 @@ async function upsertAdminCardMessage(channel, eventId) {
     `).run(channel.id, adminMessage.id, new Date().toISOString(), eventId);
   }
 
-  await syncPlayerCalendarCard(channel.client, eventId);
+  if (syncPlayerCalendar) {
+    await syncPlayerCalendarCard(channel.client, eventId);
+  }
   return adminMessage;
 }
 
