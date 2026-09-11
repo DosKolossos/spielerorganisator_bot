@@ -256,12 +256,16 @@ test('Webserver liefert Healthcheck, API und Oberfläche aus', async t => {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ teamId: 2, date: '2099-04-07', startTime: '19:00', type: 'scrim' })
   });
+  const createdBody = await created.json();
+  const deleted = await fetch(`${baseUrl}/api/events/${createdBody.event.id}`, { method: 'DELETE' });
 
   assert.deepEqual(health, { status: 'ok', botOnline: true });
   assert.equal(planner.teams[0].events[0].id, 10);
   assert.match(page, /SchiggyGang Planer/);
   assert.match(page, /id="own-lineup"/);
   assert.equal(created.status, 201);
+  assert.equal(deleted.status, 200);
+  assert.equal(database.prepare('SELECT 1 FROM team_calendar_events WHERE id = ?').get(createdBody.event.id), undefined);
 });
 
 test('Terminbearbeitung validiert Auswahlfelder und Export erfasst nur Planner-Karten', async () => {

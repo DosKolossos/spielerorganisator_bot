@@ -3949,6 +3949,8 @@ const command = {
   refreshAllStoredAdminCards,
   refreshStoredAdminCardsForDates,
   cleanupExpiredAdminCards,
+  deleteStoredAdminCard,
+  deleteStoredPlayerCard,
   refreshStoredEventCard,
   refreshPlayerReferences,
   statusLabel,
