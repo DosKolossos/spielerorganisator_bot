@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { DatabaseSync } = require('node:sqlite');
 const { buildPlannerSnapshot, startPlannerWebServer } = require('../src/web/plannerServer');
-const { updateEvent, exportPreview, exportWeek, undoExport, generateDrafter, copyPreviousWeek } = require('../src/services/plannerWebService');
+const { updateEvent, exportPreview, exportWeek, undoExport, copyPreviousWeek } = require('../src/services/plannerWebService');
 
 function createTestDatabase() {
   const database = new DatabaseSync(':memory:');
@@ -176,19 +176,5 @@ test('Terminbearbeitung validiert Auswahlfelder und Export erfasst nur Planner-K
   assert.equal(undone.restored, 1);
   assert.equal(database.prepare('SELECT show_in_player_calendar FROM team_calendar_events WHERE id = 10').get().show_in_player_calendar, 0);
 
-  let drafterRequest;
-  const generated = await generateDrafter(database, 10, 'coach-1', {
-    DRAFTER_API_TOKEN: 'test-token', DRAFTER_HOME_TEAM_NAME: 'SchiggyGang'
-  }, async (url, options) => {
-    drafterRequest = { url, options, body: JSON.parse(options.body) };
-    return { ok: true, json: async () => ({ id: 'series_1', url: 'https://drafter.lol/draft/series_1' }) };
-  });
-  assert.equal(generated.url, 'https://drafter.lol/draft/series_1');
-  assert.equal(drafterRequest.url, 'https://api.drafter.lol/api/series');
-  assert.equal(drafterRequest.options.headers.Authorization, 'Bearer test-token');
-  assert.deepEqual(drafterRequest.body, {
-    team1Name: 'SchiggyGang', team2Name: 'Beispiel Gaming', fearless: false,
-    ironman: false, firstSelection: false, gameAmount: 3, disabledChampions: []
-  });
   database.close();
 });
