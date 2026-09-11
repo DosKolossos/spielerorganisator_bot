@@ -20,11 +20,14 @@ function createTestDatabase() {
       is_streamed INTEGER, updated_at TEXT
     );
     CREATE TABLE team_calendar_assignments (
-      event_id INTEGER, role_label TEXT, player_label TEXT, assignee_type TEXT
+      id INTEGER PRIMARY KEY AUTOINCREMENT, event_id INTEGER, role_label TEXT,
+      player_label TEXT, assignee_type TEXT, player_id INTEGER, standin_id INTEGER,
+      note TEXT, created_at TEXT, updated_at TEXT, UNIQUE(event_id, role_label)
     );
     CREATE TABLE players (
       id INTEGER PRIMARY KEY, team_id INTEGER, alias TEXT, global_name TEXT,
-      username TEXT, is_archived INTEGER
+      username TEXT, discord_user_id TEXT, roster_status TEXT,
+      primary_position TEXT, secondary_position TEXT, is_archived INTEGER
     );
     CREATE TABLE weekly_availability_choices (
       player_id INTEGER, first_date TEXT, second_date TEXT
@@ -39,8 +42,10 @@ function createTestDatabase() {
       '2099-04-06T19:45:00+02:00', NULL, '5 verfügbar',
       'https://www.op.gg/multisearch/euw', NULL, 0, '2099-04-01T12:00:00Z'
     );
-    INSERT INTO team_calendar_assignments VALUES (10, 'Top', 'Joe Kurt', 'player');
-    INSERT INTO players VALUES (7, 1, 'Joe Kurt', NULL, 'joe', 0);
+    INSERT INTO team_calendar_assignments (
+      event_id, role_label, player_label, assignee_type, player_id, created_at, updated_at
+    ) VALUES (10, 'Top', 'Joe Kurt', 'player', 7, '2099-04-01', '2099-04-01');
+    INSERT INTO players VALUES (7, 1, 'Joe Kurt', NULL, 'joe', 'discord-7', 'main', 'Top', NULL, 0);
     INSERT INTO weekly_availability_choices VALUES (7, '2099-04-06', '2099-04-08');
   `);
   return database;
@@ -54,12 +59,40 @@ test('Snapshot trennt Teams und enthält Aufstellung sowie Entweder-oder-Angabe'
   assert.equal(snapshot.teams.length, 2);
   assert.equal(snapshot.teams[0].events[0].opponent, 'Beispiel Gaming');
   assert.deepEqual(snapshot.teams[0].events[0].lineup, [
-    { role: 'Top', player: 'Joe Kurt', type: 'player', playerId: null }
+    { role: 'Top', player: 'Joe Kurt', type: 'player', playerId: 7 }
   ]);
   assert.deepEqual(snapshot.teams[0].events[0].eitherOr, [
     { player: 'Joe Kurt', playerId: 7, firstDate: '2099-04-06', secondDate: '2099-04-08' }
   ]);
   assert.equal(snapshot.teams[1].events.length, 0);
+  database.close();
+});
+
+test('Aufgabenlogik erkennt die gespeicherte eigene Aufstellung', () => {
+  const database = createTestDatabase();
+  let snapshot = buildPlannerSnapshot({ isReady: () => true }, database, {
+    week: '2099-04-06', today: '2099-04-05'
+  });
+  assert.equal(snapshot.tasks[0].label, 'Eigene Aufstellung fehlt');
+
+  database.exec(`
+    INSERT INTO players VALUES (8, 1, 'Jungle', NULL, 'jungle', 'discord-8', 'main', 'Jgl', NULL, 0);
+    INSERT INTO players VALUES (9, 1, 'Mitte', NULL, 'mitte', 'discord-9', 'main', 'Mid', NULL, 0);
+    INSERT INTO players VALUES (10, 1, 'Carry', NULL, 'carry', 'discord-10', 'main', 'ADC', NULL, 0);
+    INSERT INTO players VALUES (11, 1, 'Support', NULL, 'support', 'discord-11', 'main', 'Supp', NULL, 0);
+    INSERT INTO team_calendar_assignments (event_id, role_label, player_label, assignee_type, player_id, created_at, updated_at)
+      VALUES (10, 'Jgl', 'Jungle', 'player', 8, '2099-04-01', '2099-04-01');
+    INSERT INTO team_calendar_assignments (event_id, role_label, player_label, assignee_type, player_id, created_at, updated_at)
+      VALUES (10, 'Mid', 'Mitte', 'player', 9, '2099-04-01', '2099-04-01');
+    INSERT INTO team_calendar_assignments (event_id, role_label, player_label, assignee_type, player_id, created_at, updated_at)
+      VALUES (10, 'ADC', 'Carry', 'player', 10, '2099-04-01', '2099-04-01');
+    INSERT INTO team_calendar_assignments (event_id, role_label, player_label, assignee_type, player_id, created_at, updated_at)
+      VALUES (10, 'Supp', 'Support', 'player', 11, '2099-04-01', '2099-04-01');
+  `);
+  snapshot = buildPlannerSnapshot({ isReady: () => true }, database, {
+    week: '2099-04-06', today: '2099-04-05'
+  });
+  assert.equal(snapshot.tasks[0].label, 'Drafter fehlt');
   database.close();
 });
 
@@ -130,6 +163,7 @@ test('Webserver liefert Healthcheck, API und Oberfläche aus', async t => {
   assert.deepEqual(health, { status: 'ok', botOnline: true });
   assert.equal(planner.teams[0].events[0].id, 10);
   assert.match(page, /SchiggyGang Planer/);
+  assert.match(page, /id="own-lineup"/);
 });
 
 test('Terminbearbeitung validiert Auswahlfelder und Export erfasst nur Planner-Karten', async () => {
@@ -157,8 +191,26 @@ test('Terminbearbeitung validiert Auswahlfelder und Export erfasst nur Planner-K
     plannerState: 'preplanned',
     matchFormat: 'bo3',
     fearless: false,
+    lineup: [
+      { role: 'Top', playerId: 7 },
+      { role: 'Jgl', playerId: null },
+      { role: 'Mid', playerId: null },
+      { role: 'ADC', playerId: null },
+      { role: 'Supp', playerId: null }
+    ],
     opponentLineup: [{ role: 'Top', player: 'Opponent Top' }]
   }, 'coach-1');
+
+  const ownLineup = database.prepare(`SELECT role_label, player_id FROM team_calendar_assignments WHERE event_id = 10`).all();
+  assert.equal(ownLineup.length, 1);
+  assert.equal(ownLineup[0].role_label, 'Top');
+  assert.equal(ownLineup[0].player_id, 7);
+  assert.throws(() => updateEvent(database, 10, {
+    lineup: [
+      { role: 'Top', playerId: 7 },
+      { role: 'Jgl', playerId: 7 }
+    ]
+  }, 'coach-1'), /invalid_lineup/);
 
   const preview = exportPreview(database, '2099-04-06');
   assert.equal(preview.publish.length, 1);
