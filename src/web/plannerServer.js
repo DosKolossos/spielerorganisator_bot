@@ -2,6 +2,17 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { createPlannerAuth } = require('./plannerAuth');
+const {
+  buildPlannerSnapshot,
+  parseBody,
+  validateOrigin,
+  updateEvent,
+  exportPreview,
+  exportWeek,
+  undoExport,
+  generateDrafter,
+  copyPreviousWeek
+} = require('../services/plannerWebService');
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const STATIC_FILES = new Map([
@@ -9,122 +20,6 @@ const STATIC_FILES = new Map([
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
   ['/styles.css', ['styles.css', 'text/css; charset=utf-8']]
 ]);
-
-function eventTimestamp(event) {
-  return event.scheduled_start_at || event.window_start_at || `${event.option_date}T12:00:00`;
-}
-
-function buildPlannerSnapshot(client, database) {
-  const db = database || require('../db/database');
-  const teams = db.prepare(`
-    SELECT id, name, slug, short_name
-    FROM teams
-    WHERE is_active = 1
-    ORDER BY is_default DESC, name COLLATE NOCASE ASC
-  `).all();
-
-  const events = db.prepare(`
-    SELECT
-      id, team_id, title, opponent_name, event_type, status, option_date,
-      window_start_at, window_end_at, scheduled_start_at, scheduled_end_at,
-      meeting_scrim_at, meeting_primeleague_at, available_players_text,
-      opgg_url, note, is_streamed, updated_at
-    FROM team_calendar_events
-    WHERE status NOT IN ('deleted', 'cancelled')
-      AND COALESCE(
-        NULLIF(option_date, ''),
-        substr(NULLIF(scheduled_start_at, ''), 1, 10),
-        substr(NULLIF(window_start_at, ''), 1, 10)
-      ) >= date('now', '-1 day')
-    ORDER BY
-      COALESCE(NULLIF(scheduled_start_at, ''), NULLIF(window_start_at, ''), option_date) ASC,
-      id ASC
-    LIMIT 100
-  `).all();
-
-  const assignments = events.length
-    ? db.prepare(`
-        SELECT event_id, role_label, player_label, assignee_type
-        FROM team_calendar_assignments
-        WHERE event_id IN (${events.map(() => '?').join(',')})
-        ORDER BY event_id ASC,
-          CASE lower(role_label)
-            WHEN 'top' THEN 1 WHEN 'jungle' THEN 2 WHEN 'mid' THEN 3
-            WHEN 'adc' THEN 4 WHEN 'support' THEN 5 ELSE 6
-          END,
-          role_label COLLATE NOCASE ASC
-      `).all(...events.map(event => event.id))
-    : [];
-
-  const choices = db.prepare(`
-    SELECT
-      c.player_id, c.first_date, c.second_date,
-      p.team_id,
-      COALESCE(NULLIF(p.alias, ''), NULLIF(p.global_name, ''), p.username) AS player_name
-    FROM weekly_availability_choices c
-    JOIN players p ON p.id = c.player_id
-    WHERE c.second_date >= date('now', '-1 day')
-      AND COALESCE(p.is_archived, 0) = 0
-    ORDER BY c.first_date ASC, player_name COLLATE NOCASE ASC
-  `).all();
-
-  const assignmentMap = new Map();
-  for (const assignment of assignments) {
-    if (!assignmentMap.has(assignment.event_id)) assignmentMap.set(assignment.event_id, []);
-    assignmentMap.get(assignment.event_id).push({
-      role: assignment.role_label,
-      player: assignment.player_label,
-      type: assignment.assignee_type
-    });
-  }
-
-  const teamMap = new Map(teams.map(team => [team.id, {
-    id: team.id,
-    name: team.name,
-    slug: team.slug,
-    shortName: team.short_name,
-    events: []
-  }]));
-
-  for (const event of events) {
-    const team = teamMap.get(event.team_id);
-    if (!team) continue;
-    team.events.push({
-      id: event.id,
-      title: event.title,
-      opponent: event.opponent_name,
-      type: event.event_type,
-      status: event.status,
-      date: event.option_date,
-      startsAt: eventTimestamp(event),
-      endsAt: event.scheduled_end_at || event.window_end_at,
-      meetingAt: event.event_type === 'primeleague'
-        ? event.meeting_primeleague_at
-        : event.meeting_scrim_at,
-      availability: event.available_players_text,
-      opggUrl: event.opgg_url,
-      note: event.note,
-      streamed: Boolean(event.is_streamed),
-      updatedAt: event.updated_at,
-      lineup: assignmentMap.get(event.id) || [],
-      eitherOr: choices
-        .filter(choice => choice.team_id === event.team_id
-          && (choice.first_date === event.option_date || choice.second_date === event.option_date))
-        .map(choice => ({
-          player: choice.player_name,
-          firstDate: choice.first_date,
-          secondDate: choice.second_date
-        }))
-    });
-  }
-
-  return {
-    generatedAt: new Date().toISOString(),
-    botOnline: Boolean(client?.isReady?.()),
-    readOnly: true,
-    teams: [...teamMap.values()]
-  };
-}
 
 function sendJson(response, status, payload) {
   response.writeHead(status, {
@@ -152,7 +47,7 @@ function startPlannerWebServer({ client, port, host, database, authenticator } =
   const listenHost = host ?? process.env.PLANNER_WEB_HOST ?? '127.0.0.1';
   const plannerDb = database || require('../db/database');
   const auth = authenticator || createPlannerAuth({ client });
-  const liveClients = new Set();
+  const liveClients = new Map();
 
   const server = http.createServer(async (request, response) => {
     applySecurityHeaders(response);
@@ -166,11 +61,7 @@ function startPlannerWebServer({ client, port, host, database, authenticator } =
       return;
     }
 
-    if (request.method !== 'GET') {
-      sendJson(response, 405, { error: 'method_not_allowed' });
-      return;
-    }
-
+    try {
     if (url.pathname === '/healthz') {
       sendJson(response, 200, { status: 'ok', botOnline: Boolean(client?.isReady?.()) });
       return;
@@ -178,7 +69,7 @@ function startPlannerWebServer({ client, port, host, database, authenticator } =
 
     if (url.pathname === '/api/planner') {
       if (!auth.requireSession(request, response)) return;
-      sendJson(response, 200, buildPlannerSnapshot(client, plannerDb));
+      sendJson(response, 200, buildPlannerSnapshot(client, plannerDb, { week: url.searchParams.get('week') }));
       return;
     }
 
@@ -189,9 +80,65 @@ function startPlannerWebServer({ client, port, host, database, authenticator } =
         'Cache-Control': 'no-cache, no-transform',
         Connection: 'keep-alive'
       });
-      response.write(`event: planner\ndata: ${JSON.stringify(buildPlannerSnapshot(client, plannerDb))}\n\n`);
-      liveClients.add(response);
+      const week = url.searchParams.get('week');
+      response.write(`event: planner\ndata: ${JSON.stringify(buildPlannerSnapshot(client, plannerDb, { week }))}\n\n`);
+      liveClients.set(response, week);
       request.on('close', () => liveClients.delete(response));
+      return;
+    }
+
+    if (url.pathname === '/api/export/preview' && request.method === 'GET') {
+      if (!auth.requireSession(request, response)) return;
+      sendJson(response, 200, exportPreview(plannerDb, url.searchParams.get('week')));
+      return;
+    }
+
+    if (url.pathname.startsWith('/api/') && request.method !== 'GET') {
+      const session = auth.requireSession(request, response);
+      if (!session) return;
+      if (!validateOrigin(request)) {
+        sendJson(response, 403, { error: 'invalid_origin' });
+        return;
+      }
+      const body = await parseBody(request);
+      const eventMatch = url.pathname.match(/^\/api\/events\/(\d+)$/);
+      const drafterMatch = url.pathname.match(/^\/api\/events\/(\d+)\/drafter$/);
+      if (eventMatch && request.method === 'PATCH') {
+        const event = updateEvent(plannerDb, Number(eventMatch[1]), body, session.user.id);
+        await require('../commands/spieltermin').refreshStoredEventCard(client, event.id);
+        sendJson(response, 200, { event });
+        return;
+      }
+      if (drafterMatch && request.method === 'POST') {
+        const result = await generateDrafter(plannerDb, Number(drafterMatch[1]), session.user.id);
+        await require('../commands/spieltermin').refreshStoredEventCard(client, Number(drafterMatch[1]));
+        sendJson(response, 200, result);
+        return;
+      }
+      if (url.pathname === '/api/export' && request.method === 'POST') {
+        sendJson(response, 200, await exportWeek(client, plannerDb, body.week, session.user.id));
+        return;
+      }
+      if (url.pathname === '/api/export/undo' && request.method === 'POST') {
+        sendJson(response, 200, await undoExport(client, plannerDb, body.week, session.user.id));
+        return;
+      }
+      if (url.pathname === '/api/weeks/copy-previous' && request.method === 'POST') {
+        sendJson(response, 200, copyPreviousWeek(plannerDb, body.week, session.user.id));
+        return;
+      }
+      if (url.pathname === '/api/changes/acknowledge' && request.method === 'POST') {
+        plannerDb.prepare(`UPDATE planner_change_log SET acknowledged_at = ?, acknowledged_by_discord_user_id = ? WHERE id = ?`)
+          .run(new Date().toISOString(), session.user.id, Number(body.id));
+        sendJson(response, 200, { ok: true });
+        return;
+      }
+      sendJson(response, 404, { error: 'not_found' });
+      return;
+    }
+
+    if (request.method !== 'GET') {
+      sendJson(response, 405, { error: 'method_not_allowed' });
       return;
     }
 
@@ -214,25 +161,31 @@ function startPlannerWebServer({ client, port, host, database, authenticator } =
       });
       response.end(content);
     });
+    } catch (error) {
+      console.error('[Planner-Web] Anfrage fehlgeschlagen:', error);
+      if (!response.headersSent) sendJson(response, error.status || 500, { error: error.message || 'request_failed' });
+      else response.end();
+    }
   });
 
   let previousFingerprint = '';
   const changeTimer = setInterval(() => {
     if (!liveClients.size) return;
     try {
-      const snapshot = buildPlannerSnapshot(client, plannerDb);
-      const fingerprint = JSON.stringify(snapshot.teams);
-      if (fingerprint === previousFingerprint) return;
-      previousFingerprint = fingerprint;
-      const message = `event: planner\ndata: ${JSON.stringify(snapshot)}\n\n`;
-      for (const response of liveClients) response.write(message);
+      for (const [response, week] of liveClients) {
+        const snapshot = buildPlannerSnapshot(client, plannerDb, { week });
+        const fingerprint = JSON.stringify([week, snapshot.teams, snapshot.tasks, snapshot.changes]);
+        if (liveClients.size === 1 && fingerprint === previousFingerprint) continue;
+        previousFingerprint = fingerprint;
+        response.write(`event: planner\ndata: ${JSON.stringify(snapshot)}\n\n`);
+      }
     } catch (error) {
       console.error('[Planner-Web] Live-Aktualisierung fehlgeschlagen:', error);
     }
   }, 3000);
 
   const heartbeatTimer = setInterval(() => {
-    for (const response of liveClients) response.write(': heartbeat\n\n');
+    for (const response of liveClients.keys()) response.write(': heartbeat\n\n');
   }, 25000);
 
   server.on('close', () => {
@@ -247,7 +200,7 @@ function startPlannerWebServer({ client, port, host, database, authenticator } =
   server.listen(listenPort, listenHost, () => {
     const address = server.address();
     const activePort = typeof address === 'object' && address ? address.port : listenPort;
-    console.log(`[Planner-Web] Read-only Vorschau auf http://${listenHost}:${activePort}`);
+    console.log(`[Planner-Web] Planer auf http://${listenHost}:${activePort}`);
   });
 
   return server;
