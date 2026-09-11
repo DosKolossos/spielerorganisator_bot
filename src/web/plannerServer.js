@@ -123,6 +123,28 @@ function startPlannerWebServer({ client, port, host, database, authenticator } =
         sendJson(response, 200, { event });
         return;
       }
+      if (eventMatch && request.method === 'DELETE') {
+        const eventId = Number(eventMatch[1]);
+        const event = plannerDb.prepare('SELECT * FROM team_calendar_events WHERE id = ?').get(eventId);
+        if (!event) throw Object.assign(new Error('event_not_found'), { status: 404 });
+        if (event.discord_scheduled_event_id) {
+          const { deleteDiscordScheduledEvent } = require('../services/discordScheduledEventService');
+          await deleteDiscordScheduledEvent(client, event);
+        }
+        if (event.player_message_id || event.admin_message_id) {
+          const spieltermin = require('../commands/spieltermin');
+          if (event.player_message_id) await spieltermin.deleteStoredPlayerCard(client, eventId);
+          if (event.admin_message_id) await spieltermin.deleteStoredAdminCard(client, eventId);
+        }
+        const remove = () => {
+          plannerDb.prepare('DELETE FROM team_calendar_assignments WHERE event_id = ?').run(eventId);
+          plannerDb.prepare('DELETE FROM team_calendar_events WHERE id = ?').run(eventId);
+        };
+        if (typeof plannerDb.transaction === 'function') plannerDb.transaction(remove)();
+        else remove();
+        sendJson(response, 200, { deleted: true, eventId });
+        return;
+      }
       if (url.pathname === '/api/export' && request.method === 'POST') {
         sendJson(response, 200, await exportWeek(client, plannerDb, body.week, session.user.id));
         return;
