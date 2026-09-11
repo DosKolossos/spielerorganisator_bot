@@ -56,20 +56,38 @@ function eventCard(event) {
   return card;
 }
 
-function availabilityCell(day) {
-  const cell = element('span', `availability ${day.state}`);
-  cell.title = day.eitherOr ? `${day.label} · Entweder/oder mit ${dateLabel(day.eitherOr.firstDate === day.date ? day.eitherOr.secondDate : day.eitherOr.firstDate)}` : day.label;
-  cell.append(element('span', 'availability-symbol', `${day.state === 'available' ? '●' : day.state === 'partial' ? '◐' : '–'}${day.eitherOr ? ' ↔' : ''}`));
-  if (day.state === 'partial' && day.restriction) cell.append(element('small', 'availability-restriction', day.restriction));
-  return cell;
+function editableEventsForDay(team, date) {
+  return team.events.filter(event => event.date === date && event.type !== 'open' && event.plannerState !== 'open');
 }
 
-function eventEntry(event) {
-  const wrapper = element('div', 'event-entry');
-  const lineup = element('button', 'lineup-quick', 'Aufstellung');
-  lineup.type = 'button'; lineup.dataset.lineupEventId = event.id;
-  wrapper.append(eventCard(event), lineup);
-  return wrapper;
+function chooseLineupEvent(events) {
+  if (events.length === 1) return events[0];
+  const choices = events.map((event, index) => `${index + 1}: ${timeLabel(event.startsAt)} · ${eventTitle(event)}`).join('\n');
+  const selected = Number(prompt(`Für welchen Termin soll der Spieler eingeplant werden?\n\n${choices}`));
+  return Number.isSafeInteger(selected) && selected >= 1 ? events[selected - 1] : null;
+}
+
+function availabilityCell(day, team, player) {
+  const cell = element('div', `availability ${day.state}`);
+  cell.title = day.eitherOr ? `${day.label} · Entweder/oder mit ${dateLabel(day.eitherOr.firstDate === day.date ? day.eitherOr.secondDate : day.eitherOr.firstDate)}` : day.label;
+  const status = element('span', 'availability-status');
+  status.append(element('span', 'availability-symbol', `${day.state === 'available' ? '●' : day.state === 'partial' ? '◐' : '–'}${day.eitherOr ? ' ↔' : ''}`));
+  const events = editableEventsForDay(team, day.date);
+  if (events.length && day.state !== 'unavailable') {
+    const add = element('button', 'availability-add', '+');
+    add.type = 'button';
+    add.title = `${player.name} zur Aufstellung hinzufügen`;
+    add.setAttribute('aria-label', `${player.name} zur Aufstellung hinzufügen`);
+    add.addEventListener('click', click => {
+      click.stopPropagation();
+      const selectedEvent = chooseLineupEvent(events);
+      if (selectedEvent) openEvent(selectedEvent.id, { focusLineup: true, selectPlayer: player });
+    });
+    status.append(add);
+  }
+  cell.append(status);
+  if (day.state === 'partial' && day.restriction) cell.append(element('small', 'availability-restriction', day.restriction));
+  return cell;
 }
 
 function renderTeam(team, dates) {
@@ -91,7 +109,7 @@ function renderTeam(team, dates) {
     const day = element('div', 'day-cell');
     const items = team.events.filter(event => event.date === date && event.type !== 'open' && event.plannerState !== 'open');
     if (!items.length) day.append(element('span', 'empty-day', '—'));
-    else items.forEach(event => day.append(eventEntry(event)));
+    else items.forEach(event => day.append(eventCard(event)));
     eventsRow.append(day);
   }
   section.append(eventsRow);
@@ -111,7 +129,7 @@ function renderTeam(team, dates) {
     hide.addEventListener('click', () => { localStorage.setItem(`player-hidden-${player.id}`, '1'); render(snapshot); });
     label.append(hide);
     row.append(label);
-    dates.forEach(date => row.append(availabilityCell(player.days[date])));
+    dates.forEach(date => row.append(availabilityCell(player.days[date], team, player)));
     details.append(row);
   }
   const reset = element('button', 'button ghost reset-hidden', 'Ausgeblendete Spieler wieder anzeigen');
@@ -173,6 +191,10 @@ function render(data) {
 function findEvent(id) { return snapshot.teams.flatMap(team => team.events).find(event => event.id === Number(id)); }
 function findEventTeam(id) { return snapshot.teams.find(team => team.events.some(event => event.id === Number(id))); }
 
+function lineupRole(position) {
+  return ({ top: 'Top', jgl: 'Jgl', jungle: 'Jgl', mid: 'Mid', middle: 'Mid', adc: 'ADC', bot: 'ADC', supp: 'Supp', support: 'Supp' })[String(position || '').toLowerCase()] || null;
+}
+
 function openEvent(id, options = {}) {
   const event = findEvent(id); if (!event) return;
   if (event.type === 'open' || event.plannerState === 'open') return toast('Offene Terminoptionen werden erst in Discord zu einem echten Termin gemacht.', true);
@@ -185,6 +207,7 @@ function openEvent(id, options = {}) {
   $('#drafter-hint').textContent = event.type === 'primeleague' ? 'Bei PRM bleibt der Drafter extern und wird hier nicht benötigt.' : (event.drafterStale ? 'Der Gegner wurde geändert. Bitte einen neuen Drafter erstellen und den Link ersetzen.' : 'Drafter.lol öffnen, erstellen und den Link hier einfügen.');
   $('#open-drafter').hidden = event.type === 'primeleague';
   $('#standin-display-name').value = ''; $('#standin-game-name').value = ''; $('#standin-tag').value = ''; $('#standin-position').value = '';
+  $('#form-message').textContent = '';
   const ownLineup = $('#own-lineup'); ownLineup.replaceChildren();
   roles.forEach(role => {
     const label = element('label', '', role);
@@ -206,9 +229,28 @@ function openEvent(id, options = {}) {
     }
     label.append(select); ownLineup.append(label);
   });
+  if (options.selectPlayer) {
+    const playerValue = `player:${options.selectPlayer.id}`;
+    const selects = [...ownLineup.querySelectorAll('select')];
+    const alreadySelected = selects.some(select => select.value === playerValue);
+    if (alreadySelected) {
+      $('#form-message').textContent = `${options.selectPlayer.name} steht bereits in dieser Aufstellung.`;
+    } else {
+      const preferred = lineupRole(options.selectPlayer.primaryPosition);
+      const target = selects.find(select => select.dataset.role === preferred && !select.value)
+        || selects.find(select => !select.value);
+      if (target) {
+        target.value = playerValue;
+        $('#form-message').textContent = `${options.selectPlayer.name} wurde für ${target.dataset.role} vorausgewählt. Bitte noch speichern.`;
+      } else {
+        $('#form-message').textContent = 'Die Aufstellung ist bereits voll. Bitte zuerst einen Slot freimachen.';
+      }
+    }
+  }
   const lineup = $('#opponent-lineup'); lineup.replaceChildren();
   roles.forEach(role => { const label = element('label', '', role); const input = document.createElement('input'); input.dataset.role = role; input.value = event.opponentLineup.find(item => item.role === role)?.player || ''; label.append(input); lineup.append(label); });
-  $('#new-standin').open = false; $('#form-message').textContent = ''; eventDialog.showModal();
+  $('#new-standin').open = false;
+  eventDialog.showModal();
   if (options.focusLineup) requestAnimationFrame(() => $('#own-lineup-fieldset').scrollIntoView({ behavior: 'smooth', block: 'start' }));
 }
 
@@ -221,8 +263,6 @@ async function loadWeek(week) {
 }
 
 calendar.addEventListener('click', event => {
-  const lineup = event.target.closest('[data-lineup-event-id]');
-  if (lineup) return openEvent(lineup.dataset.lineupEventId, { focusLineup: true });
   const card = event.target.closest('[data-event-id]'); if (card) openEvent(card.dataset.eventId);
 });
 $('#tasks').addEventListener('click', event => { const item = event.target.closest('[data-event-id]'); if (item) { $('#tasks-notification').open = false; openEvent(item.dataset.eventId); } });
