@@ -50,18 +50,41 @@ function formatLabel(value) {
   })[value] || '3 Spiele';
 }
 
-function isFullDayAbsence(entry, date) {
-  return entry.start_at <= `${date} 00:01` && entry.end_at >= `${date} 23:58`;
-}
-
 function availabilityFor(entries, date) {
-  const relevant = entries.filter(entry => entry.start_at.slice(0, 10) <= date && entry.end_at.slice(0, 10) >= date);
+  const relevant = entries
+    .filter(entry => entry.start_at.slice(0, 10) <= date && entry.end_at.slice(0, 10) >= date)
+    .map(entry => ({
+      start: entry.start_at.slice(0, 10) < date ? '00:00' : entry.start_at.slice(11, 16),
+      end: entry.end_at.slice(0, 10) > date ? '23:59' : entry.end_at.slice(11, 16)
+    }))
+    .sort((a, b) => a.start.localeCompare(b.start));
   if (!relevant.length) return { state: 'available', label: 'Verfügbar' };
-  if (relevant.some(entry => isFullDayAbsence(entry, date))) return { state: 'unavailable', label: 'Nicht verfügbar' };
-  return { state: 'partial', label: 'Teilweise' };
+  if (relevant.some(entry => entry.start <= '00:01' && entry.end >= '23:58')) {
+    return { state: 'unavailable', label: 'Nicht verfügbar' };
+  }
+  const first = relevant[0];
+  const last = relevant[relevant.length - 1];
+  if (first.start === '00:00' && last.end === '23:59') {
+    if (relevant.length === 2 && first.end <= last.start) {
+      return { state: 'partial', label: `Teilweise · ${first.end}–${last.start}`, restriction: `${first.end}–${last.start}` };
+    }
+    return { state: 'unavailable', label: 'Nicht verfügbar' };
+  }
+  if (first.start === '00:00') {
+    return { state: 'partial', label: `Teilweise · ab ${first.end}`, restriction: `ab ${first.end}` };
+  }
+  if (last.end === '23:59') {
+    return { state: 'partial', label: `Teilweise · bis ${last.start}`, restriction: `bis ${last.start}` };
+  }
+  return {
+    state: 'partial',
+    label: `Teilweise · bis ${first.start}, ab ${last.end}`,
+    restriction: `bis ${first.start} · ab ${last.end}`
+  };
 }
 
 function eventTasks(event, assignments, today = berlinDate()) {
+  if (event.type === 'open' || event.plannerState === 'open') return [];
   const isPrm = event.type === 'primeleague';
   const isScrim = event.type === 'scrim';
   const isMatch = isPrm || isScrim;
@@ -121,7 +144,8 @@ function buildPlannerSnapshot(client, database, options = {}) {
   const assignmentColumns = columns(database, 'team_calendar_assignments');
   const assignments = events.length ? database.prepare(`
     SELECT event_id, role_label, player_label, assignee_type,
-      ${assignmentColumns.has('player_id') ? 'player_id' : 'NULL AS player_id'}
+      ${assignmentColumns.has('player_id') ? 'player_id' : 'NULL AS player_id'},
+      ${assignmentColumns.has('standin_id') ? 'standin_id' : 'NULL AS standin_id'}
     FROM team_calendar_assignments
     WHERE event_id IN (${events.map(() => '?').join(',')})
     ORDER BY event_id, role_label
@@ -129,7 +153,7 @@ function buildPlannerSnapshot(client, database, options = {}) {
   const assignmentMap = new Map();
   for (const item of assignments) {
     if (!assignmentMap.has(item.event_id)) assignmentMap.set(item.event_id, []);
-    assignmentMap.get(item.event_id).push({ role: item.role_label, player: item.player_label, type: item.assignee_type, playerId: item.player_id });
+    assignmentMap.get(item.event_id).push({ role: item.role_label, player: item.player_label, type: item.assignee_type, playerId: item.player_id, standinId: item.standin_id });
   }
 
   let players = [];
@@ -146,6 +170,15 @@ function buildPlannerSnapshot(client, database, options = {}) {
         COALESCE(alias, global_name, username) COLLATE NOCASE
     `).all();
   }
+  const standinColumns = columns(database, 'standins');
+  const standins = standinColumns.size ? database.prepare(`
+    SELECT id, ${standinColumns.has('team_id') ? 'team_id' : 'NULL AS team_id'},
+      display_name, riot_game_name, riot_tag, riot_region, preferred_position
+    FROM standins
+    WHERE COALESCE(is_active, 1) = 1
+      ${standinColumns.has('promoted_to_player_id') ? 'AND promoted_to_player_id IS NULL' : ''}
+    ORDER BY display_name COLLATE NOCASE
+  `).all() : [];
   const entries = players.length && columns(database, 'availability_entries').size
     ? database.prepare(`
         SELECT player_id, start_at, end_at, reason, updated_at
@@ -204,22 +237,27 @@ function buildPlannerSnapshot(client, database, options = {}) {
     return {
       id: team.id, name: team.name, slug: team.slug, shortName: team.short_name,
       roster, events: normalizedEvents.filter(event => event.teamId === team.id),
+      standins: standins.filter(standin => standin.team_id == null || standin.team_id === team.id).map(standin => ({
+        id: standin.id, name: standin.display_name, riotId: `${standin.riot_game_name}#${standin.riot_tag}`,
+        region: standin.riot_region, preferredPosition: standin.preferred_position
+      })),
       fullLineup: Object.fromEntries(dates.map(date => [date,
-        starters.length >= 5 && starters.every(player => player.days[date].state !== 'unavailable')
+        starters.length >= 5 && starters.every(player => player.days[date].state === 'available')
       ]))
     };
   });
 
   const conflicts = [];
-  for (const event of normalizedEvents) {
-    for (const other of normalizedEvents) {
+  const plannedEvents = normalizedEvents.filter(event => event.type !== 'open' && event.plannerState !== 'open');
+  for (const event of plannedEvents) {
+    for (const other of plannedEvents) {
       if (other.id <= event.id || other.date !== event.date) continue;
       const duplicate = event.lineup.map(item => item.playerId).filter(Boolean)
         .find(playerId => other.lineup.some(item => item.playerId === playerId));
       if (duplicate) conflicts.push({ eventIds: [event.id, other.id], label: 'Spieler ist am selben Tag doppelt eingeplant' });
     }
     for (const choice of event.eitherOr) {
-      const datesAssigned = normalizedEvents.filter(item => item.teamId === event.teamId && [choice.firstDate, choice.secondDate].includes(item.date))
+      const datesAssigned = plannedEvents.filter(item => item.teamId === event.teamId && [choice.firstDate, choice.secondDate].includes(item.date))
         .filter(item => item.lineup.some(slot => slot.playerId === choice.playerId));
       if (datesAssigned.length > 1) conflicts.push({ eventIds: datesAssigned.map(item => item.id), label: `${choice.player} verletzt eine Entweder/oder-Regel` });
     }
@@ -269,6 +307,9 @@ function validateOrigin(request) {
 function updateEvent(database, eventId, body, actorId) {
   const current = database.prepare('SELECT * FROM team_calendar_events WHERE id = ?').get(eventId);
   if (!current) throw Object.assign(new Error('event_not_found'), { status: 404 });
+  if (current.event_type === 'open' || current.planner_state === 'open') {
+    throw Object.assign(new Error('event_not_editable'), { status: 409 });
+  }
   const values = {};
   const textFields = {
     title: 'title', opponent: 'opponent_name', opggUrl: 'opgg_url', note: 'note',
@@ -315,6 +356,12 @@ function updateEvent(database, eventId, body, actorId) {
     if (selectedIds.some(id => !Number.isSafeInteger(id) || id <= 0) || new Set(selectedIds).size !== selectedIds.length) {
       throw Object.assign(new Error('invalid_lineup'), { status: 400 });
     }
+    const selectedStandinIds = [...requested.values()]
+      .filter(item => !item.preserve && item.standinId != null && item.standinId !== '')
+      .map(item => Number(item.standinId));
+    if (selectedStandinIds.some(id => !Number.isSafeInteger(id) || id <= 0) || new Set(selectedStandinIds).size !== selectedStandinIds.length) {
+      throw Object.assign(new Error('invalid_lineup'), { status: 400 });
+    }
 
     const selectedPlayers = new Map();
     if (selectedIds.length) {
@@ -329,6 +376,22 @@ function updateEvent(database, eventId, body, actorId) {
         throw Object.assign(new Error('lineup_player_not_in_team'), { status: 400 });
       }
     }
+    const selectedStandins = new Map();
+    if (selectedStandinIds.length) {
+      const standinColumns = columns(database, 'standins');
+      if (!standinColumns.size) throw Object.assign(new Error('invalid_lineup'), { status: 400 });
+      const rows = database.prepare(`
+        SELECT id, display_name, ${standinColumns.has('team_id') ? 'team_id' : 'NULL AS team_id'}
+        FROM standins
+        WHERE id IN (${selectedStandinIds.map(() => '?').join(',')})
+          AND COALESCE(is_active, 1) = 1
+      `).all(...selectedStandinIds);
+      for (const standin of rows) selectedStandins.set(standin.id, standin);
+      if (selectedStandinIds.some(id => {
+        const standin = selectedStandins.get(id);
+        return !standin || (standin.team_id != null && standin.team_id !== current.team_id);
+      })) throw Object.assign(new Error('lineup_standin_not_in_team'), { status: 400 });
+    }
 
     const now = new Date().toISOString();
     const saveLineup = () => {
@@ -337,12 +400,12 @@ function updateEvent(database, eventId, body, actorId) {
         INSERT INTO team_calendar_assignments (
           event_id, role_label, player_label, assignee_type,
           player_id, standin_id, note, created_at, updated_at
-        ) VALUES (?, ?, ?, 'player', ?, NULL, NULL, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
         ON CONFLICT(event_id, role_label) DO UPDATE SET
           player_label = excluded.player_label,
           assignee_type = excluded.assignee_type,
           player_id = excluded.player_id,
-          standin_id = NULL,
+          standin_id = excluded.standin_id,
           note = NULL,
           updated_at = excluded.updated_at
       `);
@@ -350,12 +413,14 @@ function updateEvent(database, eventId, body, actorId) {
         const item = requested.get(role);
         if (item?.preserve) continue;
         const playerId = item?.playerId == null || item.playerId === '' ? null : Number(item.playerId);
-        if (!playerId) {
+        const standinId = item?.standinId == null || item.standinId === '' ? null : Number(item.standinId);
+        if (!playerId && !standinId) {
           remove.run(eventId, role);
           continue;
         }
-        const player = selectedPlayers.get(playerId);
-        upsert.run(eventId, role, displayName(player), playerId, now, now);
+        const candidate = playerId ? selectedPlayers.get(playerId) : selectedStandins.get(standinId);
+        const label = playerId ? displayName(candidate) : candidate.display_name;
+        upsert.run(eventId, role, label, playerId ? 'player' : 'standin', playerId, standinId, now, now);
       }
     };
     if (typeof database.transaction === 'function') database.transaction(saveLineup)();
@@ -376,16 +441,52 @@ function updateEvent(database, eventId, body, actorId) {
   return database.prepare('SELECT * FROM team_calendar_events WHERE id = ?').get(eventId);
 }
 
+function createStandin(database, body, actorId) {
+  const teamId = Number(body.teamId);
+  const displayNameValue = String(body.displayName || '').trim();
+  const riotGameName = String(body.riotGameName || '').trim();
+  const riotTag = String(body.riotTag || '').trim().replace(/^#/, '').toUpperCase();
+  const riotRegion = String(body.riotRegion || 'euw').trim().toLowerCase();
+  const preferredPosition = String(body.preferredPosition || '').trim() || null;
+  if (!Number.isSafeInteger(teamId) || !database.prepare('SELECT id FROM teams WHERE id = ? AND is_active = 1').get(teamId)) {
+    throw Object.assign(new Error('invalid_team'), { status: 400 });
+  }
+  if (displayNameValue.length < 2 || displayNameValue.length > 64 || riotGameName.length < 2 || riotGameName.length > 32 || riotTag.length < 2 || riotTag.length > 10) {
+    throw Object.assign(new Error('invalid_standin'), { status: 400 });
+  }
+  if (preferredPosition && !STARTER_ROLES.includes(preferredPosition)) {
+    throw Object.assign(new Error('invalid_standin_position'), { status: 400 });
+  }
+  const existing = database.prepare(`
+    SELECT id FROM standins
+    WHERE lower(riot_game_name) = lower(?) AND lower(riot_tag) = lower(?) AND lower(riot_region) = lower(?)
+    LIMIT 1
+  `).get(riotGameName, riotTag, riotRegion);
+  if (existing) throw Object.assign(new Error('standin_already_exists'), { status: 409 });
+  const now = new Date().toISOString();
+  const result = database.prepare(`
+    INSERT INTO standins (
+      display_name, riot_game_name, riot_tag, riot_region, preferred_position,
+      note, is_active, team_id, created_by_discord_user_id,
+      updated_by_discord_user_id, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, NULL, 1, ?, ?, ?, ?, ?)
+  `).run(displayNameValue, riotGameName, riotTag, riotRegion, preferredPosition, teamId, actorId, actorId, now, now);
+  return {
+    id: Number(result.lastInsertRowid), teamId, name: displayNameValue,
+    riotId: `${riotGameName}#${riotTag}`, region: riotRegion, preferredPosition
+  };
+}
+
 function exportPreview(database, week) {
   const start = mondayOf(week);
   const end = addDaysIso(start, 6);
   const rows = database.prepare(`
-    SELECT id, title, option_date, planner_state, show_in_player_calendar
+    SELECT id, title, option_date, event_type, planner_state, show_in_player_calendar
     FROM team_calendar_events
     WHERE option_date BETWEEN ? AND ? AND status NOT IN ('cancelled', 'deleted')
   `).all(start, end);
-  const publish = rows.filter(row => row.planner_state === 'preplanned' && !row.show_in_player_calendar);
-  const update = rows.filter(row => row.planner_state === 'preplanned' && row.show_in_player_calendar);
+  const publish = rows.filter(row => row.event_type !== 'open' && row.planner_state === 'preplanned' && !row.show_in_player_calendar);
+  const update = rows.filter(row => row.event_type !== 'open' && row.planner_state === 'preplanned' && row.show_in_player_calendar);
   const remove = rows.filter(row => ['open', 'excluded'].includes(row.planner_state) && row.show_in_player_calendar);
   return { weekStart: start, publish, update, remove, total: publish.length + update.length + remove.length };
 }
@@ -491,5 +592,5 @@ function copyPreviousWeek(database, week, actorId) {
 
 module.exports = {
   buildPlannerSnapshot, parseBody, validateOrigin, updateEvent, exportPreview,
-  exportWeek, undoExport, copyPreviousWeek, mondayOf, addDaysIso
+  exportWeek, undoExport, copyPreviousWeek, createStandin, mondayOf, addDaysIso
 };

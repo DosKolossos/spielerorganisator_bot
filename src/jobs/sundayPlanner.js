@@ -6,8 +6,8 @@ const { getTeamById, getDefaultTeam } = require('../services/teamService');
 const PLANNER_WINDOW_DAYS = 14;
 
 const SLOT_CONFIG = {
-  weekdayStart: '19:30',
-  weekendStart: '19:30',
+  weekdayStart: '19:00',
+  weekendStart: '19:00',
   dayEnd: '23:00',
   minDurationMinutes: 150,
   slotStepMinutes: 30
