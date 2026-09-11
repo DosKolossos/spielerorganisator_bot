@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { DatabaseSync } = require('node:sqlite');
 const { buildPlannerSnapshot, startPlannerWebServer } = require('../src/web/plannerServer');
+const { updateEvent, exportPreview, exportWeek, undoExport, copyPreviousWeek } = require('../src/services/plannerWebService');
 
 function createTestDatabase() {
   const database = new DatabaseSync(':memory:');
@@ -47,18 +48,54 @@ function createTestDatabase() {
 
 test('Snapshot trennt Teams und enthält Aufstellung sowie Entweder-oder-Angabe', () => {
   const database = createTestDatabase();
-  const snapshot = buildPlannerSnapshot({ isReady: () => true }, database);
+  const snapshot = buildPlannerSnapshot({ isReady: () => true }, database, { week: '2099-04-06' });
 
   assert.equal(snapshot.botOnline, true);
   assert.equal(snapshot.teams.length, 2);
   assert.equal(snapshot.teams[0].events[0].opponent, 'Beispiel Gaming');
   assert.deepEqual(snapshot.teams[0].events[0].lineup, [
-    { role: 'Top', player: 'Joe Kurt', type: 'player' }
+    { role: 'Top', player: 'Joe Kurt', type: 'player', playerId: null }
   ]);
   assert.deepEqual(snapshot.teams[0].events[0].eitherOr, [
-    { player: 'Joe Kurt', firstDate: '2099-04-06', secondDate: '2099-04-08' }
+    { player: 'Joe Kurt', playerId: 7, firstDate: '2099-04-06', secondDate: '2099-04-08' }
   ]);
   assert.equal(snapshot.teams[1].events.length, 0);
+  database.close();
+});
+
+test('Vorwoche kopieren übernimmt Struktur, aber keine Gegnerdaten', () => {
+  const database = new DatabaseSync(':memory:');
+  database.exec(`
+    CREATE TABLE team_calendar_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, team_id INTEGER, title TEXT NOT NULL,
+      opponent_name TEXT, event_type TEXT, status TEXT, option_date TEXT,
+      window_start_at TEXT, window_end_at TEXT, scheduled_start_at TEXT, scheduled_end_at TEXT,
+      meeting_scrim_at TEXT, meeting_primeleague_at TEXT, available_players_text TEXT,
+      opgg_url TEXT, note TEXT, is_auto_generated INTEGER, admin_card_collapsed INTEGER,
+      show_in_player_calendar INTEGER, planner_state TEXT, match_format TEXT, fearless_mode INTEGER,
+      drafter_url TEXT, drafter_opponent_name TEXT, opponent_lineup_json TEXT, result_text TEXT,
+      is_streamed INTEGER, start_at TEXT, end_at TEXT, meeting_at TEXT,
+      created_by_discord_user_id TEXT, updated_by_discord_user_id TEXT, created_at TEXT, updated_at TEXT
+    );
+    INSERT INTO team_calendar_events (
+      team_id, title, opponent_name, event_type, status, option_date, window_start_at,
+      window_end_at, scheduled_start_at, scheduled_end_at, opgg_url, planner_state,
+      match_format, fearless_mode, drafter_url, result_text, created_by_discord_user_id,
+      updated_by_discord_user_id, created_at, updated_at
+    ) VALUES (1, 'Scrim', 'Old Opponent', 'scrim', 'fixed', '2099-03-30',
+      '2099-03-30 20:00', '2099-03-30 22:30', '2099-03-30 20:00',
+      '2099-03-30 22:30', 'https://op.gg/old', 'published', 'bo3', 1,
+      'https://drafter.lol/old', '2:1', 'coach', 'coach', '2099-01-01', '2099-01-01');
+  `);
+  database.transaction = callback => callback;
+  const copied = copyPreviousWeek(database, '2099-04-06', 'coach-2');
+  assert.equal(copied.copied.length, 1);
+  const event = database.prepare(`SELECT * FROM team_calendar_events WHERE option_date = '2099-04-06'`).get();
+  assert.equal(event.planner_state, 'preplanned');
+  assert.equal(event.opponent_name, null);
+  assert.equal(event.opgg_url, null);
+  assert.equal(event.drafter_url, null);
+  assert.equal(event.match_format, 'bo3');
   database.close();
 });
 
@@ -87,10 +124,57 @@ test('Webserver liefert Healthcheck, API und Oberfläche aus', async t => {
 
   const baseUrl = `http://127.0.0.1:${server.address().port}`;
   const health = await fetch(`${baseUrl}/healthz`).then(response => response.json());
-  const planner = await fetch(`${baseUrl}/api/planner`).then(response => response.json());
+  const planner = await fetch(`${baseUrl}/api/planner?week=2099-04-06`).then(response => response.json());
   const page = await fetch(baseUrl).then(response => response.text());
 
   assert.deepEqual(health, { status: 'ok', botOnline: true });
   assert.equal(planner.teams[0].events[0].id, 10);
   assert.match(page, /SchiggyGang Planer/);
+});
+
+test('Terminbearbeitung validiert Auswahlfelder und Export erfasst nur Planner-Karten', async () => {
+  const database = createTestDatabase();
+  database.exec(`
+    ALTER TABLE team_calendar_events ADD COLUMN planner_state TEXT NOT NULL DEFAULT 'open';
+    ALTER TABLE team_calendar_events ADD COLUMN match_format TEXT NOT NULL DEFAULT '3_games';
+    ALTER TABLE team_calendar_events ADD COLUMN fearless_mode INTEGER NOT NULL DEFAULT 1;
+    ALTER TABLE team_calendar_events ADD COLUMN drafter_url TEXT;
+    ALTER TABLE team_calendar_events ADD COLUMN drafter_opponent_name TEXT;
+    ALTER TABLE team_calendar_events ADD COLUMN opponent_lineup_json TEXT;
+    ALTER TABLE team_calendar_events ADD COLUMN result_text TEXT;
+    ALTER TABLE team_calendar_events ADD COLUMN show_in_player_calendar INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE team_calendar_events ADD COLUMN updated_by_discord_user_id TEXT;
+    ALTER TABLE team_calendar_events ADD COLUMN last_exported_at TEXT;
+    CREATE TABLE planner_exports (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, week_start_date TEXT,
+      actor_discord_user_id TEXT, changes_json TEXT, created_at TEXT,
+      reverted_at TEXT, reverted_by_discord_user_id TEXT
+    );
+  `);
+  database.transaction = callback => callback;
+
+  updateEvent(database, 10, {
+    plannerState: 'preplanned',
+    matchFormat: 'bo3',
+    fearless: false,
+    opponentLineup: [{ role: 'Top', player: 'Opponent Top' }]
+  }, 'coach-1');
+
+  const preview = exportPreview(database, '2099-04-06');
+  assert.equal(preview.publish.length, 1);
+  assert.equal(preview.remove.length, 0);
+  assert.equal(preview.publish[0].id, 10);
+  assert.throws(() => updateEvent(database, 10, { matchFormat: 'best-of-99' }, 'coach-1'), /invalid_match_format/);
+
+  const synced = [];
+  const exported = await exportWeek({}, database, '2099-04-06', 'coach-1', async (_, id) => synced.push(id));
+  assert.equal(exported.exportId, 1);
+  assert.deepEqual(synced, [10]);
+  assert.equal(database.prepare('SELECT show_in_player_calendar FROM team_calendar_events WHERE id = 10').get().show_in_player_calendar, 1);
+
+  const undone = await undoExport({}, database, '2099-04-06', 'coach-1', async () => {});
+  assert.equal(undone.restored, 1);
+  assert.equal(database.prepare('SELECT show_in_player_calendar FROM team_calendar_events WHERE id = 10').get().show_in_player_calendar, 0);
+
+  database.close();
 });

@@ -1,86 +1,33 @@
 <!doctype html>
 <html lang="de">
   <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="color-scheme" content="dark">
-    <title>SchiggyGang Planer</title>
-    <link rel="stylesheet" href="/styles.css">
+    <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="dark">
+    <title>SchiggyGang Planer</title><link rel="stylesheet" href="/styles.css">
   </head>
   <body>
-    <header class="hero">
-      <div>
-        <p class="eyebrow">SCHIGGYGANG ESPORTS</p>
-        <h1>Teamplaner</h1>
-        <p class="subtitle">Mainteam und Shinys in einer gemeinsamen Live-Ansicht.</p>
-      </div>
-      <div class="connection" aria-live="polite">
-        <span id="live-dot" class="dot"></span>
-        <div>
-          <strong id="live-label">Verbindung wird hergestellt</strong>
-          <small id="last-update">Noch keine Daten</small>
-        </div>
-      </div>
-    </header>
-
+    <header class="hero"><div><p class="eyebrow">SCHIGGYGANG ESPORTS</p><h1>Teamplaner</h1><p class="subtitle">Mainteam und Shinys. Eine Woche, live mit Discord.</p></div><div class="connection"><span id="live-dot" class="dot"></span><div><strong id="live-label">Verbindung wird hergestellt</strong><small id="last-update">Noch keine Daten</small></div></div></header>
     <main>
-      <section id="login" class="login-panel" hidden>
-        <p class="eyebrow">GESCHÜTZTER BEREICH</p>
-        <h2>Mit Discord anmelden</h2>
-        <p>Der Teamplaner ist nur für freigeschaltete Coaches und Server-Administratoren sichtbar.</p>
-        <a class="login-button" href="/auth/login">Discord-Anmeldung öffnen</a>
-        <small id="login-status"></small>
-      </section>
+      <section id="login" class="panel login" hidden><p class="eyebrow">GESCHÜTZTER BEREICH</p><h2>Mit Discord anmelden</h2><p>Nur Coaches und Server-Administratoren haben Zugriff.</p><a class="button primary" href="/auth/login">Discord-Anmeldung öffnen</a><small id="login-status"></small></section>
       <div id="planner" hidden>
-        <div class="planner-toolbar">
-          <span id="signed-in-user"></span>
-          <a href="/auth/logout">Abmelden</a>
-        </div>
-      <aside class="preview-notice">
-        <strong>Vorschau</strong>
-        Diese erste Version zeigt echte Planerdaten, erlaubt aber noch keine Änderungen.
-      </aside>
-      <section id="teams" class="team-grid" aria-live="polite">
-        <div class="loading">Termine werden geladen …</div>
-      </section>
+        <div class="account"><span id="signed-in-user"></span><a href="/auth/logout">Abmelden</a></div>
+        <nav class="week-nav panel" aria-label="Wochenauswahl"><button id="previous-week" class="button">← Vergangene Woche</button><label>Woche wählen <input id="week-picker" type="date"></label><button id="next-week" class="button">Nächste Woche →</button><span id="week-label"></span><button id="copy-week" class="button ghost">Vorwoche kopieren</button><button id="export" class="button primary">Planung exportieren</button><button id="undo-export" class="button ghost">Export rückgängig</button></nav>
+        <section class="insights"><article class="panel"><div class="section-title"><h2>Offene Aufgaben</h2><span class="hint">erst ab 1 Tag vorher</span></div><div id="tasks" class="stack"></div></article><article class="panel"><div class="section-title"><h2>Änderungen</h2><span class="hint">nach Sonntag, 20:00</span></div><div id="changes" class="stack"></div></article></section>
+        <section id="conflicts" class="conflicts" hidden></section>
+        <section id="calendar" class="calendar panel" aria-live="polite"><div class="loading">Planer wird geladen …</div></section>
+        <section id="matchday" class="panel"><div class="section-title"><h2>Matchday</h2><span class="hint">heute und morgen</span></div><div id="matchday-items" class="matchday-grid"></div></section>
       </div>
     </main>
-
-    <template id="team-template">
-      <article class="team-panel">
-        <div class="team-heading">
-          <div>
-            <p class="team-kicker">TEAM</p>
-            <h2></h2>
-          </div>
-          <span class="event-count"></span>
-        </div>
-        <div class="events"></div>
-      </article>
-    </template>
-
-    <template id="event-template">
-      <article class="event-card">
-        <div class="event-topline">
-          <time class="event-date"></time>
-          <div class="badges"></div>
-        </div>
-        <h3></h3>
-        <p class="event-opponent"></p>
-        <dl class="event-meta"></dl>
-        <div class="event-section lineup-section">
-          <h4>Aufstellung</h4>
-          <div class="lineup"></div>
-        </div>
-        <div class="event-section availability-section">
-          <h4>Verfügbarkeit</h4>
-          <p class="availability"></p>
-          <div class="either-or"></div>
-        </div>
-        <a class="opgg-link" target="_blank" rel="noopener noreferrer">OP.GG öffnen</a>
-      </article>
-    </template>
-
-    <script src="/app.js" defer></script>
+    <dialog id="event-dialog"><form id="event-form"><div class="dialog-heading"><div><p class="eyebrow">TERMIN BEARBEITEN</p><h2 id="event-dialog-title"></h2></div><button type="button" class="icon-button" data-close>×</button></div><input id="event-id" type="hidden"><div class="form-grid">
+      <label>Titel<input id="event-title" maxlength="120"></label><label>Gegner<input id="event-opponent" maxlength="120"></label>
+      <label>Terminart<select id="event-type"><option value="open">Offen</option><option value="scrim">Scrim</option><option value="primeleague">PRM</option><option value="training">Training</option><option value="flex">Flex</option><option value="other">Sonstiges</option></select></label>
+      <label>Status<select id="event-status"><option value="pending">Offen</option><option value="fixed">Fix</option><option value="cancelled">Abgesagt</option></select></label>
+      <label>Planung<select id="event-planner-state"><option value="open">Offen</option><option value="preplanned">Vorgeplant</option><option value="published">Veröffentlicht</option><option value="excluded">Nicht exportieren</option></select></label>
+      <label>Format<select id="event-format"><option value="2_games">2 Spiele</option><option value="3_games">3 Spiele (Standard)</option><option value="bo3">BO3</option><option value="bo4">BO4</option><option value="bo5">BO5</option></select></label>
+      <label>Draftmodus<select id="event-fearless"><option value="1">Fearless (Standard)</option><option value="0">Kein Fearless</option></select></label><label>Gegner-OP.GG<input id="event-opgg" type="url"></label>
+      <label class="wide">Drafter-Link <span class="inline-actions"><input id="event-drafter" type="url"><button id="copy-drafter" type="button" class="button ghost">Link kopieren</button><a id="open-drafter" class="button" href="https://drafter.lol" target="_blank" rel="noopener noreferrer">Drafter erstellen</a></span><small id="drafter-hint"></small></label>
+      <fieldset class="wide"><legend>Gegneraufstellung</legend><div id="opponent-lineup" class="lineup-editor"></div><small>Unsichere Positionen leer lassen – sie werden als offen markiert.</small></fieldset><label>Ergebnis<input id="event-result" placeholder="z. B. 2:1"></label><label class="wide">Hinweis<textarea id="event-note" rows="3" maxlength="1500"></textarea></label>
+    </div><div id="form-message" class="form-message"></div><div class="dialog-actions"><button type="button" class="button ghost" data-close>Abbrechen</button><button class="button primary" type="submit">Speichern</button></div></form></dialog>
+    <dialog id="export-dialog"><div class="dialog-heading"><div><p class="eyebrow">DISCORD-SCHEDULE</p><h2>Export-Vorschau</h2></div><button type="button" class="icon-button" data-export-close>×</button></div><div id="export-preview"></div><div class="dialog-actions"><button class="button ghost" data-export-close>Abbrechen</button><button id="confirm-export" class="button primary">Jetzt abgleichen</button></div></dialog>
+    <div id="toast" role="status" aria-live="polite"></div><script src="/app.js" defer></script>
   </body>
 </html>

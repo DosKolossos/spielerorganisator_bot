@@ -487,10 +487,31 @@ function buildPlayerCalendarDescription(event, assignments) {
     teamOpgg.ok ? `[OP.GG öffnen](${teamOpgg.url})` : 'OP.GG öffnen: -',
     '',
     event.opgg_url ? `[Gegner OP.GG](${event.opgg_url})` : 'Gegner OP.GG: -',
+    `Format: ${plannerFormatLabel(event.match_format)} · ${Number(event.fearless_mode) === 0 ? 'kein Fearless' : 'Fearless'}`,
+    event.event_type === 'primeleague'
+      ? 'Drafter: wird von Prime League zum Spieltermin bereitgestellt'
+      : (event.drafter_url ? `[Drafter öffnen](${event.drafter_url})` : 'Drafter: -'),
     '',
     'Hinweis',
     event.note?.trim() || '-'
   ].join('\n');
+}
+
+function plannerFormatLabel(value) {
+  return ({
+    '2_games': '2 Spiele',
+    '3_games': '3 Spiele',
+    bo3: 'BO3',
+    bo4: 'BO4',
+    bo5: 'BO5'
+  })[value] || '3 Spiele';
+}
+
+function opponentLineupText(value) {
+  let lineup = [];
+  try { lineup = value ? JSON.parse(value) : []; } catch (_) { lineup = []; }
+  if (!Array.isArray(lineup) || !lineup.length) return '-';
+  return lineup.map(item => `${item.role || '?'}: ${item.player || 'offen'}`).join('\n');
 }
 
 function findPlayerByLabel(label, teamId = null) {
@@ -2013,6 +2034,28 @@ function buildEventCardPayload(eventId) {
         name: 'Gegner OPGG',
         value: truncateField(event.opgg_url ?? '-'),
         inline: false
+      },
+      {
+        name: 'Format',
+        value: `${plannerFormatLabel(event.match_format)} · ${Number(event.fearless_mode) === 0 ? 'kein Fearless' : 'Fearless'}`,
+        inline: true
+      },
+      {
+        name: 'Drafter',
+        value: event.event_type === 'primeleague'
+          ? 'Extern durch Prime League zum Spieltermin'
+          : truncateField(event.drafter_url ? `[Drafter öffnen](${event.drafter_url})` : '-'),
+        inline: true
+      },
+      {
+        name: 'Gegneraufstellung',
+        value: truncateField(opponentLineupText(event.opponent_lineup_json)),
+        inline: false
+      },
+      {
+        name: 'Ergebnis',
+        value: truncateField(event.result_text ?? '-'),
+        inline: true
       },
       {
         name: 'Team OPGG',

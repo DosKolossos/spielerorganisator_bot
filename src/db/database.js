@@ -208,6 +208,14 @@ db.exec(`
     player_channel_id TEXT,
     player_message_id TEXT,
     show_in_player_calendar INTEGER NOT NULL DEFAULT 0,
+    planner_state TEXT NOT NULL DEFAULT 'open',
+    match_format TEXT NOT NULL DEFAULT '3_games',
+    fearless_mode INTEGER NOT NULL DEFAULT 1,
+    drafter_url TEXT,
+    drafter_opponent_name TEXT,
+    opponent_lineup_json TEXT,
+    result_text TEXT,
+    last_exported_at TEXT,
     is_streamed INTEGER NOT NULL DEFAULT 0,
     discord_scheduled_event_id TEXT,
     discord_scheduled_event_guild_id TEXT,
@@ -352,6 +360,14 @@ function migrateTeamCalendarEvents() {
   addColumnIfMissing('team_calendar_events', 'player_channel_id', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'player_message_id', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'show_in_player_calendar', `INTEGER NOT NULL DEFAULT 0`);
+  addColumnIfMissing('team_calendar_events', 'planner_state', `TEXT NOT NULL DEFAULT 'open'`);
+  addColumnIfMissing('team_calendar_events', 'match_format', `TEXT NOT NULL DEFAULT '3_games'`);
+  addColumnIfMissing('team_calendar_events', 'fearless_mode', `INTEGER NOT NULL DEFAULT 1`);
+  addColumnIfMissing('team_calendar_events', 'drafter_url', `TEXT`);
+  addColumnIfMissing('team_calendar_events', 'drafter_opponent_name', `TEXT`);
+  addColumnIfMissing('team_calendar_events', 'opponent_lineup_json', `TEXT`);
+  addColumnIfMissing('team_calendar_events', 'result_text', `TEXT`);
+  addColumnIfMissing('team_calendar_events', 'last_exported_at', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'is_streamed', `INTEGER NOT NULL DEFAULT 0`);
   addColumnIfMissing('team_calendar_events', 'discord_scheduled_event_id', `TEXT`);
   addColumnIfMissing('team_calendar_events', 'discord_scheduled_event_guild_id', `TEXT`);
@@ -418,6 +434,47 @@ function migrateTeamCalendarEvents() {
     UPDATE team_calendar_events
     SET event_type = 'open'
     WHERE event_type IS NULL OR trim(event_type) = '';
+  `);
+
+  db.exec(`
+    UPDATE team_calendar_events
+    SET planner_state = 'published'
+    WHERE COALESCE(show_in_player_calendar, 0) = 1
+      AND planner_state = 'open';
+  `);
+}
+
+function migratePlannerWeb() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS planner_change_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      team_id INTEGER,
+      player_id INTEGER,
+      event_id INTEGER,
+      change_type TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      details_json TEXT,
+      actor_discord_user_id TEXT,
+      created_at TEXT NOT NULL,
+      acknowledged_at TEXT,
+      acknowledged_by_discord_user_id TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS planner_exports (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      week_start_date TEXT NOT NULL,
+      actor_discord_user_id TEXT NOT NULL,
+      changes_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      reverted_at TEXT,
+      reverted_by_discord_user_id TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_planner_change_log_date
+    ON planner_change_log (created_at DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_planner_exports_week
+    ON planner_exports (week_start_date, created_at DESC);
   `);
 }
 
@@ -687,6 +744,7 @@ migratePlayers();
 migrateAvailabilityEntries();
 migrateAvailabilityRules();
 migrateTeamCalendarEvents();
+migratePlannerWeb();
 migrateAdminCardsCollapsedByDefault();
 dedupeSuggestionKeys();
 migrateTeamCalendarAssignments();
