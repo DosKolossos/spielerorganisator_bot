@@ -44,7 +44,7 @@ function eventCard(event) {
   card.append(top, element('span', 'event-detail', `${timeLabel(event.startsAt)} · ${typeLabels[event.type] || event.type}`));
   if (event.result) card.append(element('span', 'result', `Ergebnis ${event.result}`));
   if (event.lineup.length) card.append(element('span', 'mini-lineup', event.lineup.map(slot => slot.player).join(' · ')));
-  if (event.drafterStale) card.append(element('span', 'warning-copy', '⚠ Drafter nach Gegneränderung neu erzeugen'));
+  if (event.drafterStale) card.append(element('span', 'warning-copy', '⚠ Drafter-Link nach Gegneränderung ersetzen'));
   const openPositions = roles.filter(role => !event.opponentLineup.some(item => item.role === role && item.player));
   if (event.opponentLineup.length && openPositions.length) card.append(element('span', 'warning-copy', `⚠ ${openPositions.length} Gegnerpositionen offen`));
   return card;
@@ -156,8 +156,8 @@ function openEvent(id) {
   $('#event-status').value = [...$('#event-status').options].some(option => option.value === event.status) ? event.status : 'pending';
   $('#event-planner-state').value = event.plannerState; $('#event-format').value = event.matchFormat; $('#event-fearless').value = event.fearless ? '1' : '0';
   $('#event-opgg').value = event.opggUrl || ''; $('#event-drafter').value = event.drafterUrl || ''; $('#event-result').value = event.result || ''; $('#event-note').value = event.note || '';
-  $('#drafter-hint').textContent = event.type === 'primeleague' ? 'Bei PRM bleibt der Drafter extern und wird hier nicht benötigt.' : (event.drafterStale ? 'Der Gegner wurde geändert. Bitte neu generieren.' : '');
-  $('#generate-drafter').disabled = event.type === 'primeleague';
+  $('#drafter-hint').textContent = event.type === 'primeleague' ? 'Bei PRM bleibt der Drafter extern und wird hier nicht benötigt.' : (event.drafterStale ? 'Der Gegner wurde geändert. Bitte einen neuen Drafter erstellen und den Link ersetzen.' : 'Drafter.lol öffnen, erstellen und den Link hier einfügen.');
+  $('#open-drafter').hidden = event.type === 'primeleague';
   const lineup = $('#opponent-lineup'); lineup.replaceChildren();
   roles.forEach(role => { const label = element('label', '', role); const input = document.createElement('input'); input.dataset.role = role; input.value = event.opponentLineup.find(item => item.role === role)?.player || ''; label.append(input); lineup.append(label); });
   $('#form-message').textContent = ''; eventDialog.showModal();
@@ -176,10 +176,8 @@ $('#tasks').addEventListener('click', event => { const item = event.target.close
 document.querySelectorAll('[data-close]').forEach(button => button.addEventListener('click', () => eventDialog.close()));
 document.querySelectorAll('[data-export-close]').forEach(button => button.addEventListener('click', () => exportDialog.close()));
 
-$('#event-type').addEventListener('change', () => { const prm = $('#event-type').value === 'primeleague'; $('#generate-drafter').disabled = prm; $('#drafter-hint').textContent = prm ? 'Bei PRM wird kein Drafter hinterlegt.' : ''; });
+$('#event-type').addEventListener('change', () => { const prm = $('#event-type').value === 'primeleague'; $('#open-drafter').hidden = prm; $('#drafter-hint').textContent = prm ? 'Bei PRM wird kein Drafter hinterlegt.' : 'Drafter.lol öffnen, erstellen und den Link hier einfügen.'; });
 $('#copy-drafter').addEventListener('click', async () => { if (!$('#event-drafter').value) return toast('Noch kein Drafter-Link vorhanden.', true); await navigator.clipboard.writeText($('#event-drafter').value); toast('Drafter-Link kopiert.'); });
-$('#generate-drafter').addEventListener('click', async () => { try { const data = await api(`/api/events/${$('#event-id').value}/drafter`, { method: 'POST', body: '{}' }); $('#event-drafter').value = data.url; toast('Neuer Drafter erstellt.'); } catch (error) { toast(error.message === 'drafter_token_not_configured' ? 'Der Drafter-Token muss noch auf dem Server hinterlegt werden.' : error.message, true); } });
-
 $('#event-form').addEventListener('submit', async event => {
   event.preventDefault();
   const opponentLineup = [...$('#opponent-lineup').querySelectorAll('input')].map(input => ({ role: input.dataset.role, player: input.value.trim() })).filter(item => item.player);
