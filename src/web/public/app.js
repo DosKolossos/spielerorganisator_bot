@@ -1,212 +1,212 @@
-const teamsRoot = document.querySelector('#teams');
-const teamTemplate = document.querySelector('#team-template');
-const eventTemplate = document.querySelector('#event-template');
-const liveDot = document.querySelector('#live-dot');
-const liveLabel = document.querySelector('#live-label');
-const lastUpdate = document.querySelector('#last-update');
-const loginPanel = document.querySelector('#login');
-const loginStatus = document.querySelector('#login-status');
-const planner = document.querySelector('#planner');
-const signedInUser = document.querySelector('#signed-in-user');
+const $ = selector => document.querySelector(selector);
+const calendar = $('#calendar');
+const planner = $('#planner');
+const login = $('#login');
+const eventDialog = $('#event-dialog');
+const exportDialog = $('#export-dialog');
+const roles = ['Top', 'Jgl', 'Mid', 'ADC', 'Supp'];
+let snapshot;
+let liveStream;
+let selectedWeek;
 
-const dateFormatter = new Intl.DateTimeFormat('de-DE', {
-  weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric'
-});
-const timeFormatter = new Intl.DateTimeFormat('de-DE', {
-  hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Berlin'
-});
+const typeLabels = { open: 'Offen', scrim: 'Scrim', primeleague: 'PRM', training: 'Training', flex: 'Flex', other: 'Sonstiges' };
+const stateLabels = { open: 'Offen', preplanned: 'Vorgeplant', published: 'Veröffentlicht', excluded: 'Nicht exportieren' };
+const dateLabel = value => new Intl.DateTimeFormat('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit', timeZone: 'UTC' }).format(new Date(`${value}T12:00:00Z`));
+const timeLabel = value => value ? `${String(value).slice(11, 16)} Uhr` : 'offen';
 
-const typeLabels = {
-  scrim: 'Scrim',
-  primeleague: 'Prime League',
-  training: 'Training',
-  open: 'Offen'
-};
-const statusLabels = {
-  pending: 'Offen',
-  planned: 'Geplant',
-  confirmed: 'Bestätigt',
-  scheduled: 'Terminiert',
-  completed: 'Beendet'
-};
-
-function parseDate(value) {
-  if (!value) return null;
-  const normalized = value.includes('T') ? value : value.replace(' ', 'T');
-  const date = new Date(normalized);
-  return Number.isNaN(date.getTime()) ? null : date;
+function element(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text != null) node.textContent = text;
+  return node;
 }
 
-function formatTime(value) {
-  const date = parseDate(value);
-  return date ? `${timeFormatter.format(date)} Uhr` : 'noch offen';
+function toast(message, error = false) {
+  const root = $('#toast');
+  root.textContent = message;
+  root.className = error ? 'show error' : 'show';
+  setTimeout(() => { root.className = ''; }, 3500);
 }
 
-function addMeta(root, label, value) {
-  if (!value) return;
-  const wrapper = document.createElement('div');
-  const term = document.createElement('dt');
-  const detail = document.createElement('dd');
-  term.textContent = label;
-  detail.textContent = value;
-  wrapper.append(term, detail);
-  root.append(wrapper);
+async function api(path, options = {}) {
+  const response = await fetch(path, { cache: 'no-store', headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }, ...options });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+  return data;
 }
 
-function renderLineup(root, lineup) {
-  root.replaceChildren();
-  if (!lineup.length) {
-    root.textContent = 'Noch keine Aufstellung eingetragen.';
-    root.classList.add('empty-copy');
-    return;
+function eventCard(event) {
+  const card = element('button', `event-card state-${event.plannerState}`);
+  card.type = 'button';
+  card.dataset.eventId = event.id;
+  const top = element('span', 'event-top');
+  top.append(element('strong', '', event.opponent ? `vs. ${event.opponent}` : event.title || typeLabels[event.type]), element('span', 'state-pill', stateLabels[event.plannerState]));
+  card.append(top, element('span', 'event-detail', `${timeLabel(event.startsAt)} · ${typeLabels[event.type] || event.type}`));
+  if (event.result) card.append(element('span', 'result', `Ergebnis ${event.result}`));
+  if (event.lineup.length) card.append(element('span', 'mini-lineup', event.lineup.map(slot => slot.player).join(' · ')));
+  if (event.drafterStale) card.append(element('span', 'warning-copy', '⚠ Drafter nach Gegneränderung neu erzeugen'));
+  const openPositions = roles.filter(role => !event.opponentLineup.some(item => item.role === role && item.player));
+  if (event.opponentLineup.length && openPositions.length) card.append(element('span', 'warning-copy', `⚠ ${openPositions.length} Gegnerpositionen offen`));
+  return card;
+}
+
+function availabilityCell(day) {
+  const cell = element('span', `availability ${day.state}`);
+  cell.title = day.eitherOr ? `${day.label} · Entweder/oder mit ${dateLabel(day.eitherOr.firstDate === day.date ? day.eitherOr.secondDate : day.eitherOr.firstDate)}` : day.label;
+  cell.textContent = `${day.state === 'available' ? '●' : day.state === 'partial' ? '◐' : '–'}${day.eitherOr ? ' ↔' : ''}`;
+  return cell;
+}
+
+function renderTeam(team, dates) {
+  const section = element('section', 'team-section');
+  const heading = element('div', 'team-row team-heading-row');
+  const title = element('div', 'row-label');
+  title.append(element('span', 'team-kicker', 'TEAM'), element('h2', '', team.name));
+  heading.append(title);
+  for (const date of dates) {
+    const day = element('div', `day-heading ${team.fullLineup[date] ? 'full-lineup' : ''}`);
+    day.append(element('strong', '', dateLabel(date)), element('small', '', team.fullLineup[date] ? '✓ alle 5 verfügbar' : 'Line-up prüfen'));
+    heading.append(day);
   }
-  root.classList.remove('empty-copy');
-  for (const slot of lineup) {
-    const item = document.createElement('div');
-    const role = document.createElement('span');
-    const player = document.createElement('strong');
-    role.textContent = slot.role;
-    player.textContent = slot.player;
-    item.append(role, player);
-    root.append(item);
+  section.append(heading);
+
+  const eventsRow = element('div', 'team-row events-row');
+  eventsRow.append(element('div', 'row-label muted', 'Termine'));
+  for (const date of dates) {
+    const day = element('div', 'day-cell');
+    const items = team.events.filter(event => event.date === date);
+    if (!items.length) day.append(element('span', 'empty-day', '—'));
+    else items.forEach(event => day.append(eventCard(event)));
+    eventsRow.append(day);
   }
+  section.append(eventsRow);
+
+  const details = element('details', 'roster');
+  details.open = localStorage.getItem(`roster-open-${team.id}`) === '1';
+  const summary = element('summary', '', `Spieler & Subs (${team.roster.length})`);
+  details.append(summary);
+  details.addEventListener('toggle', () => localStorage.setItem(`roster-open-${team.id}`, details.open ? '1' : '0'));
+  for (const player of team.roster) {
+    if (localStorage.getItem(`player-hidden-${player.id}`) === '1') continue;
+    const row = element('div', 'team-row player-row');
+    const label = element('div', 'row-label player-label');
+    label.append(element('strong', '', player.name), element('small', '', player.rosterStatus === 'main' ? 'Main-Line-up' : 'Sub'));
+    const hide = element('button', 'hide-player', 'Ausblenden');
+    hide.type = 'button';
+    hide.addEventListener('click', () => { localStorage.setItem(`player-hidden-${player.id}`, '1'); render(snapshot); });
+    label.append(hide);
+    row.append(label);
+    dates.forEach(date => row.append(availabilityCell(player.days[date])));
+    details.append(row);
+  }
+  const reset = element('button', 'button ghost reset-hidden', 'Ausgeblendete Spieler wieder anzeigen');
+  reset.type = 'button';
+  reset.addEventListener('click', () => { team.roster.forEach(player => localStorage.removeItem(`player-hidden-${player.id}`)); render(snapshot); });
+  details.append(reset);
+  section.append(details);
+  return section;
 }
 
-function renderEitherOr(root, choices) {
-  root.replaceChildren();
-  for (const choice of choices) {
-    const item = document.createElement('p');
-    const first = parseDate(choice.firstDate);
-    const second = parseDate(choice.secondDate);
-    item.textContent = `↔ ${choice.player}: ${first ? dateFormatter.format(first) : choice.firstDate} oder ${second ? dateFormatter.format(second) : choice.secondDate}`;
-    root.append(item);
-  }
-}
-
-function renderEvent(event) {
-  const fragment = eventTemplate.content.cloneNode(true);
-  const card = fragment.querySelector('.event-card');
-  const startsAt = parseDate(event.startsAt || event.date);
-  fragment.querySelector('.event-date').textContent = startsAt
-    ? dateFormatter.format(startsAt)
-    : event.date || 'Datum offen';
-  fragment.querySelector('h3').textContent = event.title || typeLabels[event.type] || 'Termin';
-
-  const badges = fragment.querySelector('.badges');
-  const typeBadge = document.createElement('span');
-  typeBadge.className = `badge type-${event.type || 'open'}`;
-  typeBadge.textContent = typeLabels[event.type] || event.type || 'Termin';
-  const statusBadge = document.createElement('span');
-  statusBadge.className = `badge status-${event.status || 'pending'}`;
-  statusBadge.textContent = statusLabels[event.status] || event.status || 'Offen';
-  badges.append(typeBadge, statusBadge);
-
-  const opponent = fragment.querySelector('.event-opponent');
-  opponent.textContent = event.opponent ? `vs. ${event.opponent}` : 'Gegner noch offen';
-  opponent.classList.toggle('muted', !event.opponent);
-
-  const meta = fragment.querySelector('.event-meta');
-  addMeta(meta, 'Start', formatTime(event.startsAt));
-  addMeta(meta, 'Treffen', event.meetingAt ? formatTime(event.meetingAt) : null);
-  addMeta(meta, 'Stream', event.streamed ? 'Ja' : null);
-
-  renderLineup(fragment.querySelector('.lineup'), event.lineup || []);
-  const availability = fragment.querySelector('.availability');
-  availability.textContent = event.availability || 'Noch keine zusammengefassten Angaben.';
-  renderEitherOr(fragment.querySelector('.either-or'), event.eitherOr || []);
-
-  const opgg = fragment.querySelector('.opgg-link');
-  if (event.opggUrl) {
-    opgg.href = event.opggUrl;
-  } else {
-    opgg.remove();
-  }
-
-  if (!event.lineup?.length) card.querySelector('.lineup-section').classList.add('subtle');
-  return fragment;
-}
-
-function render(snapshot) {
-  teamsRoot.replaceChildren();
-  if (!snapshot.teams?.length) {
-    teamsRoot.innerHTML = '<div class="loading">Keine aktiven Teams gefunden.</div>';
-    return;
-  }
-
-  for (const team of snapshot.teams) {
-    const fragment = teamTemplate.content.cloneNode(true);
-    fragment.querySelector('h2').textContent = team.name;
-    fragment.querySelector('.event-count').textContent = `${team.events.length} ${team.events.length === 1 ? 'Termin' : 'Termine'}`;
-    const eventsRoot = fragment.querySelector('.events');
-    if (!team.events.length) {
-      const empty = document.createElement('div');
-      empty.className = 'empty-state';
-      empty.textContent = 'Aktuell sind keine kommenden Termine eingetragen.';
-      eventsRoot.append(empty);
-    } else {
-      for (const event of team.events) eventsRoot.append(renderEvent(event));
-    }
-    teamsRoot.append(fragment);
-  }
-
-  liveDot.classList.add('online');
-  liveLabel.textContent = snapshot.botOnline ? 'Live mit Discord verbunden' : 'Planerdaten verbunden';
-  lastUpdate.textContent = `Aktualisiert: ${timeFormatter.format(new Date(snapshot.generatedAt))}`;
-}
-
-async function loadInitialData() {
-  try {
-    const response = await fetch('/api/planner', { cache: 'no-store' });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    render(await response.json());
-  } catch (error) {
-    liveLabel.textContent = 'Daten konnten nicht geladen werden';
-    lastUpdate.textContent = 'Erneuter Versuch läuft …';
-    console.error(error);
-  }
-}
-
-function connectLiveUpdates() {
-  const stream = new EventSource('/api/live');
-  stream.addEventListener('planner', message => {
-    try {
-      render(JSON.parse(message.data));
-    } catch (error) {
-      console.error('Ungültige Live-Daten:', error);
-    }
+function renderTasks(tasks) {
+  const root = $('#tasks'); root.replaceChildren();
+  if (!tasks.length) return root.append(element('p', 'empty-copy', 'Keine dringenden Aufgaben.'));
+  tasks.forEach(task => {
+    const button = element('button', `task task-${task.level}`, `${task.level === 'complete' ? '✓' : task.level === 'external' ? '↗' : '!' } ${task.label} · ${dateLabel(task.date)}`);
+    button.type = 'button'; button.dataset.eventId = task.eventId; root.append(button);
   });
-  stream.onerror = () => {
-    liveDot.classList.remove('online');
-    liveLabel.textContent = 'Live-Verbindung wird erneuert';
-  };
 }
 
-async function start() {
+function renderChanges(changes) {
+  const root = $('#changes'); root.replaceChildren();
+  const open = changes.filter(change => !change.acknowledgedAt);
+  if (!open.length) return root.append(element('p', 'empty-copy', 'Keine neuen Änderungen.'));
+  open.slice(0, 6).forEach(change => root.append(element('div', 'change', change.summary)));
+}
+
+function renderMatchday() {
+  const root = $('#matchday-items'); root.replaceChildren();
+  const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Berlin' }).format(new Date());
+  const tomorrow = new Date(`${today}T12:00:00Z`); tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
+  const dates = new Set([today, tomorrow.toISOString().slice(0, 10)]);
+  const events = snapshot.teams.flatMap(team => team.events.map(event => ({ ...event, team: team.shortName || team.name }))).filter(event => dates.has(event.date));
+  if (!events.length) return root.append(element('p', 'empty-copy', 'Heute und morgen ist nichts angesetzt.'));
+  events.forEach(event => { const item = eventCard(event); item.prepend(element('span', 'team-tag', event.team)); root.append(item); });
+}
+
+function render(data) {
+  snapshot = data; selectedWeek = data.week.start; $('#week-picker').value = selectedWeek;
+  $('#week-label').textContent = `${dateLabel(data.week.start)} – ${dateLabel(data.week.end)}`;
+  calendar.replaceChildren();
+  const scroll = element('div', 'calendar-scroll');
+  data.teams.forEach(team => scroll.append(renderTeam(team, data.week.dates)));
+  calendar.append(scroll);
+  renderTasks(data.tasks); renderChanges(data.changes); renderMatchday();
+  const conflicts = $('#conflicts'); conflicts.replaceChildren(); conflicts.hidden = !data.conflicts.length;
+  data.conflicts.forEach(item => conflicts.append(element('p', '', `⚠ ${item.label}`)));
+  $('#live-dot').classList.add('online'); $('#live-label').textContent = data.botOnline ? 'Live mit Discord verbunden' : 'Planerdaten verbunden';
+  $('#last-update').textContent = `Aktualisiert ${new Intl.DateTimeFormat('de-DE', { hour: '2-digit', minute: '2-digit' }).format(new Date(data.generatedAt))}`;
+}
+
+function findEvent(id) { return snapshot.teams.flatMap(team => team.events).find(event => event.id === Number(id)); }
+
+function openEvent(id) {
+  const event = findEvent(id); if (!event) return;
+  $('#event-id').value = event.id; $('#event-dialog-title').textContent = `${dateLabel(event.date)} · ${event.title}`;
+  $('#event-title').value = event.title || ''; $('#event-opponent').value = event.opponent || ''; $('#event-type').value = event.type || 'open';
+  $('#event-status').value = [...$('#event-status').options].some(option => option.value === event.status) ? event.status : 'pending';
+  $('#event-planner-state').value = event.plannerState; $('#event-format').value = event.matchFormat; $('#event-fearless').value = event.fearless ? '1' : '0';
+  $('#event-opgg').value = event.opggUrl || ''; $('#event-drafter').value = event.drafterUrl || ''; $('#event-result').value = event.result || ''; $('#event-note').value = event.note || '';
+  $('#drafter-hint').textContent = event.type === 'primeleague' ? 'Bei PRM bleibt der Drafter extern und wird hier nicht benötigt.' : (event.drafterStale ? 'Der Gegner wurde geändert. Bitte neu generieren.' : '');
+  $('#generate-drafter').disabled = event.type === 'primeleague';
+  const lineup = $('#opponent-lineup'); lineup.replaceChildren();
+  roles.forEach(role => { const label = element('label', '', role); const input = document.createElement('input'); input.dataset.role = role; input.value = event.opponentLineup.find(item => item.role === role)?.player || ''; label.append(input); lineup.append(label); });
+  $('#form-message').textContent = ''; eventDialog.showModal();
+}
+
+async function loadWeek(week) {
+  if (liveStream) liveStream.close();
+  const data = await api(`/api/planner?week=${encodeURIComponent(week || '')}`); render(data);
+  liveStream = new EventSource(`/api/live?week=${encodeURIComponent(data.week.start)}`);
+  liveStream.addEventListener('planner', message => render(JSON.parse(message.data)));
+  liveStream.onerror = () => { $('#live-dot').classList.remove('online'); $('#live-label').textContent = 'Live-Verbindung wird erneuert'; };
+}
+
+calendar.addEventListener('click', event => { const card = event.target.closest('[data-event-id]'); if (card) openEvent(card.dataset.eventId); });
+$('#tasks').addEventListener('click', event => { const item = event.target.closest('[data-event-id]'); if (item) openEvent(item.dataset.eventId); });
+document.querySelectorAll('[data-close]').forEach(button => button.addEventListener('click', () => eventDialog.close()));
+document.querySelectorAll('[data-export-close]').forEach(button => button.addEventListener('click', () => exportDialog.close()));
+
+$('#event-type').addEventListener('change', () => { const prm = $('#event-type').value === 'primeleague'; $('#generate-drafter').disabled = prm; $('#drafter-hint').textContent = prm ? 'Bei PRM wird kein Drafter hinterlegt.' : ''; });
+$('#copy-drafter').addEventListener('click', async () => { if (!$('#event-drafter').value) return toast('Noch kein Drafter-Link vorhanden.', true); await navigator.clipboard.writeText($('#event-drafter').value); toast('Drafter-Link kopiert.'); });
+$('#generate-drafter').addEventListener('click', async () => { try { const data = await api(`/api/events/${$('#event-id').value}/drafter`, { method: 'POST', body: '{}' }); $('#event-drafter').value = data.url; toast('Neuer Drafter erstellt.'); } catch (error) { toast(error.message === 'drafter_token_not_configured' ? 'Der Drafter-Token muss noch auf dem Server hinterlegt werden.' : error.message, true); } });
+
+$('#event-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const opponentLineup = [...$('#opponent-lineup').querySelectorAll('input')].map(input => ({ role: input.dataset.role, player: input.value.trim() })).filter(item => item.player);
+  const body = { title: $('#event-title').value, opponent: $('#event-opponent').value, type: $('#event-type').value, status: $('#event-status').value, plannerState: $('#event-planner-state').value, matchFormat: $('#event-format').value, fearless: $('#event-fearless').value === '1', opggUrl: $('#event-opgg').value, drafterUrl: $('#event-drafter').value, opponentLineup, result: $('#event-result').value, note: $('#event-note').value };
+  try { await api(`/api/events/${$('#event-id').value}`, { method: 'PATCH', body: JSON.stringify(body) }); eventDialog.close(); toast('Termin gespeichert und mit Discord abgeglichen.'); await loadWeek(selectedWeek); } catch (error) { $('#form-message').textContent = error.message; }
+});
+
+$('#export').addEventListener('click', async () => {
+  try {
+    const preview = await api(`/api/export/preview?week=${selectedWeek}`); const root = $('#export-preview'); root.replaceChildren();
+    [['Neu veröffentlichen', preview.publish], ['Aktualisieren', preview.update], ['Aus Schedule entfernen', preview.remove]].forEach(([label, items]) => { const section = element('section', 'preview-group'); section.append(element('h3', '', `${label} (${items.length})`)); section.append(element('p', 'empty-copy', items.length ? items.map(item => `${dateLabel(item.option_date)} ${item.title}`).join(' · ') : 'Keine')); root.append(section); });
+    $('#confirm-export').disabled = !preview.total; exportDialog.showModal();
+  } catch (error) { toast(error.message, true); }
+});
+$('#confirm-export').addEventListener('click', async () => { try { const result = await api('/api/export', { method: 'POST', body: JSON.stringify({ week: selectedWeek }) }); exportDialog.close(); toast(`${result.total} Schedule-Änderungen ausgeführt.`); await loadWeek(selectedWeek); } catch (error) { toast(error.message, true); } });
+$('#undo-export').addEventListener('click', async () => { if (!confirm('Letzten Export dieser Woche rückgängig machen?')) return; try { const result = await api('/api/export/undo', { method: 'POST', body: JSON.stringify({ week: selectedWeek }) }); toast(`${result.restored} Termine wiederhergestellt.`); await loadWeek(selectedWeek); } catch (error) { toast(error.message === 'no_export_to_undo' ? 'Kein Export zum Rückgängigmachen gefunden.' : error.message, true); } });
+$('#copy-week').addEventListener('click', async () => {
+  if (!confirm('Die Terminstruktur der Vorwoche in diese leere Woche kopieren? Gegner, OPGG, Drafter und Ergebnisse werden nicht übernommen.')) return;
+  try { const result = await api('/api/weeks/copy-previous', { method: 'POST', body: JSON.stringify({ week: selectedWeek }) }); toast(`${result.copied.length} Termine als vorgeplant kopiert.`); await loadWeek(selectedWeek); }
+  catch (error) { toast(error.message === 'target_week_not_empty' ? 'Die Zielwoche ist nicht leer.' : error.message === 'source_week_empty' ? 'Die Vorwoche enthält keine Termine.' : error.message, true); }
+});
+$('#previous-week').addEventListener('click', () => loadWeek(snapshot.week.previous)); $('#next-week').addEventListener('click', () => loadWeek(snapshot.week.next)); $('#week-picker').addEventListener('change', event => loadWeek(event.target.value));
+
+(async function start() {
   try {
     const response = await fetch('/auth/me', { cache: 'no-store' });
-    if (response.status === 503) {
-      loginPanel.hidden = false;
-      loginStatus.textContent = 'Die Discord-Anmeldung wird noch eingerichtet.';
-      liveLabel.textContent = 'Einrichtung läuft';
-      return;
-    }
-    if (!response.ok) {
-      loginPanel.hidden = false;
-      liveLabel.textContent = 'Anmeldung erforderlich';
-      lastUpdate.textContent = 'Noch nicht angemeldet';
-      return;
-    }
-    const session = await response.json();
-    signedInUser.textContent = `Angemeldet als ${session.user.username}`;
-    planner.hidden = false;
-    await loadInitialData();
-    connectLiveUpdates();
-  } catch (error) {
-    loginPanel.hidden = false;
-    loginStatus.textContent = 'Der Anmeldestatus konnte nicht geladen werden.';
-    liveLabel.textContent = 'Verbindungsfehler';
-    console.error(error);
-  }
-}
-
-start();
+    if (!response.ok) { login.hidden = false; $('#live-label').textContent = response.status === 503 ? 'Einrichtung läuft' : 'Anmeldung erforderlich'; return; }
+    const session = await response.json(); $('#signed-in-user').textContent = `Angemeldet als ${session.user.username}`; planner.hidden = false; await loadWeek('');
+  } catch (error) { login.hidden = false; $('#login-status').textContent = 'Der Planer ist gerade nicht erreichbar.'; console.error(error); }
+})();
