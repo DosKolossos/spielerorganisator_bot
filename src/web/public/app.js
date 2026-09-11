@@ -216,6 +216,7 @@ function openEvent(id, options = {}) {
   if (!options.creating && (event.type === 'open' || event.plannerState === 'open')) return toast('Offene Terminoptionen werden erst in Discord zu einem echten Termin gemacht.', true);
   const team = options.team || findEventTeam(id);
   $('#event-id').value = options.creating ? '' : event.id;
+  $('#delete-event').hidden = Boolean(options.creating);
   $('#event-team-id').value = team.id;
   $('#event-dialog-mode').textContent = options.creating ? 'TERMIN ANLEGEN' : 'TERMIN BEARBEITEN';
   $('#event-dialog-title').textContent = options.creating ? `${dateLabel(event.date)} · Neuer Termin` : `${dateLabel(event.date)} · ${eventTitle(event)}`;
@@ -316,6 +317,18 @@ document.querySelectorAll('.notification-menu').forEach(menu => menu.addEventLis
 
 $('#event-type').addEventListener('change', () => { const prm = $('#event-type').value === 'primeleague'; $('#open-drafter').hidden = prm; $('#drafter-hint').textContent = prm ? 'Bei PRM wird kein Drafter hinterlegt.' : 'Drafter.lol öffnen, erstellen und den Link hier einfügen.'; });
 $('#copy-drafter').addEventListener('click', async () => { if (!$('#event-drafter').value) return toast('Noch kein Drafter-Link vorhanden.', true); await navigator.clipboard.writeText($('#event-drafter').value); toast('Drafter-Link kopiert.'); });
+$('#delete-event').addEventListener('click', async () => {
+  const eventId = $('#event-id').value;
+  if (!eventId || !confirm('Diesen Termin wirklich vollständig löschen? Er wird auch aus #schedule und dem Admin-Kanal entfernt.')) return;
+  try {
+    await api(`/api/events/${eventId}`, { method: 'DELETE' });
+    eventDialog.close();
+    toast('Termin vollständig gelöscht.');
+    await loadWeek(selectedWeek);
+  } catch (error) {
+    $('#form-message').textContent = error.message;
+  }
+});
 $('#create-standin').addEventListener('click', async () => {
   const eventId = $('#event-id').value;
   const team = eventId
