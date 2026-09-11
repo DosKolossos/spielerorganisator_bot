@@ -2,6 +2,7 @@ const EVENT_FORMATS = new Set(['2_games', '3_games', 'bo3', 'bo4', 'bo5']);
 const EVENT_TYPES = new Set(['open', 'scrim', 'primeleague', 'training', 'flex', 'other']);
 const PLANNER_STATES = new Set(['open', 'preplanned', 'published', 'excluded']);
 const EVENT_STATUSES = new Set(['pending', 'planned', 'confirmed', 'scheduled', 'fixed', 'completed', 'cancelled']);
+const STARTER_ROLES = ['Top', 'Jgl', 'Mid', 'ADC', 'Supp'];
 
 function addDaysIso(dateStr, amount) {
   const [year, month, day] = dateStr.split('-').map(Number);
@@ -61,8 +62,8 @@ function availabilityFor(entries, date) {
 }
 
 function eventTasks(event, assignments, today = berlinDate()) {
-  const isPrm = event.event_type === 'primeleague';
-  const isScrim = event.event_type === 'scrim';
+  const isPrm = event.type === 'primeleague';
+  const isScrim = event.type === 'scrim';
   const isMatch = isPrm || isScrim;
   const beforeDate = addDaysIso(event.date, -1);
   const afterEvent = event.date < today || event.status === 'completed';
@@ -79,9 +80,9 @@ function eventTasks(event, assignments, today = berlinDate()) {
   const required = [
     [!isScrim || Boolean(event.opponent), 'Scrimpartner finden'],
     [!isScrim || Boolean(event.opggUrl), 'Gegner-OP.GG fehlt'],
-    [event.event_type !== 'open', 'Terminart fehlt'],
+    [event.type !== 'open', 'Terminart fehlt'],
     [!isMatch || Boolean(event.matchFormat), 'Format fehlt'],
-    [!isMatch || assignments.filter(item => ['Top', 'Jgl', 'Jungle', 'Mid', 'ADC', 'Supp', 'Support'].includes(item.role)).length >= 5, 'Eigene Aufstellung fehlt']
+    [!isMatch || STARTER_ROLES.every(role => assignments.some(item => item.role === role && String(item.player || '').trim())), 'Eigene Aufstellung fehlt']
   ];
   if (isScrim) required.push([Boolean(event.drafterUrl), 'Drafter fehlt']);
   const firstMissing = required.find(([complete]) => !complete);
@@ -296,6 +297,72 @@ function updateEvent(database, eventId, body, actorId) {
   if (Object.hasOwn(body, 'opponentLineup')) {
     const lineup = Array.isArray(body.opponentLineup) ? body.opponentLineup.slice(0, 5) : [];
     values.opponent_lineup_json = JSON.stringify(lineup.map(item => ({ role: String(item.role || '').slice(0, 20), player: String(item.player || '').slice(0, 100) })));
+  }
+  if (Object.hasOwn(body, 'lineup')) {
+    if (!Array.isArray(body.lineup)) throw Object.assign(new Error('invalid_lineup'), { status: 400 });
+    const requested = new Map();
+    for (const item of body.lineup) {
+      const role = String(item?.role || '');
+      if (!STARTER_ROLES.includes(role) || requested.has(role)) {
+        throw Object.assign(new Error('invalid_lineup'), { status: 400 });
+      }
+      requested.set(role, item);
+    }
+
+    const selectedIds = [...requested.values()]
+      .filter(item => !item.preserve && item.playerId != null && item.playerId !== '')
+      .map(item => Number(item.playerId));
+    if (selectedIds.some(id => !Number.isSafeInteger(id) || id <= 0) || new Set(selectedIds).size !== selectedIds.length) {
+      throw Object.assign(new Error('invalid_lineup'), { status: 400 });
+    }
+
+    const selectedPlayers = new Map();
+    if (selectedIds.length) {
+      const rows = database.prepare(`
+        SELECT id, team_id, alias, global_name, username, discord_user_id
+        FROM players
+        WHERE id IN (${selectedIds.map(() => '?').join(',')})
+          AND COALESCE(is_archived, 0) = 0
+      `).all(...selectedIds);
+      for (const player of rows) selectedPlayers.set(player.id, player);
+      if (selectedIds.some(id => selectedPlayers.get(id)?.team_id !== current.team_id)) {
+        throw Object.assign(new Error('lineup_player_not_in_team'), { status: 400 });
+      }
+    }
+
+    const now = new Date().toISOString();
+    const saveLineup = () => {
+      const remove = database.prepare(`DELETE FROM team_calendar_assignments WHERE event_id = ? AND role_label = ?`);
+      const upsert = database.prepare(`
+        INSERT INTO team_calendar_assignments (
+          event_id, role_label, player_label, assignee_type,
+          player_id, standin_id, note, created_at, updated_at
+        ) VALUES (?, ?, ?, 'player', ?, NULL, NULL, ?, ?)
+        ON CONFLICT(event_id, role_label) DO UPDATE SET
+          player_label = excluded.player_label,
+          assignee_type = excluded.assignee_type,
+          player_id = excluded.player_id,
+          standin_id = NULL,
+          note = NULL,
+          updated_at = excluded.updated_at
+      `);
+      for (const role of STARTER_ROLES) {
+        const item = requested.get(role);
+        if (item?.preserve) continue;
+        const playerId = item?.playerId == null || item.playerId === '' ? null : Number(item.playerId);
+        if (!playerId) {
+          remove.run(eventId, role);
+          continue;
+        }
+        const player = selectedPlayers.get(playerId);
+        upsert.run(eventId, role, displayName(player), playerId, now, now);
+      }
+    };
+    if (typeof database.transaction === 'function') database.transaction(saveLineup)();
+    else {
+      database.exec('BEGIN');
+      try { saveLineup(); database.exec('COMMIT'); } catch (error) { database.exec('ROLLBACK'); throw error; }
+    }
   }
   if (Object.hasOwn(body, 'opponent') && String(current.opponent_name || '') !== String(body.opponent || '')) {
     values.drafter_opponent_name = current.drafter_url ? current.drafter_opponent_name : null;
