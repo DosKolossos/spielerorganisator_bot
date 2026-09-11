@@ -372,34 +372,6 @@ async function undoExport(client, database, week, actorId, refreshImpl) {
   return { exportId: record.id, restored: changes.length, syncErrors };
 }
 
-async function generateDrafter(database, eventId, actorId, env = process.env, fetchImpl = fetch) {
-  const event = database.prepare('SELECT * FROM team_calendar_events WHERE id = ?').get(eventId);
-  if (!event) throw Object.assign(new Error('event_not_found'), { status: 404 });
-  if (event.event_type === 'primeleague') throw Object.assign(new Error('primeleague_uses_external_drafter'), { status: 400 });
-  if (!env.DRAFTER_API_TOKEN) throw Object.assign(new Error('drafter_token_not_configured'), { status: 503 });
-  const endpoint = env.DRAFTER_API_URL || 'https://api.drafter.lol/api/series';
-  const games = ({ '2_games': 2, '3_games': 3, bo3: 3, bo4: 4, bo5: 5 })[event.match_format] || 3;
-  const response = await fetchImpl(endpoint, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${env.DRAFTER_API_TOKEN}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      team1Name: String(env.DRAFTER_HOME_TEAM_NAME || 'SchiggyGang').slice(0, 35),
-      team2Name: String(event.opponent_name || 'Gegner').slice(0, 35),
-      fearless: Boolean(event.fearless_mode),
-      ironman: false,
-      firstSelection: false,
-      gameAmount: games,
-      disabledChampions: []
-    })
-  });
-  const data = await response.json().catch(() => ({}));
-  const url = data.url || data.seriesUrl || data.draftUrl;
-  if (!response.ok || !url) throw Object.assign(new Error(data.error || `drafter_request_failed_${response.status}`), { status: 502 });
-  database.prepare(`UPDATE team_calendar_events SET drafter_url = ?, drafter_opponent_name = ?, updated_at = ?, updated_by_discord_user_id = ? WHERE id = ?`)
-    .run(url, event.opponent_name, new Date().toISOString(), actorId, eventId);
-  return { url };
-}
-
 function shiftDateTime(value, days) {
   if (!value) return null;
   return `${addDaysIso(String(value).slice(0, 10), days)}${String(value).slice(10)}`;
@@ -452,5 +424,5 @@ function copyPreviousWeek(database, week, actorId) {
 
 module.exports = {
   buildPlannerSnapshot, parseBody, validateOrigin, updateEvent, exportPreview,
-  exportWeek, undoExport, generateDrafter, copyPreviousWeek, mondayOf, addDaysIso
+  exportWeek, undoExport, copyPreviousWeek, mondayOf, addDaysIso
 };
