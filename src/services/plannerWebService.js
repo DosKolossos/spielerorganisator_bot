@@ -304,6 +304,93 @@ function validateOrigin(request) {
   try { return new URL(origin).host === host; } catch (_) { return false; }
 }
 
+function validDate(value) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''));
+}
+
+function validTime(value) {
+  return /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(String(value || ''));
+}
+
+function minutesFromTime(value) {
+  const [hours, minutes] = value.split(':').map(Number);
+  return hours * 60 + minutes;
+}
+
+function timeFromMinutes(value) {
+  const minutes = ((value % 1440) + 1440) % 1440;
+  return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+}
+
+function scheduleValues(date, startTime, durationMinutes = 180) {
+  const endTime = timeFromMinutes(minutesFromTime(startTime) + durationMinutes);
+  return {
+    option_date: date,
+    window_start_at: `${date} ${startTime}`,
+    window_end_at: `${date} ${endTime}`,
+    scheduled_start_at: `${date} ${startTime}`,
+    scheduled_end_at: `${date} ${endTime}`,
+    meeting_scrim_at: `${date} ${timeFromMinutes(minutesFromTime(startTime) - 15)}`,
+    meeting_primeleague_at: `${date} ${timeFromMinutes(minutesFromTime(startTime) - 30)}`,
+    start_at: `${date} ${startTime}`,
+    end_at: `${date} ${endTime}`,
+    meeting_at: `${date} ${timeFromMinutes(minutesFromTime(startTime) - 15)}`
+  };
+}
+
+function createEvent(database, body, actorId) {
+  const teamId = Number(body.teamId);
+  const team = Number.isSafeInteger(teamId)
+    ? database.prepare('SELECT id FROM teams WHERE id = ? AND is_active = 1').get(teamId)
+    : null;
+  if (!team) throw Object.assign(new Error('invalid_team'), { status: 400 });
+  const date = String(body.date || '');
+  const startTime = String(body.startTime || '19:00');
+  if (!validDate(date) || !validTime(startTime)) throw Object.assign(new Error('invalid_schedule'), { status: 400 });
+  const type = EVENT_TYPES.has(body.type) && body.type !== 'open' ? body.type : 'scrim';
+  const status = EVENT_STATUSES.has(body.status) ? body.status : 'pending';
+  const plannerState = PLANNER_STATES.has(body.plannerState) && body.plannerState !== 'open' ? body.plannerState : 'preplanned';
+  const title = String(body.title || '').trim().slice(0, 120)
+    || ({ scrim: 'Scrim', primeleague: 'Prime League', training: 'Training', flex: 'Flex', other: 'Termin' })[type];
+  const now = new Date().toISOString();
+  const schedule = scheduleValues(date, startTime);
+  const result = database.prepare(`
+    INSERT INTO team_calendar_events (
+      team_id, title, opponent_name, event_type, status, option_date,
+      window_start_at, window_end_at, scheduled_start_at, scheduled_end_at,
+      meeting_scrim_at, meeting_primeleague_at, available_players_text,
+      opgg_url, note, is_auto_generated, admin_card_collapsed,
+      show_in_player_calendar, planner_state, match_format, fearless_mode,
+      drafter_url, opponent_lineup_json, result_text, is_streamed,
+      start_at, end_at, meeting_at, created_by_discord_user_id,
+      updated_by_discord_user_id, created_at, updated_at
+    ) VALUES (
+      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL,
+      ?, ?, 0, 1, 0, ?, ?, ?, ?, ?, ?, 0,
+      ?, ?, ?, ?, ?, ?, ?
+    )
+  `).run(
+    teamId, title, String(body.opponent || '').trim().slice(0, 120) || null, type, status,
+    schedule.option_date, schedule.window_start_at, schedule.window_end_at,
+    schedule.scheduled_start_at, schedule.scheduled_end_at, schedule.meeting_scrim_at,
+    schedule.meeting_primeleague_at, String(body.opggUrl || '').trim().slice(0, 500) || null,
+    String(body.note || '').trim().slice(0, 1500) || null, plannerState,
+    EVENT_FORMATS.has(body.matchFormat) ? body.matchFormat : '3_games', body.fearless === false ? 0 : 1,
+    String(body.drafterUrl || '').trim().slice(0, 500) || null,
+    JSON.stringify(Array.isArray(body.opponentLineup) ? body.opponentLineup.slice(0, 5) : []),
+    String(body.result || '').trim().slice(0, 500) || null,
+    schedule.start_at, schedule.end_at, schedule.meeting_at, actorId, actorId, now, now
+  );
+  const eventId = Number(result.lastInsertRowid);
+  try {
+    return updateEvent(database, eventId, { ...body, title }, actorId);
+  } catch (error) {
+    database.prepare('DELETE FROM team_calendar_assignments WHERE event_id = ?').run(eventId);
+    database.prepare('DELETE FROM team_calendar_events WHERE id = ?').run(eventId);
+    throw error;
+  }
+}
+
 function updateEvent(database, eventId, body, actorId) {
   const current = database.prepare('SELECT * FROM team_calendar_events WHERE id = ?').get(eventId);
   if (!current) throw Object.assign(new Error('event_not_found'), { status: 404 });
@@ -335,6 +422,17 @@ function updateEvent(database, eventId, body, actorId) {
     values.match_format = body.matchFormat;
   }
   if (Object.hasOwn(body, 'fearless')) values.fearless_mode = body.fearless ? 1 : 0;
+  if (Object.hasOwn(body, 'date') || Object.hasOwn(body, 'startTime')) {
+    const date = Object.hasOwn(body, 'date') ? String(body.date || '') : current.option_date;
+    const currentStart = String(current.scheduled_start_at || current.window_start_at || '').slice(11, 16) || '19:00';
+    const startTime = Object.hasOwn(body, 'startTime') ? String(body.startTime || '') : currentStart;
+    if (!validDate(date) || !validTime(startTime)) throw Object.assign(new Error('invalid_schedule'), { status: 400 });
+    const currentEnd = String(current.scheduled_end_at || current.window_end_at || '').slice(11, 16);
+    const duration = validTime(currentEnd)
+      ? Math.max(30, minutesFromTime(currentEnd) - minutesFromTime(currentStart))
+      : 180;
+    Object.assign(values, scheduleValues(date, startTime, duration));
+  }
   if (Object.hasOwn(body, 'opponentLineup')) {
     const lineup = Array.isArray(body.opponentLineup) ? body.opponentLineup.slice(0, 5) : [];
     values.opponent_lineup_json = JSON.stringify(lineup.map(item => ({ role: String(item.role || '').slice(0, 20), player: String(item.player || '').slice(0, 100) })));
@@ -592,5 +690,5 @@ function copyPreviousWeek(database, week, actorId) {
 
 module.exports = {
   buildPlannerSnapshot, parseBody, validateOrigin, updateEvent, exportPreview,
-  exportWeek, undoExport, copyPreviousWeek, createStandin, mondayOf, addDaysIso
+  exportWeek, undoExport, copyPreviousWeek, createStandin, createEvent, mondayOf, addDaysIso
 };

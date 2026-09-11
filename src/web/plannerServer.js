@@ -11,7 +11,8 @@ const {
   exportWeek,
   undoExport,
   copyPreviousWeek,
-  createStandin
+  createStandin,
+  createEvent
 } = require('../services/plannerWebService');
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -102,6 +103,20 @@ function startPlannerWebServer({ client, port, host, database, authenticator } =
       }
       const body = await parseBody(request);
       const eventMatch = url.pathname.match(/^\/api\/events\/(\d+)$/);
+      if (url.pathname === '/api/events' && request.method === 'POST') {
+        const event = createEvent(plannerDb, body, session.user.id);
+        const team = plannerDb.prepare('SELECT admin_channel_id FROM teams WHERE id = ?').get(event.team_id);
+        if (team?.admin_channel_id && client?.channels?.fetch) {
+          try {
+            const channel = await client.channels.fetch(team.admin_channel_id);
+            if (channel?.isTextBased()) await require('../commands/spieltermin').upsertAdminCardMessage(channel, event.id);
+          } catch (error) {
+            console.warn(`[Planner-Web] Admin-Karte für neuen Termin #${event.id} konnte nicht erstellt werden:`, error.message);
+          }
+        }
+        sendJson(response, 201, { event });
+        return;
+      }
       if (eventMatch && request.method === 'PATCH') {
         const event = updateEvent(plannerDb, Number(eventMatch[1]), body, session.user.id);
         await require('../commands/spieltermin').refreshStoredEventCard(client, event.id);

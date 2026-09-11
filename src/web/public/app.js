@@ -46,10 +46,12 @@ function eventCard(event) {
   card.type = 'button';
   card.dataset.eventId = event.id;
   const top = element('span', 'event-top');
-  top.append(element('strong', '', eventTitle(event)), element('span', 'state-pill', stateLabels[event.plannerState]));
+  const state = element('span', `state-indicator state-${event.plannerState}`, event.plannerState === 'published' ? '✓' : event.plannerState === 'excluded' ? '×' : '•');
+  state.title = stateLabels[event.plannerState] || 'Planungsstatus';
+  state.setAttribute('aria-label', state.title);
+  top.append(element('strong', '', eventTitle(event)), state);
   card.append(top, element('span', 'event-detail', `${timeLabel(event.startsAt)} · ${typeLabels[event.type] || event.type}`));
   if (event.result) card.append(element('span', 'result', `Ergebnis ${event.result}`));
-  if (event.lineup.length) card.append(element('span', 'mini-lineup', event.lineup.map(slot => slot.player).join(' · ')));
   if (event.drafterStale) card.append(element('span', 'warning-copy', '⚠ Drafter-Link nach Gegneränderung ersetzen'));
   const openPositions = roles.filter(role => !event.opponentLineup.some(item => item.role === role && item.player));
   if (event.opponentLineup.length && openPositions.length) card.append(element('span', 'warning-copy', `⚠ ${openPositions.length} Gegnerpositionen offen`));
@@ -97,8 +99,11 @@ function renderTeam(team, dates) {
   title.append(element('span', 'team-kicker', 'TEAM'), element('h2', '', team.name));
   heading.append(title);
   for (const date of dates) {
-    const day = element('div', `day-heading ${team.fullLineup[date] ? 'full-lineup' : ''}`);
-    day.append(element('strong', '', dateLabel(date)), element('small', '', team.fullLineup[date] ? '✓ alle 5 verfügbar' : 'Verfügbarkeit prüfen'));
+    const events = editableEventsForDay(team, date);
+    const lineupReady = events.some(event => roles.every(role => event.lineup.some(slot => slot.role === role && slot.player)));
+    const ready = lineupReady || team.fullLineup[date];
+    const day = element('div', `day-heading ${ready ? 'full-lineup' : ''}`);
+    day.append(element('strong', '', dateLabel(date)), element('small', '', lineupReady ? '✓ Aufstellung steht' : team.fullLineup[date] ? '✓ alle 5 verfügbar' : 'Verfügbarkeit prüfen'));
     heading.append(day);
   }
   section.append(heading);
@@ -106,9 +111,11 @@ function renderTeam(team, dates) {
   const eventsRow = element('div', 'team-row events-row');
   eventsRow.append(element('div', 'row-label muted', 'Termine'));
   for (const date of dates) {
-    const day = element('div', 'day-cell');
+    const day = element('div', 'day-cell add-event-cell');
+    day.dataset.teamId = team.id;
+    day.dataset.date = date;
     const items = team.events.filter(event => event.date === date && event.type !== 'open' && event.plannerState !== 'open');
-    if (!items.length) day.append(element('span', 'empty-day', '—'));
+    if (!items.length) day.append(element('span', 'empty-day', '+ Termin'));
     else items.forEach(event => day.append(eventCard(event)));
     eventsRow.append(day);
   }
@@ -196,10 +203,15 @@ function lineupRole(position) {
 }
 
 function openEvent(id, options = {}) {
-  const event = findEvent(id); if (!event) return;
-  if (event.type === 'open' || event.plannerState === 'open') return toast('Offene Terminoptionen werden erst in Discord zu einem echten Termin gemacht.', true);
-  const team = findEventTeam(id);
-  $('#event-id').value = event.id; $('#event-dialog-title').textContent = `${dateLabel(event.date)} · ${eventTitle(event)}`;
+  const event = options.event || findEvent(id); if (!event) return;
+  if (!options.creating && (event.type === 'open' || event.plannerState === 'open')) return toast('Offene Terminoptionen werden erst in Discord zu einem echten Termin gemacht.', true);
+  const team = options.team || findEventTeam(id);
+  $('#event-id').value = options.creating ? '' : event.id;
+  $('#event-team-id').value = team.id;
+  $('#event-dialog-mode').textContent = options.creating ? 'TERMIN ANLEGEN' : 'TERMIN BEARBEITEN';
+  $('#event-dialog-title').textContent = options.creating ? `${dateLabel(event.date)} · Neuer Termin` : `${dateLabel(event.date)} · ${eventTitle(event)}`;
+  $('#event-date').value = event.date;
+  $('#event-time').value = String(event.startsAt || '').slice(11, 16) || '19:00';
   $('#event-title').value = event.title || ''; $('#event-opponent').value = event.opponent || ''; $('#event-type').value = event.type || 'open';
   $('#event-status').value = [...$('#event-status').options].some(option => option.value === event.status) ? event.status : 'pending';
   $('#event-planner-state').value = event.plannerState; $('#event-format').value = event.matchFormat; $('#event-fearless').value = event.fearless ? '1' : '0';
@@ -254,6 +266,21 @@ function openEvent(id, options = {}) {
   if (options.focusLineup) requestAnimationFrame(() => $('#own-lineup-fieldset').scrollIntoView({ behavior: 'smooth', block: 'start' }));
 }
 
+function openNewEvent(teamId, date) {
+  const team = snapshot.teams.find(item => item.id === Number(teamId));
+  if (!team) return;
+  openEvent(null, {
+    creating: true,
+    team,
+    event: {
+      id: null, date, title: '', opponent: '', type: 'scrim', status: 'pending',
+      plannerState: 'preplanned', matchFormat: '3_games', fearless: true,
+      startsAt: `${date} 19:00`, opggUrl: '', drafterUrl: '', result: '', note: '',
+      lineup: [], opponentLineup: [], drafterStale: false
+    }
+  });
+}
+
 async function loadWeek(week) {
   if (liveStream) liveStream.close();
   const data = await api(`/api/planner?week=${encodeURIComponent(week || '')}`); render(data);
@@ -264,6 +291,10 @@ async function loadWeek(week) {
 
 calendar.addEventListener('click', event => {
   const card = event.target.closest('[data-event-id]'); if (card) openEvent(card.dataset.eventId);
+  else {
+    const day = event.target.closest('.add-event-cell');
+    if (day) openNewEvent(day.dataset.teamId, day.dataset.date);
+  }
 });
 $('#tasks').addEventListener('click', event => { const item = event.target.closest('[data-event-id]'); if (item) { $('#tasks-notification').open = false; openEvent(item.dataset.eventId); } });
 $('#matchday-items').addEventListener('click', event => { const card = event.target.closest('[data-event-id]'); if (card) openEvent(card.dataset.eventId); });
@@ -278,7 +309,9 @@ $('#event-type').addEventListener('change', () => { const prm = $('#event-type')
 $('#copy-drafter').addEventListener('click', async () => { if (!$('#event-drafter').value) return toast('Noch kein Drafter-Link vorhanden.', true); await navigator.clipboard.writeText($('#event-drafter').value); toast('Drafter-Link kopiert.'); });
 $('#create-standin').addEventListener('click', async () => {
   const eventId = $('#event-id').value;
-  const team = findEventTeam(eventId);
+  const team = eventId
+    ? findEventTeam(eventId)
+    : snapshot.teams.find(item => item.id === Number($('#event-team-id').value));
   const body = {
     teamId: team?.id,
     displayName: $('#standin-display-name').value,
@@ -317,8 +350,9 @@ $('#event-form').addEventListener('submit', async event => {
     return;
   }
   const opponentLineup = [...$('#opponent-lineup').querySelectorAll('input')].map(input => ({ role: input.dataset.role, player: input.value.trim() })).filter(item => item.player);
-  const body = { title: $('#event-title').value, opponent: $('#event-opponent').value, type: $('#event-type').value, status: $('#event-status').value, plannerState: $('#event-planner-state').value, matchFormat: $('#event-format').value, fearless: $('#event-fearless').value === '1', opggUrl: $('#event-opgg').value, drafterUrl: $('#event-drafter').value, lineup, opponentLineup, result: $('#event-result').value, note: $('#event-note').value };
-  try { await api(`/api/events/${$('#event-id').value}`, { method: 'PATCH', body: JSON.stringify(body) }); eventDialog.close(); toast('Termin gespeichert und mit Discord abgeglichen.'); await loadWeek(selectedWeek); } catch (error) { $('#form-message').textContent = error.message; }
+  const body = { teamId: Number($('#event-team-id').value), date: $('#event-date').value, startTime: $('#event-time').value, title: $('#event-title').value, opponent: $('#event-opponent').value, type: $('#event-type').value, status: $('#event-status').value, plannerState: $('#event-planner-state').value, matchFormat: $('#event-format').value, fearless: $('#event-fearless').value === '1', opggUrl: $('#event-opgg').value, drafterUrl: $('#event-drafter').value, lineup, opponentLineup, result: $('#event-result').value, note: $('#event-note').value };
+  const eventId = $('#event-id').value;
+  try { await api(eventId ? `/api/events/${eventId}` : '/api/events', { method: eventId ? 'PATCH' : 'POST', body: JSON.stringify(body) }); eventDialog.close(); toast(eventId ? 'Termin gespeichert und mit Discord abgeglichen.' : 'Termin angelegt und mit Discord abgeglichen.'); await loadWeek(selectedWeek); } catch (error) { $('#form-message').textContent = error.message; }
 });
 
 $('#export').addEventListener('click', async () => {

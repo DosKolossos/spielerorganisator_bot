@@ -2,14 +2,14 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { DatabaseSync } = require('node:sqlite');
 const { buildPlannerSnapshot, startPlannerWebServer } = require('../src/web/plannerServer');
-const { updateEvent, exportPreview, exportWeek, undoExport, copyPreviousWeek, createStandin } = require('../src/services/plannerWebService');
+const { updateEvent, exportPreview, exportWeek, undoExport, copyPreviousWeek, createStandin, createEvent } = require('../src/services/plannerWebService');
 
 function createTestDatabase() {
   const database = new DatabaseSync(':memory:');
   database.exec(`
     CREATE TABLE teams (
       id INTEGER PRIMARY KEY, name TEXT, slug TEXT, short_name TEXT,
-      is_active INTEGER, is_default INTEGER
+      is_active INTEGER, is_default INTEGER, admin_channel_id TEXT
     );
     CREATE TABLE team_calendar_events (
       id INTEGER PRIMARY KEY, team_id INTEGER, title TEXT, opponent_name TEXT,
@@ -21,7 +21,11 @@ function createTestDatabase() {
       match_format TEXT NOT NULL DEFAULT '3_games', fearless_mode INTEGER NOT NULL DEFAULT 1,
       drafter_url TEXT, drafter_opponent_name TEXT, opponent_lineup_json TEXT,
       result_text TEXT, show_in_player_calendar INTEGER NOT NULL DEFAULT 0,
-      updated_by_discord_user_id TEXT, last_exported_at TEXT
+      updated_by_discord_user_id TEXT, last_exported_at TEXT,
+      is_auto_generated INTEGER NOT NULL DEFAULT 0,
+      admin_card_collapsed INTEGER NOT NULL DEFAULT 1,
+      start_at TEXT, end_at TEXT, meeting_at TEXT,
+      created_by_discord_user_id TEXT, created_at TEXT
     );
     CREATE TABLE team_calendar_assignments (
       id INTEGER PRIMARY KEY AUTOINCREMENT, event_id INTEGER, role_label TEXT,
@@ -48,8 +52,8 @@ function createTestDatabase() {
       created_at TEXT, updated_at TEXT
     );
 
-    INSERT INTO teams VALUES (1, 'SchiggyGang Main', 'main', 'MAIN', 1, 1);
-    INSERT INTO teams VALUES (2, 'SchiggyGang Shinys', 'shinys', 'SHINY', 1, 0);
+    INSERT INTO teams VALUES (1, 'SchiggyGang Main', 'main', 'MAIN', 1, 1, NULL);
+    INSERT INTO teams VALUES (2, 'SchiggyGang Shinys', 'shinys', 'SHINY', 1, 0, NULL);
     INSERT INTO team_calendar_events (
       id, team_id, title, opponent_name, event_type, status, option_date,
       window_start_at, window_end_at, scheduled_start_at, scheduled_end_at,
@@ -159,6 +163,21 @@ test('Teamgebundener Stand-in kann im Planner angelegt werden', () => {
   database.close();
 });
 
+test('Termin kann aus einem leeren Kalenderfeld mit 19 Uhr angelegt werden', () => {
+  const database = createTestDatabase();
+  const event = createEvent(database, {
+    teamId: 2, date: '2099-04-09', startTime: '19:00', type: 'training',
+    title: '', plannerState: 'preplanned', lineup: []
+  }, 'coach');
+  assert.equal(event.team_id, 2);
+  assert.equal(event.title, 'Training');
+  assert.equal(event.option_date, '2099-04-09');
+  assert.equal(event.scheduled_start_at, '2099-04-09 19:00');
+  assert.equal(event.scheduled_end_at, '2099-04-09 22:00');
+  assert.equal(event.planner_state, 'preplanned');
+  database.close();
+});
+
 test('Vorwoche kopieren übernimmt Struktur, aber keine Gegnerdaten', () => {
   const database = new DatabaseSync(':memory:');
   database.exec(`
@@ -222,11 +241,16 @@ test('Webserver liefert Healthcheck, API und Oberfläche aus', async t => {
   const health = await fetch(`${baseUrl}/healthz`).then(response => response.json());
   const planner = await fetch(`${baseUrl}/api/planner?week=2099-04-06`).then(response => response.json());
   const page = await fetch(baseUrl).then(response => response.text());
+  const created = await fetch(`${baseUrl}/api/events`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ teamId: 2, date: '2099-04-07', startTime: '19:00', type: 'scrim' })
+  });
 
   assert.deepEqual(health, { status: 'ok', botOnline: true });
   assert.equal(planner.teams[0].events[0].id, 10);
   assert.match(page, /SchiggyGang Planer/);
   assert.match(page, /id="own-lineup"/);
+  assert.equal(created.status, 201);
 });
 
 test('Terminbearbeitung validiert Auswahlfelder und Export erfasst nur Planner-Karten', async () => {
