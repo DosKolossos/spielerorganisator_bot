@@ -476,6 +476,7 @@ function buildPlayerCalendarDescription(event, assignments) {
   const startAt = getDisplayStartAt(event);
   const meetingAt = getDisplayMeetingAt(event);
   const teamOpgg = buildTeamOpggInfo(assignments);
+  const opponentLineup = opponentLineupText(event.opponent_lineup_json);
 
   return [
     `${buildPlayerCalendarStatusLabel(event.status)}`,
@@ -487,6 +488,7 @@ function buildPlayerCalendarDescription(event, assignments) {
     teamOpgg.ok ? `[OP.GG öffnen](${teamOpgg.url})` : 'OP.GG öffnen: -',
     '',
     event.opgg_url ? `[Gegner OP.GG](${event.opgg_url})` : 'Gegner OP.GG: -',
+    ...(opponentLineup === '-' ? [] : ['', '**Gegneraufstellung**', opponentLineup]),
     `Format: ${plannerFormatLabel(event.match_format)} · ${Number(event.fearless_mode) === 0 ? 'kein Fearless' : 'Fearless'}`,
     event.event_type === 'primeleague'
       ? 'Drafter: wird von Prime League zum Spieltermin bereitgestellt'
@@ -511,7 +513,7 @@ function opponentLineupText(value) {
   let lineup = [];
   try { lineup = value ? JSON.parse(value) : []; } catch (_) { lineup = []; }
   if (!Array.isArray(lineup) || !lineup.length) return '-';
-  return lineup.map(item => `${item.role || '?'}: ${item.player || 'offen'}`).join('\n');
+  return lineup.map(item => `**${item.role || '?'}:** ${item.player || 'offen'}`).join('\n');
 }
 
 function findPlayerByLabel(label, teamId = null) {
