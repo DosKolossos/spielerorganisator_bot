@@ -2325,6 +2325,7 @@ async function refreshAllStoredAdminCards(client) {
       if (!payload) continue;
 
       await message.edit(payload);
+      await refreshStoredPlayerCard(client, event.id);
       refreshed++;
     } catch (error) {
       console.warn(`[Spieltermin] Admin-Karte #${event.id} konnte beim Start nicht aktualisiert werden:`, error.message);
