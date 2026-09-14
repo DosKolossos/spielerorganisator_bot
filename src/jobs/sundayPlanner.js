@@ -860,8 +860,21 @@ async function runSundayPlanner(client, options = {}) {
 
   const suggestions = [];
   const weekEndDate = windowEndDate;
+  const occupiedDates = new Set(db.prepare(`
+    SELECT DISTINCT option_date
+    FROM team_calendar_events
+    WHERE team_id = ?
+      AND is_auto_generated = 0
+      AND status NOT IN ('cancelled', 'deleted')
+      AND option_date >= ?
+      AND option_date <= ?
+  `).all(teamId, plannerStartDate, weekEndDate).map(event => event.option_date));
 
   for (const dateStr of windowDates) {
+    // Ein echter Termin hat Vorrang. Der Planer darf daneben keine zusätzliche
+    // offene Terminoption für dasselbe Team und denselben Tag erzeugen.
+    if (occupiedDates.has(dateStr)) continue;
+
     const suggestion = buildDailySuggestion(players, upcomingEntries, rules, dateStr);
     if (!suggestion) continue;
 
