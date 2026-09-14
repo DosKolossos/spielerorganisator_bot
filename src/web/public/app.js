@@ -13,6 +13,11 @@ const typeLabels = { open: 'Offen', scrim: 'Scrim', primeleague: 'PRM', training
 const stateLabels = { open: 'Offen', preplanned: 'Vorgeplant', published: 'Veröffentlicht', excluded: 'Nicht exportieren' };
 const dateLabel = value => new Intl.DateTimeFormat('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit', timeZone: 'UTC' }).format(new Date(`${value}T12:00:00Z`));
 const timeLabel = value => value ? `${String(value).slice(11, 16)} Uhr` : 'offen';
+const shiftedTime = (value, offset) => {
+  const [hours, minutes] = String(value || '00:00').split(':').map(Number);
+  const total = ((hours * 60 + minutes + offset) % 1440 + 1440) % 1440;
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+};
 
 function eventTitle(event) {
   if (event.opponent) return `vs. ${event.opponent}`;
@@ -319,7 +324,15 @@ document.querySelectorAll('.notification-menu').forEach(menu => menu.addEventLis
   document.querySelectorAll('.notification-menu').forEach(other => { if (other !== menu) other.open = false; });
 }));
 
-$('#event-type').addEventListener('change', () => { const prm = $('#event-type').value === 'primeleague'; $('#open-drafter').hidden = prm; $('#drafter-hint').textContent = prm ? 'Bei PRM wird kein Drafter hinterlegt.' : 'Drafter.lol öffnen, erstellen und den Link hier einfügen.'; });
+$('#event-type').addEventListener('change', () => {
+  const prm = $('#event-type').value === 'primeleague';
+  $('#open-drafter').hidden = prm;
+  $('#drafter-hint').textContent = prm ? 'Bei PRM wird kein Drafter hinterlegt.' : 'Drafter.lol öffnen, erstellen und den Link hier einfügen.';
+  const startTime = $('#event-time').value;
+  if (startTime && (prm || $('#event-type').value === 'scrim')) {
+    $('#event-meeting-time').value = shiftedTime(startTime, prm ? -30 : -15);
+  }
+});
 $('#copy-drafter').addEventListener('click', async () => { if (!$('#event-drafter').value) return toast('Noch kein Drafter-Link vorhanden.', true); await navigator.clipboard.writeText($('#event-drafter').value); toast('Drafter-Link kopiert.'); });
 $('#delete-event').addEventListener('click', async () => {
   const eventId = $('#event-id').value;
