@@ -3529,6 +3529,7 @@ const command = {
     }
 
     if (subcommand === 'anzeigen') {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
       const today = new Date().toISOString().slice(0, 10);
 
       const events = db.prepare(`
@@ -3540,9 +3541,8 @@ const command = {
       `).all(today);
 
       if (events.length === 0) {
-        return interaction.reply({
-          content: 'Im Spielerkalender sind aktuell keine Termine gespeichert.',
-          flags: MessageFlags.Ephemeral
+        return interaction.editReply({
+          content: 'Im Spielerkalender sind aktuell keine Termine gespeichert.'
         });
       }
 
@@ -3584,9 +3584,8 @@ const command = {
       }
       if (currentMessage) messages.push(currentMessage);
 
-      await interaction.reply({
-        content: messages.shift(),
-        flags: MessageFlags.Ephemeral
+      await interaction.editReply({
+        content: messages.shift()
       });
 
       for (const message of messages) {
