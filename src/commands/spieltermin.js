@@ -501,6 +501,7 @@ function buildPlayerCalendarDescription(event, assignments) {
 
 function plannerFormatLabel(value) {
   return ({
+    bo1: 'BO1',
     '2_games': '2 Spiele',
     '3_games': '3 Spiele',
     bo3: 'BO3',
