@@ -13,6 +13,11 @@ const typeLabels = { open: 'Offen', scrim: 'Scrim', primeleague: 'PRM', training
 const stateLabels = { open: 'Offen', preplanned: 'Vorgeplant', published: 'Veröffentlicht', excluded: 'Nicht exportieren' };
 const dateLabel = value => new Intl.DateTimeFormat('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit', timeZone: 'UTC' }).format(new Date(`${value}T12:00:00Z`));
 const timeLabel = value => value ? `${String(value).slice(11, 16)} Uhr` : 'offen';
+const shiftedTime = (value, offset) => {
+  const [hours, minutes] = String(value || '00:00').split(':').map(Number);
+  const total = ((hours * 60 + minutes + offset) % 1440 + 1440) % 1440;
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+};
 
 function eventTitle(event) {
   if (event.opponent) return `vs. ${event.opponent}`;
@@ -222,9 +227,12 @@ function openEvent(id, options = {}) {
   $('#event-dialog-title').textContent = options.creating ? `${dateLabel(event.date)} · Neuer Termin` : `${dateLabel(event.date)} · ${eventTitle(event)}`;
   $('#event-date').value = event.date;
   $('#event-time').value = String(event.startsAt || '').slice(11, 16) || '19:00';
+  $('#event-end-time').value = String(event.endsAt || '').slice(11, 16) || '22:00';
+  $('#event-meeting-time').value = String(event.meetingAt || '').slice(11, 16) || (event.type === 'primeleague' ? '18:30' : '18:45');
   $('#event-title').value = event.title || ''; $('#event-opponent').value = event.opponent || ''; $('#event-type').value = event.type || 'open';
   $('#event-status').value = [...$('#event-status').options].some(option => option.value === event.status) ? event.status : 'pending';
   $('#event-planner-state').value = event.plannerState; $('#event-format').value = event.matchFormat; $('#event-fearless').value = event.fearless ? '1' : '0';
+  $('#event-streamed').value = event.streamed ? '1' : '0';
   $('#event-opgg').value = event.opggUrl || ''; $('#event-drafter').value = event.drafterUrl || ''; $('#event-result').value = event.result || ''; $('#event-note').value = event.note || '';
   $('#drafter-hint').textContent = event.type === 'primeleague' ? 'Bei PRM bleibt der Drafter extern und wird hier nicht benötigt.' : (event.drafterStale ? 'Der Gegner wurde geändert. Bitte einen neuen Drafter erstellen und den Link ersetzen.' : 'Drafter.lol öffnen, erstellen und den Link hier einfügen.');
   $('#open-drafter').hidden = event.type === 'primeleague';
@@ -285,7 +293,8 @@ function openNewEvent(teamId, date) {
     event: {
       id: null, date, title: '', opponent: '', type: 'scrim', status: 'pending',
       plannerState: 'preplanned', matchFormat: '3_games', fearless: true,
-      startsAt: `${date} 19:00`, opggUrl: '', drafterUrl: '', result: '', note: '',
+      startsAt: `${date} 19:00`, endsAt: `${date} 22:00`, meetingAt: `${date} 18:45`, streamed: false,
+      opggUrl: '', drafterUrl: '', result: '', note: '',
       lineup: [], opponentLineup: [], drafterStale: false
     }
   });
@@ -315,7 +324,15 @@ document.querySelectorAll('.notification-menu').forEach(menu => menu.addEventLis
   document.querySelectorAll('.notification-menu').forEach(other => { if (other !== menu) other.open = false; });
 }));
 
-$('#event-type').addEventListener('change', () => { const prm = $('#event-type').value === 'primeleague'; $('#open-drafter').hidden = prm; $('#drafter-hint').textContent = prm ? 'Bei PRM wird kein Drafter hinterlegt.' : 'Drafter.lol öffnen, erstellen und den Link hier einfügen.'; });
+$('#event-type').addEventListener('change', () => {
+  const prm = $('#event-type').value === 'primeleague';
+  $('#open-drafter').hidden = prm;
+  $('#drafter-hint').textContent = prm ? 'Bei PRM wird kein Drafter hinterlegt.' : 'Drafter.lol öffnen, erstellen und den Link hier einfügen.';
+  const startTime = $('#event-time').value;
+  if (startTime && (prm || $('#event-type').value === 'scrim')) {
+    $('#event-meeting-time').value = shiftedTime(startTime, prm ? -30 : -15);
+  }
+});
 $('#copy-drafter').addEventListener('click', async () => { if (!$('#event-drafter').value) return toast('Noch kein Drafter-Link vorhanden.', true); await navigator.clipboard.writeText($('#event-drafter').value); toast('Drafter-Link kopiert.'); });
 $('#delete-event').addEventListener('click', async () => {
   const eventId = $('#event-id').value;
@@ -372,7 +389,7 @@ $('#event-form').addEventListener('submit', async event => {
     return;
   }
   const opponentLineup = [...$('#opponent-lineup').querySelectorAll('input')].map(input => ({ role: input.dataset.role, player: input.value.trim() })).filter(item => item.player);
-  const body = { teamId: Number($('#event-team-id').value), date: $('#event-date').value, startTime: $('#event-time').value, title: $('#event-title').value, opponent: $('#event-opponent').value, type: $('#event-type').value, status: $('#event-status').value, plannerState: $('#event-planner-state').value, matchFormat: $('#event-format').value, fearless: $('#event-fearless').value === '1', opggUrl: $('#event-opgg').value, drafterUrl: $('#event-drafter').value, lineup, opponentLineup, result: $('#event-result').value, note: $('#event-note').value };
+  const body = { teamId: Number($('#event-team-id').value), date: $('#event-date').value, startTime: $('#event-time').value, endTime: $('#event-end-time').value, meetingTime: $('#event-meeting-time').value, title: $('#event-title').value, opponent: $('#event-opponent').value, type: $('#event-type').value, status: $('#event-status').value, plannerState: $('#event-planner-state').value, matchFormat: $('#event-format').value, fearless: $('#event-fearless').value === '1', streamed: $('#event-streamed').value === '1', opggUrl: $('#event-opgg').value, drafterUrl: $('#event-drafter').value, lineup, opponentLineup, result: $('#event-result').value, note: $('#event-note').value };
   const eventId = $('#event-id').value;
   try { await api(eventId ? `/api/events/${eventId}` : '/api/events', { method: eventId ? 'PATCH' : 'POST', body: JSON.stringify(body) }); eventDialog.close(); toast(eventId ? 'Termin gespeichert und mit Discord abgeglichen.' : 'Termin angelegt und mit Discord abgeglichen.'); await loadWeek(selectedWeek); } catch (error) { $('#form-message').textContent = error.message; }
 });

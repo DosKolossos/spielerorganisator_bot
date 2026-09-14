@@ -263,6 +263,10 @@ test('Webserver liefert Healthcheck, API und Oberfläche aus', async t => {
   assert.equal(planner.teams[0].events[0].id, 10);
   assert.match(page, /SchiggyGang Planer/);
   assert.match(page, /id="own-lineup"/);
+  assert.match(page, /id="event-end-time"/);
+  assert.match(page, /id="event-meeting-time"/);
+  assert.match(page, /id="event-streamed"/);
+  assert.match(page, /value="bo1">BO1/);
   assert.equal(created.status, 201);
   assert.equal(deleted.status, 200);
   assert.equal(database.prepare('SELECT 1 FROM team_calendar_events WHERE id = ?').get(createdBody.event.id), undefined);
@@ -281,8 +285,11 @@ test('Terminbearbeitung validiert Auswahlfelder und Export erfasst nur Planner-K
 
   updateEvent(database, 10, {
     plannerState: 'preplanned',
-    matchFormat: 'bo3',
+    matchFormat: 'bo1',
     fearless: false,
+    endTime: '23:00',
+    meetingTime: '19:30',
+    streamed: true,
     lineup: [
       { role: 'Top', playerId: 7 },
       { role: 'Jgl', playerId: null },
@@ -297,6 +304,11 @@ test('Terminbearbeitung validiert Auswahlfelder und Export erfasst nur Planner-K
   assert.equal(ownLineup.length, 1);
   assert.equal(ownLineup[0].role_label, 'Top');
   assert.equal(ownLineup[0].player_id, 7);
+  const updatedEvent = database.prepare('SELECT * FROM team_calendar_events WHERE id = 10').get();
+  assert.equal(updatedEvent.match_format, 'bo1');
+  assert.equal(updatedEvent.scheduled_end_at, '2099-04-06 23:00');
+  assert.equal(updatedEvent.meeting_scrim_at, '2099-04-06 19:30');
+  assert.equal(updatedEvent.is_streamed, 1);
   assert.throws(() => updateEvent(database, 10, {
     lineup: [
       { role: 'Top', playerId: 7 },

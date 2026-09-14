@@ -1,4 +1,4 @@
-const EVENT_FORMATS = new Set(['2_games', '3_games', 'bo3', 'bo4', 'bo5']);
+const EVENT_FORMATS = new Set(['bo1', '2_games', '3_games', 'bo3', 'bo4', 'bo5']);
 const EVENT_TYPES = new Set(['open', 'scrim', 'primeleague', 'training', 'flex', 'other']);
 const PLANNER_STATES = new Set(['open', 'preplanned', 'published', 'excluded']);
 const EVENT_STATUSES = new Set(['pending', 'planned', 'confirmed', 'scheduled', 'fixed', 'completed', 'cancelled']);
@@ -46,7 +46,7 @@ function displayName(player) {
 
 function formatLabel(value) {
   return ({
-    '2_games': '2 Spiele', '3_games': '3 Spiele', bo3: 'BO3', bo4: 'BO4', bo5: 'BO5'
+    bo1: 'BO1', '2_games': '2 Spiele', '3_games': '3 Spiele', bo3: 'BO3', bo4: 'BO4', bo5: 'BO5'
   })[value] || '3 Spiele';
 }
 
@@ -424,16 +424,37 @@ function updateEvent(database, eventId, body, actorId) {
     values.match_format = body.matchFormat;
   }
   if (Object.hasOwn(body, 'fearless')) values.fearless_mode = body.fearless ? 1 : 0;
-  if (Object.hasOwn(body, 'date') || Object.hasOwn(body, 'startTime')) {
+  if (Object.hasOwn(body, 'streamed')) values.is_streamed = body.streamed ? 1 : 0;
+  if (Object.hasOwn(body, 'date') || Object.hasOwn(body, 'startTime') || Object.hasOwn(body, 'endTime')) {
     const date = Object.hasOwn(body, 'date') ? String(body.date || '') : current.option_date;
     const currentStart = String(current.scheduled_start_at || current.window_start_at || '').slice(11, 16) || '19:00';
     const startTime = Object.hasOwn(body, 'startTime') ? String(body.startTime || '') : currentStart;
-    if (!validDate(date) || !validTime(startTime)) throw Object.assign(new Error('invalid_schedule'), { status: 400 });
     const currentEnd = String(current.scheduled_end_at || current.window_end_at || '').slice(11, 16);
-    const duration = validTime(currentEnd)
-      ? Math.max(30, minutesFromTime(currentEnd) - minutesFromTime(currentStart))
-      : 180;
+    const fallbackEnd = validTime(currentEnd)
+      ? currentEnd
+      : timeFromMinutes(minutesFromTime(startTime) + 180);
+    const endTime = Object.hasOwn(body, 'endTime') ? String(body.endTime || '') : fallbackEnd;
+    if (!validDate(date) || !validTime(startTime) || !validTime(endTime)) {
+      throw Object.assign(new Error('invalid_schedule'), { status: 400 });
+    }
+    const duration = minutesFromTime(endTime) - minutesFromTime(startTime);
+    if (duration < 30) throw Object.assign(new Error('invalid_schedule'), { status: 400 });
     Object.assign(values, scheduleValues(date, startTime, duration));
+  }
+  if (Object.hasOwn(body, 'meetingTime')) {
+    const meetingTime = String(body.meetingTime || '');
+    const date = Object.hasOwn(body, 'date') ? String(body.date || '') : current.option_date;
+    const startTime = Object.hasOwn(body, 'startTime')
+      ? String(body.startTime || '')
+      : String(current.scheduled_start_at || current.window_start_at || '').slice(11, 16);
+    if (!validDate(date) || !validTime(meetingTime) || !validTime(startTime) || minutesFromTime(meetingTime) > minutesFromTime(startTime)) {
+      throw Object.assign(new Error('invalid_meeting_time'), { status: 400 });
+    }
+    const meetingAt = `${date} ${meetingTime}`;
+    const eventType = Object.hasOwn(body, 'type') ? body.type : current.event_type;
+    if (eventType === 'primeleague') values.meeting_primeleague_at = meetingAt;
+    else values.meeting_scrim_at = meetingAt;
+    values.meeting_at = meetingAt;
   }
   if (Object.hasOwn(body, 'opponentLineup')) {
     const lineup = Array.isArray(body.opponentLineup) ? body.opponentLineup.slice(0, 5) : [];
