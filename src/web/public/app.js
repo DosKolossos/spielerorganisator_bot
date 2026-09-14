@@ -222,9 +222,12 @@ function openEvent(id, options = {}) {
   $('#event-dialog-title').textContent = options.creating ? `${dateLabel(event.date)} · Neuer Termin` : `${dateLabel(event.date)} · ${eventTitle(event)}`;
   $('#event-date').value = event.date;
   $('#event-time').value = String(event.startsAt || '').slice(11, 16) || '19:00';
+  $('#event-end-time').value = String(event.endsAt || '').slice(11, 16) || '22:00';
+  $('#event-meeting-time').value = String(event.meetingAt || '').slice(11, 16) || (event.type === 'primeleague' ? '18:30' : '18:45');
   $('#event-title').value = event.title || ''; $('#event-opponent').value = event.opponent || ''; $('#event-type').value = event.type || 'open';
   $('#event-status').value = [...$('#event-status').options].some(option => option.value === event.status) ? event.status : 'pending';
   $('#event-planner-state').value = event.plannerState; $('#event-format').value = event.matchFormat; $('#event-fearless').value = event.fearless ? '1' : '0';
+  $('#event-streamed').value = event.streamed ? '1' : '0';
   $('#event-opgg').value = event.opggUrl || ''; $('#event-drafter').value = event.drafterUrl || ''; $('#event-result').value = event.result || ''; $('#event-note').value = event.note || '';
   $('#drafter-hint').textContent = event.type === 'primeleague' ? 'Bei PRM bleibt der Drafter extern und wird hier nicht benötigt.' : (event.drafterStale ? 'Der Gegner wurde geändert. Bitte einen neuen Drafter erstellen und den Link ersetzen.' : 'Drafter.lol öffnen, erstellen und den Link hier einfügen.');
   $('#open-drafter').hidden = event.type === 'primeleague';
@@ -285,7 +288,8 @@ function openNewEvent(teamId, date) {
     event: {
       id: null, date, title: '', opponent: '', type: 'scrim', status: 'pending',
       plannerState: 'preplanned', matchFormat: '3_games', fearless: true,
-      startsAt: `${date} 19:00`, opggUrl: '', drafterUrl: '', result: '', note: '',
+      startsAt: `${date} 19:00`, endsAt: `${date} 22:00`, meetingAt: `${date} 18:45`, streamed: false,
+      opggUrl: '', drafterUrl: '', result: '', note: '',
       lineup: [], opponentLineup: [], drafterStale: false
     }
   });
@@ -372,7 +376,7 @@ $('#event-form').addEventListener('submit', async event => {
     return;
   }
   const opponentLineup = [...$('#opponent-lineup').querySelectorAll('input')].map(input => ({ role: input.dataset.role, player: input.value.trim() })).filter(item => item.player);
-  const body = { teamId: Number($('#event-team-id').value), date: $('#event-date').value, startTime: $('#event-time').value, title: $('#event-title').value, opponent: $('#event-opponent').value, type: $('#event-type').value, status: $('#event-status').value, plannerState: $('#event-planner-state').value, matchFormat: $('#event-format').value, fearless: $('#event-fearless').value === '1', opggUrl: $('#event-opgg').value, drafterUrl: $('#event-drafter').value, lineup, opponentLineup, result: $('#event-result').value, note: $('#event-note').value };
+  const body = { teamId: Number($('#event-team-id').value), date: $('#event-date').value, startTime: $('#event-time').value, endTime: $('#event-end-time').value, meetingTime: $('#event-meeting-time').value, title: $('#event-title').value, opponent: $('#event-opponent').value, type: $('#event-type').value, status: $('#event-status').value, plannerState: $('#event-planner-state').value, matchFormat: $('#event-format').value, fearless: $('#event-fearless').value === '1', streamed: $('#event-streamed').value === '1', opggUrl: $('#event-opgg').value, drafterUrl: $('#event-drafter').value, lineup, opponentLineup, result: $('#event-result').value, note: $('#event-note').value };
   const eventId = $('#event-id').value;
   try { await api(eventId ? `/api/events/${eventId}` : '/api/events', { method: eventId ? 'PATCH' : 'POST', body: JSON.stringify(body) }); eventDialog.close(); toast(eventId ? 'Termin gespeichert und mit Discord abgeglichen.' : 'Termin angelegt und mit Discord abgeglichen.'); await loadWeek(selectedWeek); } catch (error) { $('#form-message').textContent = error.message; }
 });
