@@ -3569,10 +3569,33 @@ const command = {
         );
       }
 
-      return interaction.reply({
-        content: lines.join('\n\n'),
+      const messages = [];
+      let currentMessage = '';
+
+      for (const line of lines) {
+        const safeLine = line.length > 1850 ? `${line.slice(0, 1849)}…` : line;
+        const nextMessage = currentMessage ? `${currentMessage}\n\n${safeLine}` : safeLine;
+        if (nextMessage.length > 1900 && currentMessage) {
+          messages.push(currentMessage);
+          currentMessage = safeLine;
+        } else {
+          currentMessage = nextMessage;
+        }
+      }
+      if (currentMessage) messages.push(currentMessage);
+
+      await interaction.reply({
+        content: messages.shift(),
         flags: MessageFlags.Ephemeral
       });
+
+      for (const message of messages) {
+        await interaction.followUp({
+          content: message,
+          flags: MessageFlags.Ephemeral
+        });
+      }
+      return;
     }
     if (subcommand === 'erstellen') {
       const datumInput = interaction.options.getString('datum', true);
