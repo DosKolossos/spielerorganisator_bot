@@ -51,6 +51,11 @@ function createTestDatabase() {
       created_by_discord_user_id TEXT, updated_by_discord_user_id TEXT,
       created_at TEXT, updated_at TEXT
     );
+    CREATE TABLE planner_change_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, team_id INTEGER, player_id INTEGER,
+      event_id INTEGER, change_type TEXT, summary TEXT, created_at TEXT,
+      acknowledged_at TEXT, acknowledged_by_discord_user_id TEXT
+    );
 
     INSERT INTO teams VALUES (1, 'SchiggyGang Main', 'main', 'MAIN', 1, 1, NULL);
     INSERT INTO teams VALUES (2, 'SchiggyGang Shinys', 'shinys', 'SHINY', 1, 0, NULL);
@@ -74,6 +79,8 @@ function createTestDatabase() {
     INSERT INTO players VALUES (7, 1, 'Joe Kurt', NULL, 'joe', 'discord-7', 'main', 'Top', NULL, 0);
     INSERT INTO weekly_availability_choices VALUES (7, '2099-04-06', '2099-04-08');
     INSERT INTO availability_entries VALUES (7, '2099-04-06 00:00', '2099-04-06 18:00', 'später', 'approved', '2099-04-01');
+    INSERT INTO planner_change_log (team_id, player_id, event_id, change_type, summary, created_at)
+      VALUES (1, 7, 10, 'availability', 'Joe hat seine Verfügbarkeit geändert', datetime('now'));
   `);
   return database;
 }
@@ -258,6 +265,10 @@ test('Webserver liefert Healthcheck, API und Oberfläche aus', async t => {
   });
   const createdBody = await created.json();
   const deleted = await fetch(`${baseUrl}/api/events/${createdBody.event.id}`, { method: 'DELETE' });
+  const acknowledged = await fetch(`${baseUrl}/api/changes/acknowledge`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ all: true })
+  });
+  const acknowledgedBody = await acknowledged.json();
 
   assert.deepEqual(health, { status: 'ok', botOnline: true });
   assert.equal(planner.teams[0].events[0].id, 10);
@@ -269,6 +280,9 @@ test('Webserver liefert Healthcheck, API und Oberfläche aus', async t => {
   assert.match(page, /value="bo1">BO1/);
   assert.equal(created.status, 201);
   assert.equal(deleted.status, 200);
+  assert.equal(acknowledged.status, 200);
+  assert.equal(acknowledgedBody.acknowledged, 1);
+  assert.ok(database.prepare('SELECT acknowledged_at FROM planner_change_log WHERE id = 1').get().acknowledged_at);
   assert.equal(database.prepare('SELECT 1 FROM team_calendar_events WHERE id = ?').get(createdBody.event.id), undefined);
 });
 

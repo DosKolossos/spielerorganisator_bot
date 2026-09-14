@@ -162,9 +162,13 @@ function startPlannerWebServer({ client, port, host, database, authenticator } =
         return;
       }
       if (url.pathname === '/api/changes/acknowledge' && request.method === 'POST') {
-        plannerDb.prepare(`UPDATE planner_change_log SET acknowledged_at = ?, acknowledged_by_discord_user_id = ? WHERE id = ?`)
-          .run(new Date().toISOString(), session.user.id, Number(body.id));
-        sendJson(response, 200, { ok: true });
+        const now = new Date().toISOString();
+        const result = body.all === true
+          ? plannerDb.prepare(`UPDATE planner_change_log SET acknowledged_at = ?, acknowledged_by_discord_user_id = ? WHERE acknowledged_at IS NULL`)
+            .run(now, session.user.id)
+          : plannerDb.prepare(`UPDATE planner_change_log SET acknowledged_at = ?, acknowledged_by_discord_user_id = ? WHERE id = ? AND acknowledged_at IS NULL`)
+            .run(now, session.user.id, Number(body.id));
+        sendJson(response, 200, { ok: true, acknowledged: Number(result.changes || 0) });
         return;
       }
       sendJson(response, 404, { error: 'not_found' });

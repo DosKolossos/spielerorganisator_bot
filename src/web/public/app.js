@@ -176,7 +176,31 @@ function renderChanges(changes) {
   const open = changes.filter(change => !change.acknowledgedAt);
   const badge = $('#change-count'); badge.textContent = String(open.length); badge.hidden = open.length === 0;
   if (!open.length) return root.append(element('p', 'empty-copy', 'Keine neuen Änderungen.'));
-  open.slice(0, 6).forEach(change => root.append(element('div', 'change', change.summary)));
+  const acknowledgeAll = element('button', 'button ghost acknowledge-all', '✓ Alle als gelesen markieren');
+  acknowledgeAll.type = 'button';
+  acknowledgeAll.addEventListener('click', async () => {
+    try {
+      await api('/api/changes/acknowledge', { method: 'POST', body: JSON.stringify({ all: true }) });
+      await loadWeek(selectedWeek);
+      $('#changes-notification').open = false;
+      toast('Alle Änderungen als gelesen markiert.');
+    } catch (error) { toast(error.message, true); }
+  });
+  root.append(acknowledgeAll);
+  open.slice(0, 6).forEach(change => {
+    const row = element('div', 'change');
+    row.append(element('span', 'change-summary', change.summary));
+    const acknowledge = element('button', 'acknowledge-change', '✓');
+    acknowledge.type = 'button'; acknowledge.title = 'Als gelesen markieren';
+    acknowledge.setAttribute('aria-label', 'Änderung als gelesen markieren');
+    acknowledge.addEventListener('click', async () => {
+      try {
+        await api('/api/changes/acknowledge', { method: 'POST', body: JSON.stringify({ id: change.id }) });
+        await loadWeek(selectedWeek);
+      } catch (error) { toast(error.message, true); }
+    });
+    row.append(acknowledge); root.append(row);
+  });
 }
 
 function renderMatchday() {
