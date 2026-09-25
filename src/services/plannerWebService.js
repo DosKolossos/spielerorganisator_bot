@@ -191,6 +191,16 @@ function buildPlannerSnapshot(client, database, options = {}) {
       `).all(...players.map(player => player.id), `${weekStart} 00:00`, `${weekEnd} 23:59`)
     : [];
 
+  const availabilityPreferences = players.length && columns(database, 'weekly_availability_preferences').size
+    ? database.prepare(`
+        SELECT player_id, availability_date, only_if_needed
+        FROM weekly_availability_preferences
+        WHERE player_id IN (${players.map(() => '?').join(',')})
+          AND availability_date BETWEEN ? AND ?
+          AND only_if_needed = 1
+      `).all(...players.map(player => player.id), weekStart, weekEnd)
+    : [];
+
   const choiceColumns = columns(database, 'weekly_availability_choices');
   const choices = choiceColumns.size
     ? database.prepare(`
@@ -232,7 +242,8 @@ function buildPlannerSnapshot(client, database, options = {}) {
       days: Object.fromEntries(dates.map(date => {
         const day = availabilityFor(entries.filter(entry => entry.player_id === player.id), date);
         const choice = choices.find(item => item.player_id === player.id && [item.first_date, item.second_date].includes(date));
-        return [date, { ...day, date, eitherOr: choice ? { firstDate: choice.first_date, secondDate: choice.second_date } : null }];
+        const onlyIfNeeded = availabilityPreferences.some(item => item.player_id === player.id && item.availability_date === date);
+        return [date, { ...day, date, onlyIfNeeded, eitherOr: choice ? { firstDate: choice.first_date, secondDate: choice.second_date } : null }];
       }))
     }));
     const starters = roster.filter(player => player.rosterStatus === 'main');
@@ -244,7 +255,7 @@ function buildPlannerSnapshot(client, database, options = {}) {
         region: standin.riot_region, preferredPosition: standin.preferred_position
       })),
       fullLineup: Object.fromEntries(dates.map(date => [date,
-        starters.length >= 5 && starters.every(player => player.days[date].state === 'available')
+        starters.length >= 5 && starters.every(player => player.days[date].state === 'available' && !player.days[date].onlyIfNeeded)
       ]))
     };
   });

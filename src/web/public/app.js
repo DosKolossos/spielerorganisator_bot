@@ -83,10 +83,11 @@ function chooseLineupEvent(events) {
 }
 
 function availabilityCell(day, team, player) {
-  const cell = element('div', `availability ${day.state}`);
-  cell.title = day.eitherOr ? `${day.label} · Entweder/oder mit ${dateLabel(day.eitherOr.firstDate === day.date ? day.eitherOr.secondDate : day.eitherOr.firstDate)}` : day.label;
+  const cell = element('div', `availability ${day.state}${day.onlyIfNeeded ? ' only-if-needed' : ''}`);
+  const neededLabel = day.onlyIfNeeded ? ' · Nur wenn nötig' : '';
+  cell.title = `${day.label}${neededLabel}${day.eitherOr ? ` · Entweder/oder mit ${dateLabel(day.eitherOr.firstDate === day.date ? day.eitherOr.secondDate : day.eitherOr.firstDate)}` : ''}`;
   const status = element('span', 'availability-status');
-  status.append(element('span', 'availability-symbol', `${day.state === 'available' ? '●' : day.state === 'partial' ? '◐' : '–'}${day.eitherOr ? ' ↔' : ''}`));
+  status.append(element('span', 'availability-symbol', `${day.onlyIfNeeded ? '●' : day.state === 'available' ? '●' : day.state === 'partial' ? '◐' : '–'}${day.eitherOr ? ' ↔' : ''}`));
   const events = editableEventsForDay(team, day.date);
   if (events.length && day.state !== 'unavailable') {
     const add = element('button', 'availability-add', '+');
@@ -101,7 +102,8 @@ function availabilityCell(day, team, player) {
     status.append(add);
   }
   cell.append(status);
-  if (day.state === 'partial' && day.restriction) cell.append(element('small', 'availability-restriction', day.restriction));
+  const restrictions = [day.state === 'partial' ? day.restriction : null, day.onlyIfNeeded ? 'nur wenn nötig' : null].filter(Boolean);
+  if (restrictions.length) cell.append(element('small', 'availability-restriction', restrictions.join(' · ')));
   return cell;
 }
 
