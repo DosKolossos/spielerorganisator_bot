@@ -40,6 +40,9 @@ function createTestDatabase() {
     CREATE TABLE weekly_availability_choices (
       player_id INTEGER, first_date TEXT, second_date TEXT
     );
+    CREATE TABLE weekly_availability_preferences (
+      player_id INTEGER, availability_date TEXT, only_if_needed INTEGER
+    );
     CREATE TABLE availability_entries (
       player_id INTEGER, start_at TEXT, end_at TEXT, reason TEXT,
       approval_status TEXT, updated_at TEXT
@@ -100,6 +103,20 @@ test('Snapshot trennt Teams und enthält Aufstellung sowie Entweder-oder-Angabe'
   ]);
   assert.equal(snapshot.teams[0].roster[0].days['2099-04-06'].restriction, 'ab 18:00');
   assert.equal(snapshot.teams[1].events.length, 0);
+  database.close();
+});
+
+test('Nur-wenn-nötig bleibt sichtbar und zählt nicht als normale Verfügbarkeit', () => {
+  const database = createTestDatabase();
+  database.prepare(`
+    INSERT INTO weekly_availability_preferences (player_id, availability_date, only_if_needed)
+    VALUES (7, '2099-04-06', 1)
+  `).run();
+  const snapshot = buildPlannerSnapshot({ isReady: () => true }, database, { week: '2099-04-06' });
+  const day = snapshot.teams[0].roster[0].days['2099-04-06'];
+  assert.equal(day.state, 'partial');
+  assert.equal(day.onlyIfNeeded, true);
+  assert.equal(snapshot.teams[0].fullLineup['2099-04-06'], false);
   database.close();
 });
 

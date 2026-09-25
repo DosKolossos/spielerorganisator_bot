@@ -187,20 +187,48 @@ function formatDayLine(dateStr, state) {
     return `${prefix} ❌ nicht verfügbar`;
   }
   if (state.kind === 'window') {
-    return `${prefix} 🕒 ${state.from}–${state.until}`;
+    return `${prefix} 🕒 ${state.from}–${state.until}${state.onlyIfNeeded ? ' · 🟠 nur wenn nötig' : ''}`;
   }
   if (state.kind === 'partial') {
     if (state.until && state.from) {
-      return `${prefix} 🕒 bis ${state.until}, ab ${state.from}`;
+      return `${prefix} 🕒 bis ${state.until}, ab ${state.from}${state.onlyIfNeeded ? ' · 🟠 nur wenn nötig' : ''}`;
     }
     if (state.until) {
-      return `${prefix} 🕒 bis ${state.until}`;
+      return `${prefix} 🕒 bis ${state.until}${state.onlyIfNeeded ? ' · 🟠 nur wenn nötig' : ''}`;
     }
     if (state.from) {
-      return `${prefix} 🕒 ab ${state.from}`;
+      return `${prefix} 🕒 ab ${state.from}${state.onlyIfNeeded ? ' · 🟠 nur wenn nötig' : ''}`;
     }
   }
-  return `${prefix} ✅ verfügbar`;
+  return `${prefix} ${state.onlyIfNeeded ? '🟠 nur wenn nötig' : '✅ verfügbar'}`;
+}
+
+function getOnlyIfNeededDates(playerId, weekStartDate) {
+  const weekEndDate = addDaysIso(weekStartDate, DAYS_PER_WEEK - 1);
+  return new Set(db.prepare(`
+    SELECT availability_date
+    FROM weekly_availability_preferences
+    WHERE player_id = ? AND only_if_needed = 1
+      AND availability_date BETWEEN ? AND ?
+  `).all(playerId, weekStartDate, weekEndDate).map(row => row.availability_date));
+}
+
+function setOnlyIfNeeded(playerId, actorDiscordUserId, dateStr, enabled) {
+  if (!enabled) {
+    db.prepare(`DELETE FROM weekly_availability_preferences WHERE player_id = ? AND availability_date = ?`)
+      .run(playerId, dateStr);
+    return;
+  }
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO weekly_availability_preferences (
+      player_id, availability_date, only_if_needed, updated_by_discord_user_id, created_at, updated_at
+    ) VALUES (?, ?, 1, ?, ?, ?)
+    ON CONFLICT(player_id, availability_date) DO UPDATE SET
+      only_if_needed = 1,
+      updated_by_discord_user_id = excluded.updated_by_discord_user_id,
+      updated_at = excluded.updated_at
+  `).run(playerId, dateStr, actorDiscordUserId, now, now);
 }
 
 function getEntryReasonForState(state) {
@@ -271,7 +299,8 @@ function buildPublicPromptEmbed(weekStartDate) {
       `Diese Karte gilt für **Montag bis Sonntag** (${formatDateDE(weekStartDate)} – ${formatDateDE(weekEndDate)}).\n\n` +
       'Klicke auf **Meine Woche öffnen** und markiere deine Verfügbarkeit für diese Woche.\n\n' +
       'Normale Klicks setzen einen Tag auf **✅ verfügbar** oder **❌ nicht verfügbar**.\n' +
-      'Über **🕒 Zeitfenster** kannst du z. B. **bis 15:00** oder **ab 18:00** angeben.'
+      'Über **🕒 Zeitfenster** kannst du z. B. **bis 15:00** oder **ab 18:00** angeben.\n' +
+      'Mit **🟠 Nur wenn nötig** bleibst du für Pflichtfälle einsetzbar, zählst aber nicht als regulär verfügbar.'
     );
 }
 
@@ -532,10 +561,12 @@ function buildEditorEmbed(player, weekStartDate) {
   const weekEndDate = weekDates[weekDates.length - 1];
   const entries = getWeeklyEntries(player.id, weekStartDate);
   const choice = getEitherOrChoice(player.id, weekStartDate);
+  const onlyIfNeededDates = getOnlyIfNeededDates(player.id, weekStartDate);
   const lines = weekDates.map(dateStr => {
     const dayEntries = getWeeklyEntriesForDate(entries, dateStr);
     const linked = choice && (choice.first_date === dateStr || choice.second_date === dateStr);
-    return `${formatDayLine(dateStr, deriveStateFromEntries(dayEntries))}${linked ? ' 🔗' : ''}`;
+    const state = { ...deriveStateFromEntries(dayEntries), onlyIfNeeded: onlyIfNeededDates.has(dateStr) };
+    return `${formatDayLine(dateStr, state)}${linked ? ' 🔗' : ''}`;
   });
   const choiceText = choice
     ? `\n\n🔗 **Nur an einem dieser Tage einplanen:**\n${formatEitherOrDate(choice.first_date)} **oder** ${formatEitherOrDate(choice.second_date)}`
@@ -544,19 +575,20 @@ function buildEditorEmbed(player, weekStartDate) {
   return new EmbedBuilder()
     .setTitle(`🗓️ Deine Woche – ${playerDisplay(player)}`)
     .setDescription(`**${formatDateDE(weekStartDate)} – ${formatDateDE(weekEndDate)}**\n\n${lines.join('\n')}${choiceText}`)
-    .setFooter({ text: 'Tagesbutton = ✅/❌ · Zeitfenster = eingeschränkt · 🔗 = nur einer der verknüpften Tage' });
+    .setFooter({ text: 'Tagesbutton = ✅/❌ · 🕒 = eingeschränkt · 🟠 = nur wenn nötig · 🔗 = entweder/oder' });
 }
 
 function buildEditorComponents(player, weekStartDate, options = {}) {
   const weekDates = getWeekDates(weekStartDate);
   const entries = getWeeklyEntries(player.id, weekStartDate);
   const choice = getEitherOrChoice(player.id, weekStartDate);
+  const onlyIfNeededDates = getOnlyIfNeededDates(player.id, weekStartDate);
   const withTimeSelect = options.withTimeSelect === true;
   const withEitherOrSelect = options.withEitherOrSelect === true;
 
   const states = new Map(weekDates.map(dateStr => [
     dateStr,
-    deriveStateFromEntries(getWeeklyEntriesForDate(entries, dateStr))
+    { ...deriveStateFromEntries(getWeeklyEntriesForDate(entries, dateStr)), onlyIfNeeded: onlyIfNeededDates.has(dateStr) }
   ]));
 
   const dayButtons = weekDates.map(dateStr => {
@@ -564,7 +596,7 @@ function buildEditorComponents(player, weekStartDate, options = {}) {
 
     return new ButtonBuilder()
       .setCustomId(`${PREFIX}:toggle:${weekStartDate}:${dateStr}`)
-      .setLabel(formatDayButtonLabel(dateStr, state.icon))
+      .setLabel(formatDayButtonLabel(dateStr, state.onlyIfNeeded && state.kind !== 'unavailable' ? '🟠' : state.icon))
       .setStyle(
         state.kind === 'available'
           ? ButtonStyle.Success
@@ -589,17 +621,17 @@ function buildEditorComponents(player, weekStartDate, options = {}) {
       .setLabel('Alle ❌')
       .setStyle(ButtonStyle.Danger),
     new ButtonBuilder()
-      .setCustomId(`${PREFIX}:reset:${weekStartDate}`)
-      .setLabel('Reset')
-      .setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder()
       .setCustomId(`${PREFIX}:time:${weekStartDate}`)
       .setLabel('🕒 Zeitfenster')
       .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
       .setCustomId(`${PREFIX}:either:${weekStartDate}`)
       .setLabel(choice ? '🔗 Tage ändern' : '🔗 Entweder/oder')
-      .setStyle(ButtonStyle.Primary)
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId(`${PREFIX}:needed:${weekStartDate}`)
+      .setLabel('🟠 Nur wenn nötig')
+      .setStyle(ButtonStyle.Secondary)
   ));
 
   if (withTimeSelect) {
@@ -638,6 +670,24 @@ function buildEditorComponents(player, weekStartDate, options = {}) {
           .setCustomId(`${PREFIX}:eitherclear:${weekStartDate}`)
           .setLabel('Verknüpfung löschen')
           .setStyle(ButtonStyle.Danger)
+      ));
+    }
+  }
+
+  if (options.withNeededSelect === true) {
+    const selectableDates = weekDates.filter(dateStr => states.get(dateStr).kind !== 'unavailable');
+    if (selectableDates.length) {
+      rows.push(new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId(`${PREFIX}:neededdays:${weekStartDate}`)
+          .setPlaceholder('„Nur wenn nötig“-Tage auswählen')
+          .setMinValues(0)
+          .setMaxValues(selectableDates.length)
+          .addOptions(selectableDates.map(dateStr => ({
+            label: formatEitherOrDate(dateStr),
+            value: dateStr,
+            default: onlyIfNeededDates.has(dateStr)
+          })))
       ));
     }
   }
@@ -776,6 +826,7 @@ function setDayState(playerId, actorDiscordUserId, dateStr, state) {
   }
   if (state.kind === 'unavailable') {
     clearEitherOrChoiceForDate(playerId, dateStr);
+    setOnlyIfNeeded(playerId, actorDiscordUserId, dateStr, false);
   }
   logLatePlannerChange(playerId, actorDiscordUserId, dateStr, before, state);
 }
@@ -855,6 +906,10 @@ function resetWeek(playerId, weekStartDate) {
       AND start_at <= ?
   `).run(playerId, `${weekStartDate} 00:00`, `${weekEndDate} 23:59`);
   clearEitherOrChoice(playerId, weekStartDate);
+  db.prepare(`
+    DELETE FROM weekly_availability_preferences
+    WHERE player_id = ? AND availability_date BETWEEN ? AND ?
+  `).run(playerId, weekStartDate, weekEndDate);
 }
 
 function parseCustomId(customId) {
@@ -1082,6 +1137,12 @@ async function handleInteraction(interaction) {
       return true;
     }
 
+    if (action === 'needed') {
+      const player = upsertPlayer(interaction.user, { team_id: resolveTeamForInteraction(interaction)?.id });
+      await interaction.update(buildEditorPayload(player, weekStartDate, { withNeededSelect: true }));
+      return true;
+    }
+
     if (action === 'eitherclear') {
       const player = upsertPlayer(interaction.user, { team_id: resolveTeamForInteraction(interaction)?.id });
       const previous = getEitherOrChoice(player.id, weekStartDate);
@@ -1158,6 +1219,27 @@ async function handleInteraction(interaction) {
         refreshDates.add(previous.second_date);
       }
       schedulePlannerRefresh(interaction.client, player.team_id, [...refreshDates]);
+      return true;
+    }
+
+
+    if (action === 'neededdays') {
+      const player = upsertPlayer(interaction.user, { team_id: resolveTeamForInteraction(interaction)?.id });
+      const selected = new Set(interaction.values);
+      const weekDates = getWeekDates(weekStartDate);
+      const entries = getWeeklyEntries(player.id, weekStartDate);
+      const valid = weekDates.filter(dateStr =>
+        deriveStateFromEntries(getWeeklyEntriesForDate(entries, dateStr)).kind !== 'unavailable'
+      );
+      for (const dateStr of weekDates) {
+        setOnlyIfNeeded(player.id, interaction.user.id, dateStr, valid.includes(dateStr) && selected.has(dateStr));
+      }
+      await interaction.update(buildEditorPayload(player, weekStartDate, {
+        notice: selected.size
+          ? '🟠 Gespeichert: Diese Tage zählen nur bei wirklichem Bedarf.'
+          : 'Die „Nur wenn nötig“-Markierung wurde entfernt.'
+      }));
+      schedulePlannerRefresh(interaction.client, player.team_id, weekDates);
       return true;
     }
   }

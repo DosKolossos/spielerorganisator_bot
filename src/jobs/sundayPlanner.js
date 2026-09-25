@@ -292,9 +292,10 @@ function getCandidateStartTimesForDate(dateStr) {
   return starts;
 }
 
-function getUnavailablePlayersForSlot(players, explicitEntries, rules, dateStr, slotStartAt, slotEndAt) {
+function getUnavailablePlayersForSlot(players, explicitEntries, rules, preferences, dateStr, slotStartAt, slotEndAt) {
   const unavailable = [];
   const available = [];
+  const onlyIfNeeded = [];
 
   for (const player of players) {
     const playerEntries = explicitEntries.filter(entry => entry.player_id === player.id);
@@ -323,10 +324,11 @@ function getUnavailablePlayersForSlot(players, explicitEntries, rules, dateStr, 
     }
 
     if (blocked) unavailable.push(player);
+    else if (preferences.some(item => item.player_id === player.id && item.availability_date === dateStr && item.only_if_needed)) onlyIfNeeded.push(player);
     else available.push(player);
   }
 
-  return { unavailable, available };
+  return { unavailable, available, onlyIfNeeded };
 }
 
 function compressStartWindows(startTimes) {
@@ -397,10 +399,21 @@ function buildPlayerAvailabilityText(players, slots) {
     }
   }
 
+  const neededRows = players.map(player => ({
+    player,
+    starts: slots.filter(slot => slot.onlyIfNeeded.some(candidate => candidate.id === player.id)).map(slot => slot.startTime)
+  })).filter(item => item.starts.length);
+  if (neededRows.length) {
+    lines.push('**🟠 Nur wenn nötig:**');
+    for (const item of neededRows.sort((a, b) => playerDisplay(a.player).localeCompare(playerDisplay(b.player), 'de'))) {
+      lines.push(`• ${playerDisplay(item.player)}: ${compressStartWindows(item.starts)}`);
+    }
+  }
+
   return lines.length ? lines.join('\n') : '-';
 }
 
-function buildDailySuggestion(players, explicitEntries, rules, dateStr) {
+function buildDailySuggestion(players, explicitEntries, rules, preferences, dateStr) {
   const startTimes = getCandidateStartTimesForDate(dateStr);
   const slots = [];
 
@@ -409,10 +422,11 @@ function buildDailySuggestion(players, explicitEntries, rules, dateStr) {
     const slotStartAt = buildDateTime(dateStr, startTime);
     const slotEndAt = buildDateTime(dateStr, endTime);
 
-    const { unavailable, available } = getUnavailablePlayersForSlot(
+    const { unavailable, available, onlyIfNeeded } = getUnavailablePlayersForSlot(
       players,
       explicitEntries,
       rules,
+      preferences,
       dateStr,
       slotStartAt,
       slotEndAt
@@ -422,6 +436,7 @@ function buildDailySuggestion(players, explicitEntries, rules, dateStr) {
       startTime,
       endTime,
       available,
+      onlyIfNeeded,
       unavailable,
       signature: available.map(playerDisplay).slice().sort((a, b) => a.localeCompare(b, 'de')).join('||'),
       availableCount: available.length,
@@ -433,7 +448,8 @@ function buildDailySuggestion(players, explicitEntries, rules, dateStr) {
 
   const maxAvailable = Math.max(...slots.map(slot => slot.availableCount));
   const maxMainAvailable = Math.max(...slots.map(slot => slot.mainAvailableCount));
-  if (maxAvailable <= 0) return null;
+  const maxNeeded = Math.max(...slots.map(slot => slot.onlyIfNeeded.length));
+  if (maxAvailable <= 0 && maxNeeded <= 0) return null;
 
   const bestTotalAmongBestMain = Math.max(
     ...slots
@@ -849,6 +865,12 @@ async function runSundayPlanner(client, options = {}) {
     ORDER BY p.id ASC, r.id ASC
   `).all(teamId);
 
+  const availabilityPreferences = db.prepare(`
+    SELECT player_id, availability_date, only_if_needed
+    FROM weekly_availability_preferences
+    WHERE availability_date BETWEEN ? AND ? AND only_if_needed = 1
+  `).all(plannerStartDate, windowEndDate);
+
   const explicitItems = mapExplicitEntries(upcomingEntries);
   const recurringItems = expandRecurringRules(rules, windowDates);
 
@@ -875,7 +897,7 @@ async function runSundayPlanner(client, options = {}) {
     // offene Terminoption für dasselbe Team und denselben Tag erzeugen.
     if (occupiedDates.has(dateStr)) continue;
 
-    const suggestion = buildDailySuggestion(players, upcomingEntries, rules, dateStr);
+    const suggestion = buildDailySuggestion(players, upcomingEntries, rules, availabilityPreferences, dateStr);
     if (!suggestion) continue;
 
     const calendarId = syncSuggestionEvent(suggestion, teamId);
@@ -1086,7 +1108,12 @@ async function refreshPlannerDates(client, { teamId, dates }) {
       ORDER BY e.start_at ASC
     `).all(`${dateStr} 00:00`, `${dateStr} 23:59`, teamId);
 
-    const suggestion = buildDailySuggestion(players, entries, rules, dateStr);
+    const preferences = db.prepare(`
+      SELECT player_id, availability_date, only_if_needed
+      FROM weekly_availability_preferences
+      WHERE availability_date = ? AND only_if_needed = 1
+    `).all(dateStr);
+    const suggestion = buildDailySuggestion(players, entries, rules, preferences, dateStr);
     if (!suggestion) continue;
 
     const eventId = syncSuggestionEvent(suggestion, teamId);
