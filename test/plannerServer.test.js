@@ -106,7 +106,7 @@ test('Snapshot trennt Teams und enthält Aufstellung sowie Entweder-oder-Angabe'
   database.close();
 });
 
-test('Nur-wenn-nötig bleibt sichtbar und zählt nicht als normale Verfügbarkeit', () => {
+test('Nur-für-PRM bleibt sichtbar und zählt nicht als normale Verfügbarkeit', () => {
   const database = createTestDatabase();
   database.prepare(`
     INSERT INTO weekly_availability_preferences (player_id, availability_date, only_if_needed)
@@ -115,7 +115,7 @@ test('Nur-wenn-nötig bleibt sichtbar und zählt nicht als normale Verfügbarkei
   const snapshot = buildPlannerSnapshot({ isReady: () => true }, database, { week: '2099-04-06' });
   const day = snapshot.teams[0].roster[0].days['2099-04-06'];
   assert.equal(day.state, 'partial');
-  assert.equal(day.onlyIfNeeded, true);
+  assert.equal(day.onlyForPrm, true);
   assert.equal(snapshot.teams[0].fullLineup['2099-04-06'], false);
   database.close();
 });
@@ -253,7 +253,10 @@ test('Webserver liefert Healthcheck, API und Oberfläche aus', async t => {
   const database = createTestDatabase();
   const authenticator = {
     handle: async () => false,
-    requireSession: () => ({ user: { id: 'test' } })
+    requireSession: () => ({
+      user: { id: 'test' },
+      access: { role: 'admin', canManagePlanner: true, canEditOwnAvailability: true, playerId: null }
+    })
   };
   const server = startPlannerWebServer({
     client: { isReady: () => true },
@@ -301,6 +304,35 @@ test('Webserver liefert Healthcheck, API und Oberfläche aus', async t => {
   assert.equal(acknowledgedBody.acknowledged, 1);
   assert.ok(database.prepare('SELECT acknowledged_at FROM planner_change_log WHERE id = 1').get().acknowledged_at);
   assert.equal(database.prepare('SELECT 1 FROM team_calendar_events WHERE id = ?').get(createdBody.event.id), undefined);
+});
+
+test('Spielerzugang darf lesen, aber keine Termine verändern', async t => {
+  const database = createTestDatabase();
+  const authenticator = {
+    handle: async () => false,
+    requireSession: () => ({
+      user: { id: 'discord-7' },
+      access: { role: 'player', canManagePlanner: false, canEditOwnAvailability: true, playerId: 7 }
+    })
+  };
+  const server = startPlannerWebServer({ client: { isReady: () => true }, database, authenticator, host: '127.0.0.1', port: 0 });
+  await new Promise((resolve, reject) => {
+    server.once('listening', resolve);
+    server.once('error', reject);
+  });
+  t.after(() => { server.close(); database.close(); });
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  const plannerResponse = await fetch(`${baseUrl}/api/planner?week=2099-04-06`);
+  const planner = await plannerResponse.json();
+  const createResponse = await fetch(`${baseUrl}/api/events`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ teamId: 1, date: '2099-04-07', startTime: '19:00', type: 'scrim' })
+  });
+  assert.equal(plannerResponse.status, 200);
+  assert.equal(planner.access.role, 'player');
+  assert.equal(planner.access.playerId, 7);
+  assert.equal(createResponse.status, 403);
+  assert.deepEqual(await createResponse.json(), { error: 'planner_write_forbidden' });
 });
 
 test('Terminbearbeitung validiert Auswahlfelder und Export erfasst nur Planner-Karten', async () => {

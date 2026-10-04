@@ -901,9 +901,20 @@ function getEventPlanningWindow(event) {
   return { startAt, endAt, dateStr: startAt.slice(0, 10) };
 }
 
+function isPlayerOnlyForPrm(playerId, dateStr) {
+  if (!playerId || !dateStr) return false;
+  return Boolean(db.prepare(`
+    SELECT 1
+    FROM weekly_availability_preferences
+    WHERE player_id = ? AND availability_date = ? AND only_if_needed = 1
+    LIMIT 1
+  `).get(playerId, dateStr));
+}
+
 function isPlayerAvailableForEvent(playerId, event) {
   const window = getEventPlanningWindow(event);
   if (!window) return true;
+  if (event.event_type !== 'primeleague' && isPlayerOnlyForPrm(playerId, window.dateStr)) return false;
 
   const entries = db.prepare(`
     SELECT entry_type, start_at, end_at, approval_status
@@ -1022,6 +1033,7 @@ function getTeamLineupPlayers(event) {
   `).all(event.team_id)
     .map(player => ({
       ...player,
+      only_for_prm: isPlayerOnlyForPrm(player.id, event.option_date),
       is_available: isPlayerAvailableForEvent(player.id, event),
       either_or_conflict: getEitherOrAssignmentConflict(player.id, event)
     }));
@@ -1035,6 +1047,9 @@ function getSuggestedPlayers(event) {
 function unavailableAssignmentWarning(candidate, event) {
   if (!candidate || candidate.candidate_type === 'standin') return '';
   if (isPlayerAvailableForEvent(candidate.id, event)) return '';
+  if (isPlayerOnlyForPrm(candidate.id, event.option_date) && event.event_type !== 'primeleague') {
+    return ' ⚠️ **Hinweis:** Dieser Spieler hat sich für diesen Tag nur für PRM-Termine freigegeben.';
+  }
   return ' ⚠️ **Hinweis:** Dieser Spieler ist für den Termin als abwesend eingetragen.';
 }
 
@@ -1488,6 +1503,7 @@ function getLineupCandidates(roleLabel, event) {
   `).all(event?.team_id).map(player => ({
     ...player,
     candidate_type: 'player',
+    only_for_prm: isPlayerOnlyForPrm(player.id, event.option_date),
     is_available: isPlayerAvailableForEvent(player.id, event),
     either_or_conflict: getEitherOrAssignmentConflict(player.id, event)
   }));
@@ -1530,6 +1546,8 @@ function candidateOption(candidate, roleLabel) {
   const matchHint = positionMatchesRole(candidate, roleLabel) ? 'passt zur Position' : 'andere Position';
   const availabilityHint = isEitherOrBlocked
     ? `⛔ bereits ${formatDateDE(candidate.either_or_conflict.conflicting_date)} eingeplant`
+    : candidate.only_for_prm && isUnavailable
+      ? '🟠 nur für PRM'
     : isUnavailable
       ? '⚠️ abwesend'
       : (!isStandin && candidate.is_available === true ? 'verfügbar' : null);

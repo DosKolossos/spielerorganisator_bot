@@ -58,28 +58,30 @@ function availabilityFor(entries, date) {
       end: entry.end_at.slice(0, 10) > date ? '23:59' : entry.end_at.slice(11, 16)
     }))
     .sort((a, b) => a.start.localeCompare(b.start));
-  if (!relevant.length) return { state: 'available', label: 'Verfügbar' };
+  if (!relevant.length) return { state: 'available', label: 'Verfügbar', availableFrom: null, availableUntil: null };
   if (relevant.some(entry => entry.start <= '00:01' && entry.end >= '23:58')) {
-    return { state: 'unavailable', label: 'Nicht verfügbar' };
+    return { state: 'unavailable', label: 'Nicht verfügbar', availableFrom: null, availableUntil: null };
   }
   const first = relevant[0];
   const last = relevant[relevant.length - 1];
   if (first.start === '00:00' && last.end === '23:59') {
     if (relevant.length === 2 && first.end <= last.start) {
-      return { state: 'partial', label: `Teilweise · ${first.end}–${last.start}`, restriction: `${first.end}–${last.start}` };
+      return { state: 'partial', label: `Teilweise · ${first.end}–${last.start}`, restriction: `${first.end}–${last.start}`, availableFrom: first.end, availableUntil: last.start };
     }
-    return { state: 'unavailable', label: 'Nicht verfügbar' };
+    return { state: 'unavailable', label: 'Nicht verfügbar', availableFrom: null, availableUntil: null };
   }
   if (first.start === '00:00') {
-    return { state: 'partial', label: `Teilweise · ab ${first.end}`, restriction: `ab ${first.end}` };
+    return { state: 'partial', label: `Teilweise · ab ${first.end}`, restriction: `ab ${first.end}`, availableFrom: first.end, availableUntil: null };
   }
   if (last.end === '23:59') {
-    return { state: 'partial', label: `Teilweise · bis ${last.start}`, restriction: `bis ${last.start}` };
+    return { state: 'partial', label: `Teilweise · bis ${last.start}`, restriction: `bis ${last.start}`, availableFrom: null, availableUntil: last.start };
   }
   return {
     state: 'partial',
     label: `Teilweise · bis ${first.start}, ab ${last.end}`,
-    restriction: `bis ${first.start} · ab ${last.end}`
+    restriction: `bis ${first.start} · ab ${last.end}`,
+    availableFrom: null,
+    availableUntil: null
   };
 }
 
@@ -242,8 +244,8 @@ function buildPlannerSnapshot(client, database, options = {}) {
       days: Object.fromEntries(dates.map(date => {
         const day = availabilityFor(entries.filter(entry => entry.player_id === player.id), date);
         const choice = choices.find(item => item.player_id === player.id && [item.first_date, item.second_date].includes(date));
-        const onlyIfNeeded = availabilityPreferences.some(item => item.player_id === player.id && item.availability_date === date);
-        return [date, { ...day, date, onlyIfNeeded, eitherOr: choice ? { firstDate: choice.first_date, secondDate: choice.second_date } : null }];
+        const onlyForPrm = availabilityPreferences.some(item => item.player_id === player.id && item.availability_date === date);
+        return [date, { ...day, date, onlyForPrm, eitherOr: choice ? { firstDate: choice.first_date, secondDate: choice.second_date } : null }];
       }))
     }));
     const starters = roster.filter(player => player.rosterStatus === 'main');
@@ -255,7 +257,7 @@ function buildPlannerSnapshot(client, database, options = {}) {
         region: standin.riot_region, preferredPosition: standin.preferred_position
       })),
       fullLineup: Object.fromEntries(dates.map(date => [date,
-        starters.length >= 5 && starters.every(player => player.days[date].state === 'available' && !player.days[date].onlyIfNeeded)
+        starters.length >= 5 && starters.every(player => player.days[date].state === 'available' && !player.days[date].onlyForPrm)
       ]))
     };
   });
