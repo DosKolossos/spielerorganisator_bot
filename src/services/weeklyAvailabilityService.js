@@ -187,20 +187,20 @@ function formatDayLine(dateStr, state) {
     return `${prefix} ❌ nicht verfügbar`;
   }
   if (state.kind === 'window') {
-    return `${prefix} 🕒 ${state.from}–${state.until}${state.onlyIfNeeded ? ' · 🟠 nur wenn nötig' : ''}`;
+    return `${prefix} 🕒 ${state.from}–${state.until}${state.onlyIfNeeded ? ' · 🟠 nur für PRM' : ''}`;
   }
   if (state.kind === 'partial') {
     if (state.until && state.from) {
-      return `${prefix} 🕒 bis ${state.until}, ab ${state.from}${state.onlyIfNeeded ? ' · 🟠 nur wenn nötig' : ''}`;
+      return `${prefix} 🕒 bis ${state.until}, ab ${state.from}${state.onlyIfNeeded ? ' · 🟠 nur für PRM' : ''}`;
     }
     if (state.until) {
-      return `${prefix} 🕒 bis ${state.until}${state.onlyIfNeeded ? ' · 🟠 nur wenn nötig' : ''}`;
+      return `${prefix} 🕒 bis ${state.until}${state.onlyIfNeeded ? ' · 🟠 nur für PRM' : ''}`;
     }
     if (state.from) {
-      return `${prefix} 🕒 ab ${state.from}${state.onlyIfNeeded ? ' · 🟠 nur wenn nötig' : ''}`;
+      return `${prefix} 🕒 ab ${state.from}${state.onlyIfNeeded ? ' · 🟠 nur für PRM' : ''}`;
     }
   }
-  return `${prefix} ${state.onlyIfNeeded ? '🟠 nur wenn nötig' : '✅ verfügbar'}`;
+  return `${prefix} ${state.onlyIfNeeded ? '🟠 nur für PRM' : '✅ verfügbar'}`;
 }
 
 function getOnlyIfNeededDates(playerId, weekStartDate) {
@@ -300,7 +300,7 @@ function buildPublicPromptEmbed(weekStartDate) {
       'Klicke auf **Meine Woche öffnen** und markiere deine Verfügbarkeit für diese Woche.\n\n' +
       'Normale Klicks setzen einen Tag auf **✅ verfügbar** oder **❌ nicht verfügbar**.\n' +
       'Über **🕒 Zeitfenster** kannst du z. B. **bis 15:00** oder **ab 18:00** angeben.\n' +
-      'Mit **🟠 Nur wenn nötig** bleibst du für Pflichtfälle einsetzbar, zählst aber nicht als regulär verfügbar.'
+      'Mit **🟠 Nur für PRM** bist du nur für Prime-League-Termine einsetzbar und zählst sonst nicht als regulär verfügbar.'
     );
 }
 
@@ -575,7 +575,7 @@ function buildEditorEmbed(player, weekStartDate) {
   return new EmbedBuilder()
     .setTitle(`🗓️ Deine Woche – ${playerDisplay(player)}`)
     .setDescription(`**${formatDateDE(weekStartDate)} – ${formatDateDE(weekEndDate)}**\n\n${lines.join('\n')}${choiceText}`)
-    .setFooter({ text: 'Tagesbutton = ✅/❌ · 🕒 = eingeschränkt · 🟠 = nur wenn nötig · 🔗 = entweder/oder' });
+    .setFooter({ text: 'Tagesbutton = ✅/❌ · 🕒 = eingeschränkt · 🟠 = nur für PRM · 🔗 = entweder/oder' });
 }
 
 function buildEditorComponents(player, weekStartDate, options = {}) {
@@ -630,7 +630,7 @@ function buildEditorComponents(player, weekStartDate, options = {}) {
       .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
       .setCustomId(`${PREFIX}:needed:${weekStartDate}`)
-      .setLabel('🟠 Nur wenn nötig')
+      .setLabel('🟠 Nur für PRM')
       .setStyle(ButtonStyle.Secondary)
   ));
 
@@ -680,7 +680,7 @@ function buildEditorComponents(player, weekStartDate, options = {}) {
       rows.push(new ActionRowBuilder().addComponents(
         new StringSelectMenuBuilder()
           .setCustomId(`${PREFIX}:neededdays:${weekStartDate}`)
-          .setPlaceholder('„Nur wenn nötig“-Tage auswählen')
+          .setPlaceholder('„Nur für PRM“-Tage auswählen')
           .setMinValues(0)
           .setMaxValues(selectableDates.length)
           .addOptions(selectableDates.map(dateStr => ({
@@ -1011,6 +1011,49 @@ function buildStateFromTimes(from, until) {
   return { kind: 'partial', until };
 }
 
+function updateAvailabilityFromWeb(client, {
+  playerId,
+  actorDiscordUserId,
+  dateStr,
+  status = 'available',
+  availableFrom = null,
+  availableUntil = null,
+  onlyForPrm = false
+}) {
+  if (!Number.isSafeInteger(Number(playerId)) || !isValidIsoDate(dateStr)) {
+    throw Object.assign(new Error('invalid_availability'), { status: 400 });
+  }
+  const player = db.prepare(`
+    SELECT id, team_id FROM players
+    WHERE id = ? AND COALESCE(is_archived, 0) = 0
+  `).get(Number(playerId));
+  if (!player) throw Object.assign(new Error('player_not_found'), { status: 404 });
+
+  let state;
+  if (status === 'unavailable') {
+    state = { kind: 'unavailable' };
+  } else if (status === 'available') {
+    state = buildStateFromTimes(
+      String(availableFrom || '').trim() || null,
+      String(availableUntil || '').trim() || null
+    );
+    if (state.error) throw Object.assign(new Error(state.error), { status: 400 });
+  } else {
+    throw Object.assign(new Error('invalid_availability_status'), { status: 400 });
+  }
+
+  setDayState(player.id, actorDiscordUserId, dateStr, state);
+  setOnlyIfNeeded(player.id, actorDiscordUserId, dateStr, state.kind !== 'unavailable' && onlyForPrm === true);
+  schedulePlannerRefresh(client, player.team_id, [dateStr]);
+  return {
+    playerId: player.id,
+    date: dateStr,
+    status: state.kind === 'unavailable' ? 'unavailable' : 'available',
+    state,
+    onlyForPrm: state.kind !== 'unavailable' && onlyForPrm === true
+  };
+}
+
 function buildRangeResultMessage(result) {
   if (!result.sent) {
     if (result.reason === 'range_too_large') {
@@ -1236,8 +1279,8 @@ async function handleInteraction(interaction) {
       }
       await interaction.update(buildEditorPayload(player, weekStartDate, {
         notice: selected.size
-          ? '🟠 Gespeichert: Diese Tage zählen nur bei wirklichem Bedarf.'
-          : 'Die „Nur wenn nötig“-Markierung wurde entfernt.'
+          ? '🟠 Gespeichert: Diese Tage gelten ausschließlich für PRM-Termine.'
+          : 'Die „Nur für PRM“-Markierung wurde entfernt.'
       }));
       schedulePlannerRefresh(interaction.client, player.team_id, weekDates);
       return true;
@@ -1284,6 +1327,7 @@ module.exports = {
   publishWeeklyAvailabilityPrompt,
   canHandleInteraction,
   handleInteraction,
+  updateAvailabilityFromWeb,
   parseDateInput,
   normalizeRangeToFullWeeks,
   formatDateDE

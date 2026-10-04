@@ -4,6 +4,7 @@ const planner = $('#planner');
 const login = $('#login');
 const eventDialog = $('#event-dialog');
 const exportDialog = $('#export-dialog');
+const availabilityDialog = $('#availability-dialog');
 const roles = ['Top', 'Jgl', 'Mid', 'ADC', 'Supp'];
 let snapshot;
 let liveStream;
@@ -83,13 +84,26 @@ function chooseLineupEvent(events) {
 }
 
 function availabilityCell(day, team, player) {
-  const cell = element('div', `availability ${day.state}${day.onlyIfNeeded ? ' only-if-needed' : ''}`);
-  const neededLabel = day.onlyIfNeeded ? ' · Nur wenn nötig' : '';
+  const ownEntry = snapshot.access?.canEditOwnAvailability && snapshot.access.playerId === player.id;
+  const cell = element('div', `availability ${day.state}${day.onlyForPrm ? ' only-for-prm' : ''}${ownEntry ? ' own-availability' : ''}`);
+  const neededLabel = day.onlyForPrm ? ' · Nur für PRM' : '';
   cell.title = `${day.label}${neededLabel}${day.eitherOr ? ` · Entweder/oder mit ${dateLabel(day.eitherOr.firstDate === day.date ? day.eitherOr.secondDate : day.eitherOr.firstDate)}` : ''}`;
+  if (ownEntry) {
+    cell.tabIndex = 0;
+    cell.setAttribute('role', 'button');
+    cell.setAttribute('aria-label', `${dateLabel(day.date)}: eigene Verfügbarkeit bearbeiten`);
+    cell.addEventListener('click', click => {
+      if (click.target.closest('.availability-add')) return;
+      openAvailability(day, player);
+    });
+    cell.addEventListener('keydown', event => {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openAvailability(day, player); }
+    });
+  }
   const status = element('span', 'availability-status');
-  status.append(element('span', 'availability-symbol', `${day.onlyIfNeeded ? '●' : day.state === 'available' ? '●' : day.state === 'partial' ? '◐' : '–'}${day.eitherOr ? ' ↔' : ''}`));
-  const events = editableEventsForDay(team, day.date);
-  if (events.length && day.state !== 'unavailable') {
+  status.append(element('span', 'availability-symbol', `${day.onlyForPrm ? '●' : day.state === 'available' ? '●' : day.state === 'partial' ? '◐' : '–'}${day.eitherOr ? ' ↔' : ''}`));
+  const events = editableEventsForDay(team, day.date).filter(event => !day.onlyForPrm || event.type === 'primeleague');
+  if (snapshot.access?.canManagePlanner && events.length && day.state !== 'unavailable') {
     const add = element('button', 'availability-add', '+');
     add.type = 'button';
     add.title = `${player.name} zur Aufstellung hinzufügen`;
@@ -102,7 +116,7 @@ function availabilityCell(day, team, player) {
     status.append(add);
   }
   cell.append(status);
-  const restrictions = [day.state === 'partial' ? day.restriction : null, day.onlyIfNeeded ? 'nur wenn nötig' : null].filter(Boolean);
+  const restrictions = [day.state === 'partial' ? day.restriction : null, day.onlyForPrm ? 'nur für PRM' : null].filter(Boolean);
   if (restrictions.length) cell.append(element('small', 'availability-restriction', restrictions.join(' · ')));
   return cell;
 }
@@ -130,7 +144,7 @@ function renderTeam(team, dates) {
     day.dataset.teamId = team.id;
     day.dataset.date = date;
     const items = editableEventsForDay(team, date);
-    if (!items.length) day.append(element('span', 'empty-day', '+ Termin'));
+    if (!items.length) day.append(element('span', 'empty-day', snapshot.access?.canManagePlanner ? '+ Termin' : 'Kein Termin'));
     else items.forEach(event => day.append(eventCard(event)));
     eventsRow.append(day);
   }
@@ -223,12 +237,14 @@ function renderMatchday() {
 
 function render(data) {
   snapshot = data; selectedWeek = data.week.start; $('#week-picker').value = selectedWeek;
+  document.querySelectorAll('.admin-only').forEach(node => { node.hidden = !data.access?.canManagePlanner; });
   $('#week-label').textContent = `${dateLabel(data.week.start)} – ${dateLabel(data.week.end)}`;
   calendar.replaceChildren();
   const scroll = element('div', 'calendar-scroll');
   data.teams.forEach(team => scroll.append(renderTeam(team, data.week.dates)));
   calendar.append(scroll);
-  renderTasks(data.tasks); renderChanges(data.changes); renderMatchday();
+  if (data.access?.canManagePlanner) { renderTasks(data.tasks); renderChanges(data.changes); }
+  renderMatchday();
   const conflicts = $('#conflicts'); conflicts.replaceChildren(); conflicts.hidden = !data.conflicts.length;
   data.conflicts.forEach(item => conflicts.append(element('p', '', `⚠ ${item.label}`)));
   $('#live-dot').classList.add('online'); $('#live-label').textContent = data.botOnline ? 'Live mit Discord verbunden' : 'Planerdaten verbunden';
@@ -243,6 +259,7 @@ function lineupRole(position) {
 }
 
 function openEvent(id, options = {}) {
+  if (!snapshot.access?.canManagePlanner) return;
   const event = options.event || findEvent(id); if (!event) return;
   if (!options.creating && (event.type === 'open' || event.plannerState === 'open')) return toast('Offene Terminoptionen werden erst in Discord zu einem echten Termin gemacht.', true);
   const team = options.team || findEventTeam(id);
@@ -310,6 +327,26 @@ function openEvent(id, options = {}) {
   if (options.focusLineup) requestAnimationFrame(() => $('#own-lineup-fieldset').scrollIntoView({ behavior: 'smooth', block: 'start' }));
 }
 
+function openAvailability(day, player) {
+  if (!snapshot.access?.canEditOwnAvailability || snapshot.access.playerId !== player.id) return;
+  $('#availability-dialog-title').textContent = `${dateLabel(day.date)} · ${player.name}`;
+  $('#availability-date').value = day.date;
+  $('#availability-status').value = day.state === 'unavailable' ? 'unavailable' : 'available';
+  $('#availability-from').value = day.availableFrom || '';
+  $('#availability-until').value = day.availableUntil || '';
+  $('#availability-prm').checked = Boolean(day.onlyForPrm);
+  $('#availability-message').textContent = '';
+  updateAvailabilityFields();
+  availabilityDialog.showModal();
+}
+
+function updateAvailabilityFields() {
+  const unavailable = $('#availability-status').value === 'unavailable';
+  document.querySelectorAll('.availability-time').forEach(node => { node.hidden = unavailable; });
+  $('#availability-prm').disabled = unavailable;
+  if (unavailable) $('#availability-prm').checked = false;
+}
+
 function openNewEvent(teamId, date) {
   const team = snapshot.teams.find(item => item.id === Number(teamId));
   if (!team) return;
@@ -335,16 +372,17 @@ async function loadWeek(week) {
 }
 
 calendar.addEventListener('click', event => {
-  const card = event.target.closest('[data-event-id]'); if (card) openEvent(card.dataset.eventId);
+  const card = event.target.closest('[data-event-id]'); if (card && snapshot.access?.canManagePlanner) openEvent(card.dataset.eventId);
   else {
     const day = event.target.closest('.add-event-cell');
-    if (day) openNewEvent(day.dataset.teamId, day.dataset.date);
+    if (day && snapshot.access?.canManagePlanner) openNewEvent(day.dataset.teamId, day.dataset.date);
   }
 });
 $('#tasks').addEventListener('click', event => { const item = event.target.closest('[data-event-id]'); if (item) { $('#tasks-notification').open = false; openEvent(item.dataset.eventId); } });
 $('#matchday-items').addEventListener('click', event => { const card = event.target.closest('[data-event-id]'); if (card) openEvent(card.dataset.eventId); });
 document.querySelectorAll('[data-close]').forEach(button => button.addEventListener('click', () => eventDialog.close()));
 document.querySelectorAll('[data-export-close]').forEach(button => button.addEventListener('click', () => exportDialog.close()));
+document.querySelectorAll('[data-availability-close]').forEach(button => button.addEventListener('click', () => availabilityDialog.close()));
 document.querySelectorAll('.notification-menu').forEach(menu => menu.addEventListener('toggle', () => {
   if (!menu.open) return;
   document.querySelectorAll('.notification-menu').forEach(other => { if (other !== menu) other.open = false; });
@@ -357,6 +395,25 @@ $('#event-type').addEventListener('change', () => {
   const startTime = $('#event-time').value;
   if (startTime && (prm || $('#event-type').value === 'scrim')) {
     $('#event-meeting-time').value = shiftedTime(startTime, prm ? -30 : -15);
+  }
+});
+$('#availability-status').addEventListener('change', updateAvailabilityFields);
+$('#availability-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const body = {
+    date: $('#availability-date').value,
+    status: $('#availability-status').value,
+    availableFrom: $('#availability-from').value || null,
+    availableUntil: $('#availability-until').value || null,
+    onlyForPrm: $('#availability-prm').checked
+  };
+  try {
+    await api('/api/availability', { method: 'PATCH', body: JSON.stringify(body) });
+    availabilityDialog.close();
+    toast('Deine Verfügbarkeit wurde gespeichert.');
+    await loadWeek(selectedWeek);
+  } catch (error) {
+    $('#availability-message').textContent = error.message;
   }
 });
 $('#copy-drafter').addEventListener('click', async () => { if (!$('#event-drafter').value) return toast('Noch kein Drafter-Link vorhanden.', true); await navigator.clipboard.writeText($('#event-drafter').value); toast('Drafter-Link kopiert.'); });

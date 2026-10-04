@@ -50,17 +50,32 @@ function hasAdminPermission(role) {
   );
 }
 
-async function isAllowedMember(client, guildId, user, member, adminRoleName) {
+async function resolveAccess(client, database, guildId, user, member, adminRoleName, editorRoleName) {
+  const player = database?.prepare?.(`
+    SELECT id FROM players
+    WHERE discord_user_id = ? AND COALESCE(is_archived, 0) = 0
+    LIMIT 1
+  `).get(user.id);
   const guild = await client.guilds.fetch(guildId);
-  if (guild.ownerId === user.id) return true;
+  if (guild.ownerId === user.id) return { role: 'admin', canManagePlanner: true, canEditOwnAvailability: Boolean(player), playerId: player?.id || null };
   const roles = await guild.roles.fetch();
-  return member.roles.some(roleId => {
+  let grantedRole = null;
+  member.roles.some(roleId => {
     const role = roles.get(roleId);
-    return role && (role.name === adminRoleName || hasAdminPermission(role));
+    if (!role) return false;
+    if (role.name === adminRoleName || hasAdminPermission(role)) {
+      grantedRole = 'admin';
+      return true;
+    }
+    if (role.name === editorRoleName) grantedRole = 'editor';
+    return false;
   });
+  if (grantedRole) return { role: grantedRole, canManagePlanner: true, canEditOwnAvailability: Boolean(player), playerId: player?.id || null };
+  if (player) return { role: 'player', canManagePlanner: false, canEditOwnAvailability: true, playerId: player.id };
+  return null;
 }
 
-function createPlannerAuth({ client, fetchImpl = fetch, env = process.env } = {}) {
+function createPlannerAuth({ client, database, fetchImpl = fetch, env = process.env } = {}) {
   const clientId = env.CLIENT_ID;
   const clientSecret = env.DISCORD_CLIENT_SECRET;
   const guildId = env.GUILD_ID;
@@ -68,6 +83,7 @@ function createPlannerAuth({ client, fetchImpl = fetch, env = process.env } = {}
   const publicUrl = String(env.PLANNER_PUBLIC_URL || '').replace(/\/$/, '');
   const redirectUri = publicUrl ? `${publicUrl}/auth/callback` : '';
   const adminRoleName = env.ADMIN_ROLE_NAME || 'Schillok | Coaches';
+  const editorRoleName = env.PLANNER_EDITOR_ROLE_NAME || 'Planner | Bearbeiten';
   const configured = Boolean(clientId && clientSecret && guildId && sessionSecret && redirectUri);
   const secureCookie = publicUrl.startsWith('https://');
   const sessions = new Map();
@@ -161,7 +177,7 @@ function createPlannerAuth({ client, fetchImpl = fetch, env = process.env } = {}
 
     if (url.pathname === '/auth/me') {
       const session = requireSession(request, response);
-      if (session) sendJson(response, 200, { user: session.user });
+      if (session) sendJson(response, 200, { user: session.user, access: session.access });
       return true;
     }
 
@@ -217,8 +233,9 @@ function createPlannerAuth({ client, fetchImpl = fetch, env = process.env } = {}
         discordGet('/users/@me', accessToken),
         discordGet(`/users/@me/guilds/${guildId}/member`, accessToken)
       ]);
-      if (!(await isAllowedMember(client, guildId, user, member, adminRoleName))) {
-        sendMessage(response, 403, 'Kein Zugriff', `Du benötigst auf dem Discord-Server die Rolle „${adminRoleName}“ oder Verwaltungsrechte.`);
+      const access = await resolveAccess(client, database, guildId, user, member, adminRoleName, editorRoleName);
+      if (!access) {
+        sendMessage(response, 403, 'Kein Zugriff', 'Du bist derzeit weder als aktiver Spieler noch als Coach/Admin im Planer hinterlegt.');
         return true;
       }
 
@@ -229,7 +246,8 @@ function createPlannerAuth({ client, fetchImpl = fetch, env = process.env } = {}
           id: user.id,
           username: user.global_name || user.username,
           avatar: user.avatar
-        }
+        },
+        access
       });
       response.writeHead(302, {
         Location: '/',

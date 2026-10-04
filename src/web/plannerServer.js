@@ -47,7 +47,7 @@ function startPlannerWebServer({ client, port, host, database, authenticator } =
   const listenPort = Number(port ?? process.env.PLANNER_WEB_PORT ?? 3100);
   const listenHost = host ?? process.env.PLANNER_WEB_HOST ?? '127.0.0.1';
   const plannerDb = database || require('../db/database');
-  const auth = authenticator || createPlannerAuth({ client });
+  const auth = authenticator || createPlannerAuth({ client, database: plannerDb });
   const liveClients = new Map();
 
   const server = http.createServer(async (request, response) => {
@@ -69,27 +69,37 @@ function startPlannerWebServer({ client, port, host, database, authenticator } =
     }
 
     if (url.pathname === '/api/planner') {
-      if (!auth.requireSession(request, response)) return;
-      sendJson(response, 200, buildPlannerSnapshot(client, plannerDb, { week: url.searchParams.get('week') }));
+      const session = auth.requireSession(request, response);
+      if (!session) return;
+      sendJson(response, 200, {
+        ...buildPlannerSnapshot(client, plannerDb, { week: url.searchParams.get('week') }),
+        access: session.access
+      });
       return;
     }
 
     if (url.pathname === '/api/live') {
-      if (!auth.requireSession(request, response)) return;
+      const session = auth.requireSession(request, response);
+      if (!session) return;
       response.writeHead(200, {
         'Content-Type': 'text/event-stream; charset=utf-8',
         'Cache-Control': 'no-cache, no-transform',
         Connection: 'keep-alive'
       });
       const week = url.searchParams.get('week');
-      response.write(`event: planner\ndata: ${JSON.stringify(buildPlannerSnapshot(client, plannerDb, { week }))}\n\n`);
-      liveClients.set(response, week);
+      response.write(`event: planner\ndata: ${JSON.stringify({ ...buildPlannerSnapshot(client, plannerDb, { week }), access: session.access })}\n\n`);
+      liveClients.set(response, { week, access: session.access });
       request.on('close', () => liveClients.delete(response));
       return;
     }
 
     if (url.pathname === '/api/export/preview' && request.method === 'GET') {
-      if (!auth.requireSession(request, response)) return;
+      const session = auth.requireSession(request, response);
+      if (!session) return;
+      if (!session.access?.canManagePlanner) {
+        sendJson(response, 403, { error: 'planner_write_forbidden' });
+        return;
+      }
       sendJson(response, 200, exportPreview(plannerDb, url.searchParams.get('week')));
       return;
     }
@@ -102,6 +112,27 @@ function startPlannerWebServer({ client, port, host, database, authenticator } =
         return;
       }
       const body = await parseBody(request);
+      if (url.pathname === '/api/availability' && request.method === 'PATCH') {
+        if (!session.access?.canEditOwnAvailability || !session.access?.playerId) {
+          sendJson(response, 403, { error: 'availability_write_forbidden' });
+          return;
+        }
+        const availability = require('../services/weeklyAvailabilityService').updateAvailabilityFromWeb(client, {
+          playerId: session.access.playerId,
+          actorDiscordUserId: session.user.id,
+          dateStr: body.date,
+          status: body.status,
+          availableFrom: body.availableFrom,
+          availableUntil: body.availableUntil,
+          onlyForPrm: body.onlyForPrm
+        });
+        sendJson(response, 200, { availability });
+        return;
+      }
+      if (!session.access?.canManagePlanner) {
+        sendJson(response, 403, { error: 'planner_write_forbidden' });
+        return;
+      }
       const eventMatch = url.pathname.match(/^\/api\/events\/(\d+)$/);
       if (url.pathname === '/api/events' && request.method === 'POST') {
         const event = createEvent(plannerDb, body, session.user.id);
@@ -210,12 +241,13 @@ function startPlannerWebServer({ client, port, host, database, authenticator } =
   const changeTimer = setInterval(() => {
     if (!liveClients.size) return;
     try {
-      for (const [response, week] of liveClients) {
+      for (const [response, clientState] of liveClients) {
+        const { week, access } = clientState;
         const snapshot = buildPlannerSnapshot(client, plannerDb, { week });
         const fingerprint = JSON.stringify([week, snapshot.teams, snapshot.tasks, snapshot.changes]);
         if (liveClients.size === 1 && fingerprint === previousFingerprint) continue;
         previousFingerprint = fingerprint;
-        response.write(`event: planner\ndata: ${JSON.stringify(snapshot)}\n\n`);
+        response.write(`event: planner\ndata: ${JSON.stringify({ ...snapshot, access })}\n\n`);
       }
     } catch (error) {
       console.error('[Planner-Web] Live-Aktualisierung fehlgeschlagen:', error);

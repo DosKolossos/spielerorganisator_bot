@@ -404,7 +404,7 @@ function buildPlayerAvailabilityText(players, slots) {
     starts: slots.filter(slot => slot.onlyIfNeeded.some(candidate => candidate.id === player.id)).map(slot => slot.startTime)
   })).filter(item => item.starts.length);
   if (neededRows.length) {
-    lines.push('**🟠 Nur wenn nötig:**');
+    lines.push('**🟠 Nur für PRM:**');
     for (const item of neededRows.sort((a, b) => playerDisplay(a.player).localeCompare(playerDisplay(b.player), 'de'))) {
       lines.push(`• ${playerDisplay(item.player)}: ${compressStartWindows(item.starts)}`);
     }
