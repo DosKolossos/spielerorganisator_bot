@@ -50,12 +50,20 @@ function hasAdminPermission(role) {
   );
 }
 
-async function resolveAccess(client, database, guildId, user, member, adminRoleName, editorRoleName) {
+async function resolveAccess(client, database, guildId, user, member, adminRoleName, editorRoleName, managerUserIds) {
   const player = database?.prepare?.(`
     SELECT id FROM players
     WHERE discord_user_id = ? AND COALESCE(is_archived, 0) = 0
     LIMIT 1
   `).get(user.id);
+  if (managerUserIds?.size) {
+    if (managerUserIds.has(user.id)) {
+      return { role: 'admin', canManagePlanner: true, canEditOwnAvailability: Boolean(player), playerId: player?.id || null };
+    }
+    if (player) return { role: 'player', canManagePlanner: false, canEditOwnAvailability: true, playerId: player.id };
+    return null;
+  }
+
   const guild = await client.guilds.fetch(guildId);
   if (guild.ownerId === user.id) return { role: 'admin', canManagePlanner: true, canEditOwnAvailability: Boolean(player), playerId: player?.id || null };
   const roles = await guild.roles.fetch();
@@ -84,6 +92,12 @@ function createPlannerAuth({ client, database, fetchImpl = fetch, env = process.
   const redirectUri = publicUrl ? `${publicUrl}/auth/callback` : '';
   const adminRoleName = env.ADMIN_ROLE_NAME || 'Schillok | Coaches';
   const editorRoleName = env.PLANNER_EDITOR_ROLE_NAME || 'Planner | Bearbeiten';
+  const managerUserIds = new Set(
+    String(env.ADMIN_USER_IDS || '')
+      .split(/[\s,]+/)
+      .map(value => value.trim())
+      .filter(Boolean)
+  );
   const configured = Boolean(clientId && clientSecret && guildId && sessionSecret && redirectUri);
   const secureCookie = publicUrl.startsWith('https://');
   const sessions = new Map();
@@ -233,7 +247,7 @@ function createPlannerAuth({ client, database, fetchImpl = fetch, env = process.
         discordGet('/users/@me', accessToken),
         discordGet(`/users/@me/guilds/${guildId}/member`, accessToken)
       ]);
-      const access = await resolveAccess(client, database, guildId, user, member, adminRoleName, editorRoleName);
+      const access = await resolveAccess(client, database, guildId, user, member, adminRoleName, editorRoleName, managerUserIds);
       if (!access) {
         sendMessage(response, 403, 'Kein Zugriff', 'Du bist derzeit weder als aktiver Spieler noch als Coach/Admin im Planer hinterlegt.');
         return true;
