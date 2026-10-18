@@ -1,5 +1,11 @@
 const { PermissionFlagsBits, MessageFlags } = require('discord.js');
 const ADMIN_ROLE_NAME = process.env.ADMIN_ROLE_NAME || 'Schillok | Coaches';
+const ADMIN_USER_IDS = new Set(
+  String(process.env.ADMIN_USER_IDS || '')
+    .split(/[\s,]+/)
+    .map(value => value.trim())
+    .filter(Boolean)
+);
 
 function memberHasNamedRole(member) {
   if (!member?.roles?.cache) return false;
@@ -7,6 +13,15 @@ function memberHasNamedRole(member) {
 }
 
 function isAdminMember(member) {
+  const userId = String(member?.user?.id || member?.id || '');
+
+  // Sobald eine explizite Liste gesetzt ist, ist sie die alleinige Quelle
+  // für Verwaltungsrechte. Das ist für getrennte Gastinstanzen wichtig,
+  // damit Server-Admins nicht automatisch Zugriff auf den Planer erhalten.
+  if (ADMIN_USER_IDS.size > 0) {
+    return ADMIN_USER_IDS.has(userId);
+  }
+
   return Boolean(
     memberHasNamedRole(member) ||
     member?.permissions?.has?.(PermissionFlagsBits.Administrator) ||
@@ -38,6 +53,7 @@ async function requireAdmin(interaction) {
 
 module.exports = {
   ADMIN_ROLE_NAME,
+  ADMIN_USER_IDS,
   isAdminMember,
   isAdminInteraction,
   requireAdmin
