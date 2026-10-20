@@ -50,12 +50,15 @@ function hasAdminPermission(role) {
   );
 }
 
-async function resolveAccess(client, database, guildId, user, member, adminRoleName, editorRoleName, managerUserIds) {
+async function resolveAccess(client, database, guildId, user, member, adminRoleName, editorRoleName, managerUserIds, viewerUserIds) {
   const player = database?.prepare?.(`
     SELECT id FROM players
     WHERE discord_user_id = ? AND COALESCE(is_archived, 0) = 0
     LIMIT 1
   `).get(user.id);
+  if (viewerUserIds?.has(user.id)) {
+    return { role: 'viewer', canManagePlanner: false, canEditOwnAvailability: false, playerId: null };
+  }
   if (managerUserIds?.size) {
     if (managerUserIds.has(user.id)) {
       return { role: 'admin', canManagePlanner: true, canEditOwnAvailability: Boolean(player), playerId: player?.id || null };
@@ -94,6 +97,12 @@ function createPlannerAuth({ client, database, fetchImpl = fetch, env = process.
   const editorRoleName = env.PLANNER_EDITOR_ROLE_NAME || 'Planner | Bearbeiten';
   const managerUserIds = new Set(
     String(env.ADMIN_USER_IDS || '')
+      .split(/[\s,]+/)
+      .map(value => value.trim())
+      .filter(Boolean)
+  );
+  const viewerUserIds = new Set(
+    String(env.PLANNER_VIEWER_USER_IDS || '')
       .split(/[\s,]+/)
       .map(value => value.trim())
       .filter(Boolean)
@@ -247,7 +256,7 @@ function createPlannerAuth({ client, database, fetchImpl = fetch, env = process.
         discordGet('/users/@me', accessToken),
         discordGet(`/users/@me/guilds/${guildId}/member`, accessToken)
       ]);
-      const access = await resolveAccess(client, database, guildId, user, member, adminRoleName, editorRoleName, managerUserIds);
+      const access = await resolveAccess(client, database, guildId, user, member, adminRoleName, editorRoleName, managerUserIds, viewerUserIds);
       if (!access) {
         sendMessage(response, 403, 'Kein Zugriff', 'Du bist derzeit weder als aktiver Spieler noch als Coach/Admin im Planer hinterlegt.');
         return true;
@@ -295,4 +304,4 @@ function createPlannerAuth({ client, database, fetchImpl = fetch, env = process.
   return { configured, getSession, requireSession, handle };
 }
 
-module.exports = { createPlannerAuth, parseCookies };
+module.exports = { createPlannerAuth, parseCookies, resolveAccess };
