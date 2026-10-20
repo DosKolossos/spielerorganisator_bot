@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createPlannerAuth, parseCookies } = require('../src/web/plannerAuth');
+const { createPlannerAuth, parseCookies, resolveAccess } = require('../src/web/plannerAuth');
 
 function mockResponse() {
   return {
@@ -59,4 +59,31 @@ test('Login erzeugt Discord-OAuth-Weiterleitung mit minimalen Scopes', async () 
   assert.equal(target.searchParams.get('redirect_uri'), 'https://planner.schiggygang.de/auth/callback');
   assert.match(response.headers['Set-Cookie'], /HttpOnly/);
   assert.match(response.headers['Set-Cookie'], /Secure/);
+});
+
+
+test('Explizite Viewer-ID bleibt auch als aktiver Spieler schreibgeschützt', async () => {
+  const database = {
+    prepare() {
+      return { get: () => ({ id: 42 }) };
+    }
+  };
+  const access = await resolveAccess(
+    {},
+    database,
+    'guild',
+    { id: '199532997202935808' },
+    { roles: [] },
+    'Admin',
+    'Editor',
+    new Set(['199532997202935808']),
+    new Set(['199532997202935808'])
+  );
+
+  assert.deepEqual(access, {
+    role: 'viewer',
+    canManagePlanner: false,
+    canEditOwnAvailability: false,
+    playerId: null
+  });
 });
