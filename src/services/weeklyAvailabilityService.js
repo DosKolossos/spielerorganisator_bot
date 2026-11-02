@@ -13,7 +13,7 @@ const db = require('../db/database');
 const { todayInBerlin, isValidTime } = require('../utils/time');
 const { upsertPlayer, playerDisplay } = require('../utils/playerUtils');
 const { requireAdmin } = require('../utils/permissions');
-const { getTeamById, resolveTeamForInteraction } = require('./teamService');
+const { getTeamById, getTeamForChannel, resolveTeamForInteraction } = require('./teamService');
 
 const PREFIX = 'wavail';
 const DAYS_PER_WEEK = 7;
@@ -1114,6 +1114,18 @@ async function handleRangeModalSubmit(interaction, teamId) {
 async function handleInteraction(interaction) {
   const parts = parseCustomId(interaction.customId);
   if (!parts) return false;
+
+  const configuredTeam = getTeamForChannel(interaction.channelId, { activeOnly: false });
+  if (configuredTeam && !configuredTeam.is_active) {
+    const payload = {
+      content: `**${configuredTeam.name}** nimmt nicht mehr an der aktiven Planung teil. Diese Wochenkarte ist deshalb geschlossen.`,
+      flags: MessageFlags.Ephemeral
+    };
+    if (interaction.isMessageComponent() || interaction.isModalSubmit()) {
+      await interaction.reply(payload);
+      return true;
+    }
+  }
 
   const action = parts[1];
   const weekStartDate = parts[2];
