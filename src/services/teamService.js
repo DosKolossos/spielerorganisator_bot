@@ -25,11 +25,11 @@ function getDefaultTeam() {
   return db.prepare(`SELECT * FROM teams WHERE is_active = 1 ORDER BY is_default DESC, id ASC LIMIT 1`).get();
 }
 
-function getTeamForChannel(channelId) {
+function getTeamForChannel(channelId, { activeOnly = true } = {}) {
   if (!channelId) return null;
   return db.prepare(`
     SELECT * FROM teams
-    WHERE is_active = 1 AND ? IN (
+    WHERE ${activeOnly ? 'is_active = 1 AND' : ''} ? IN (
       admin_channel_id,
       availability_channel_id,
       player_calendar_channel_id,
@@ -42,7 +42,9 @@ function getTeamForChannel(channelId) {
 }
 
 function resolveTeamForInteraction(interaction) {
-  return getTeamForChannel(interaction.channelId) || getDefaultTeam();
+  const configuredTeam = getTeamForChannel(interaction.channelId, { activeOnly: false });
+  if (configuredTeam) return configuredTeam.is_active ? configuredTeam : null;
+  return getDefaultTeam();
 }
 
 function createTeam({ name, shortName, discordRoleId, adminChannelId, availabilityChannelId, playerCalendarChannelId, scrimChannelId, primeleagueChannelId, createdBy }) {
@@ -102,6 +104,22 @@ function setDefaultTeam(teamId) {
   return getTeamById(teamId);
 }
 
+function setTeamActive(teamId, active) {
+  const team = getTeamById(teamId);
+  if (!team) return null;
+  if (!active && team.is_default) {
+    const error = new Error('Das Standardteam kann nicht deaktiviert werden.');
+    error.code = 'DEFAULT_TEAM';
+    throw error;
+  }
+  db.prepare(`
+    UPDATE teams
+    SET is_active = ?, updated_at = ?
+    WHERE id = ?
+  `).run(active ? 1 : 0, new Date().toISOString(), teamId);
+  return getTeamById(teamId);
+}
+
 module.exports = {
   normalizeSlug,
   listTeams,
@@ -111,5 +129,6 @@ module.exports = {
   resolveTeamForInteraction,
   createTeam,
   updateTeam,
-  setDefaultTeam
+  setDefaultTeam,
+  setTeamActive
 };
