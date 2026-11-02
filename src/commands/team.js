@@ -2,17 +2,21 @@ const { SlashCommandBuilder, MessageFlags, ChannelType } = require('discord.js')
 const { requireAdmin } = require('../utils/permissions');
 const db = require('../db/database');
 const {
-  listTeams, getTeamById, createTeam, updateTeam, setDefaultTeam
+  listTeams, getTeamById, createTeam, updateTeam, setDefaultTeam, setTeamActive
 } = require('../services/teamService');
 
 function teamChoices() {
-  return listTeams({ activeOnly: false }).slice(0, 25).map(team => ({ name: `${team.name}${team.is_default ? ' (Standard)' : ''}`, value: String(team.id) }));
+  return listTeams({ activeOnly: false }).slice(0, 25).map(team => ({
+    name: `${team.name}${team.is_default ? ' (Standard)' : ''}${team.is_active ? '' : ' (inaktiv)'}`,
+    value: String(team.id)
+  }));
 }
 
 function formatTeam(team) {
   const channel = id => id ? `<#${id}>` : '-';
   return [
     `**${team.name}**${team.is_default ? ' ⭐' : ''} (ID: \`${team.id}\`, Kürzel: **${team.short_name || '-'}**)`,
+    `Planung: **${team.is_active ? 'Aktiv' : 'Inaktiv'}**`,
     `Rolle: ${team.discord_role_id ? `<@&${team.discord_role_id}>` : '-'}`,
     `Admin: ${channel(team.admin_channel_id)}`,
     `Verfügbarkeit: ${channel(team.availability_channel_id)}`,
@@ -76,6 +80,12 @@ const data = new SlashCommandBuilder()
     return sub;
   })
   .addSubcommand(sub => {
+    sub.setName('status').setDescription('Nimmt ein Team aus der aktiven Planung oder aktiviert es wieder.')
+      .addStringOption(o => { o.setName('team').setDescription('Team').setRequired(true); for (const c of teamChoices()) o.addChoices(c); return o; })
+      .addBooleanOption(o => o.setName('aktiv').setDescription('Soll das Team aktiv geplant werden?').setRequired(true));
+    return sub;
+  })
+  .addSubcommand(sub => {
     sub.setName('standard').setDescription('Setzt das Standardteam für alte/noch nicht zugeordnete Daten.')
       .addStringOption(o => { o.setName('team').setDescription('Team').setRequired(true); for (const c of teamChoices()) o.addChoices(c); return o; });
     return sub;
@@ -127,6 +137,27 @@ module.exports = {
         player_calendar_channel_id: interaction.options.getChannel('spielerkalender_kanal')?.id
       });
       return interaction.reply({ content: `Team aktualisiert.\n\n${formatTeam(updated)}`, flags: MessageFlags.Ephemeral });
+    }
+
+    if (sub === 'status') {
+      const active = interaction.options.getBoolean('aktiv', true);
+      try {
+        const updated = setTeamActive(teamId, active);
+        return interaction.reply({
+          content: active
+            ? `**${updated.name}** nimmt wieder an der aktiven Planung teil.`
+            : `**${updated.name}** wurde aus der aktiven Planung genommen. Historische Termine und Profile bleiben erhalten.`,
+          flags: MessageFlags.Ephemeral
+        });
+      } catch (error) {
+        if (error.code === 'DEFAULT_TEAM') {
+          return interaction.reply({
+            content: 'Das Standardteam kann nicht deaktiviert werden. Setze vorher ein anderes Team als Standard.',
+            flags: MessageFlags.Ephemeral
+          });
+        }
+        throw error;
+      }
     }
 
     if (sub === 'standard') {
