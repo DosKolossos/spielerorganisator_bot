@@ -3615,6 +3615,13 @@ const command = {
       return;
     }
     if (subcommand === 'erstellen') {
+      const interactionTeam = resolveTeamForInteraction(interaction);
+      if (!interactionTeam) {
+        return interaction.reply({
+          content: 'Das für diesen Kanal eingerichtete Team nimmt nicht mehr an der aktiven Planung teil.',
+          flags: MessageFlags.Ephemeral
+        });
+      }
       const datumInput = interaction.options.getString('datum', true);
       const startzeit = interaction.options.getString('startzeit', true).trim();
       const dauerMinuten = interaction.options.getInteger('dauer_minuten') ?? 150;
@@ -3692,7 +3699,7 @@ const command = {
     ?, ?, ?, ?
   )
 `).run(
-        resolveTeamForInteraction(interaction)?.id || null,
+        interactionTeam.id,
         titel,
         nextOpponent,
         typ,
