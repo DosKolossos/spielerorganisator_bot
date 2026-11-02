@@ -106,6 +106,17 @@ test('Snapshot trennt Teams und enthält Aufstellung sowie Entweder-oder-Angabe'
   database.close();
 });
 
+test('Inaktive Teams verschwinden aus der Planung, historische Daten bleiben erhalten', () => {
+  const database = createTestDatabase();
+  database.prepare('UPDATE teams SET is_active = 0 WHERE id = 2').run();
+
+  const snapshot = buildPlannerSnapshot({ isReady: () => true }, database, { week: '2099-04-06' });
+
+  assert.deepEqual(snapshot.teams.map(team => team.id), [1]);
+  assert.equal(database.prepare('SELECT name FROM teams WHERE id = 2').get().name, 'SchiggyGang Shinys');
+  database.close();
+});
+
 test('Nur-für-PRM bleibt sichtbar und zählt nicht als normale Verfügbarkeit', () => {
   const database = createTestDatabase();
   database.prepare(`
