@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 32374)
+Total output lines: 4015
+
 const {
   SlashCommandBuilder,
   EmbedBuilder,
@@ -1905,335 +1908,7 @@ async function syncPlayerCalendarCard(client, eventId) {
           await existingMessage.edit(payload);
           return true;
         }
-      } catch (_) {
-        // fällt unten auf Neu-Senden zurück
-      }
-    }
-
-    const sentMessage = await channel.send(payload);
-
-    db.prepare(`
-      UPDATE team_calendar_events
-      SET player_channel_id = ?,
-          player_message_id = ?,
-          updated_at = ?
-      WHERE id = ?
-    `).run(channel.id, sentMessage.id, new Date().toISOString(), eventId);
-
-    return true;
-  } catch (error) {
-    console.error(`[Spieltermin] Konnte Player-Karte für Event #${eventId} nicht synchronisieren:`, error);
-    return false;
-  }
-}
-
-function buildDiscordScheduledEventField(event) {
-  const url = discordScheduledEventUrl(event);
-  if (url) return `[Discord-Event öffnen](${url})`;
-
-  if (event.discord_scheduled_event_error) {
-    return truncateField(`⚠️ ${event.discord_scheduled_event_error}`);
-  }
-
-  if (isEligibleForDiscordEvent(event)) {
-    return 'Wird automatisch erstellt';
-  }
-
-  if (Number(event.is_streamed) === 1) {
-    return 'Benötigt Status **Fixed** sowie eine fixe Start- und Endzeit';
-  }
-
-  return 'Nicht als Stream markiert';
-}
-
-function buildEventCardPayload(eventId) {
-  const event = getEventById(eventId);
-  if (!event) return null;
-
-  const assignments = getAssignments(eventId);
-  const eitherOrText = buildEitherOrConstraintText(event);
-  const collapsed = Number(event.admin_card_collapsed) === 1;
-  const exactTime =
-    event.scheduled_start_at && event.scheduled_end_at
-      ? `${formatDateTimeDE(event.scheduled_start_at)} → ${formatDateTimeDE(event.scheduled_end_at)}`
-      : '-';
-
-  if (collapsed) {
-    const descriptionLines = [];
-
-    if (event.scheduled_start_at) {
-      descriptionLines.push(`🕒 **Uhrzeit:** ${formatTimeOnlyLabel(event.scheduled_start_at)}`);
-    }
-
-    descriptionLines.push(
-      `🎮 **Art:** ${eventTypeLabel(event.event_type)}`,
-      `👥 **Verfügbar:** ${buildAvailablePlayersForCard(event)}`,
-      `${statusEmoji(event.status)} **Status:** ${statusLabel(event.status)}`
-    );
-
-    if (eitherOrText) {
-      descriptionLines.push(`🔗 **Entweder/oder:**\n${eitherOrText}`);
-    }
-
-    const embed = new EmbedBuilder()
-      .setColor(statusColor(event.status))
-      .setTitle(`📅 ${formatDateLongDE(event.option_date)}`)
-      .setDescription(descriptionLines.join('\n'));
-
-    return {
-      embeds: [embed],
-      components: buildEventActionRows(event, true)
-    };
-  }
-
-  const teamOpgg = buildTeamOpggInfo(assignments);
-  const teamOpggField = teamOpgg.ok
-    ? `[OP.GG öffnen](${teamOpgg.url})`
-    : teamOpgg.message;
-
-  const embed = new EmbedBuilder()
-    .setColor(statusColor(event.status))
-    .setTitle(`${statusEmoji(event.status)} ${event.title}`)
-    .setDescription(`Kalender-ID: **#${event.id}**`)
-    .addFields(
-      {
-        name: 'Status',
-        value: statusLabel(event.status),
-        inline: true
-      },
-      {
-        name: 'Typ',
-        value: eventTypeLabel(event.event_type),
-        inline: true
-      },
-      {
-        name: 'Gegner',
-        value: truncateField(event.opponent_name ?? '-'),
-        inline: true
-      },
-      {
-        name: 'Wird gestreamt',
-        value: Number(event.is_streamed) === 1 ? '☑️ Ja' : '⬜ Nein',
-        inline: true
-      },
-      {
-        name: 'Discord-Event',
-        value: buildDiscordScheduledEventField(event),
-        inline: false
-      },
-      {
-        name: 'Tag',
-        value: formatDateLongDE(event.option_date),
-        inline: false
-      },
-      {
-        name: 'Zeitfenster',
-        value: `${formatDateTimeDE(event.window_start_at)} → ${formatDateTimeDE(event.window_end_at)}`,
-        inline: false
-      },
-      {
-        name: 'Fixe Zeit',
-        value: exactTime,
-        inline: false
-      },
-      {
-        name: 'Treffpunkt',
-        value: truncateField(buildMeetingFieldValue(event)),
-        inline: false
-      },
-      {
-        name: 'Verfügbare Spieler',
-        value: truncateField(event.available_players_text ?? '-'),
-        inline: false
-      },
-      {
-        name: 'Lineup',
-        value: truncateField(buildLineupText(assignments)),
-        inline: false
-      },
-      {
-        name: 'Gegner OPGG',
-        value: truncateField(event.opgg_url ?? '-'),
-        inline: false
-      },
-      {
-        name: 'Format',
-        value: `${plannerFormatLabel(event.match_format)} · ${Number(event.fearless_mode) === 0 ? 'kein Fearless' : 'Fearless'}`,
-        inline: true
-      },
-      {
-        name: 'Drafter',
-        value: event.event_type === 'primeleague'
-          ? 'Extern durch Prime League zum Spieltermin'
-          : truncateField(event.drafter_url ? `[Drafter öffnen](${event.drafter_url})` : '-'),
-        inline: true
-      },
-      {
-        name: 'Gegneraufstellung',
-        value: truncateField(opponentLineupText(event.opponent_lineup_json)),
-        inline: false
-      },
-      {
-        name: 'Ergebnis',
-        value: truncateField(event.result_text ?? '-'),
-        inline: true
-      },
-      {
-        name: 'Team OPGG',
-        value: truncateField(teamOpggField),
-        inline: false
-      },
-      {
-        name: 'Hinweis',
-        value: truncateField(event.note ?? '-'),
-        inline: false
-      }
-    )
-    .setFooter({
-      text: 'Standard-Treffpunkt: Scrim 15 Min vorher / Prime League 30 Min vorher'
-    })
-    .setTimestamp(new Date(event.updated_at || event.created_at || Date.now()));
-
-  if (eitherOrText) {
-    embed.addFields({
-      name: 'Entweder/oder',
-      value: truncateField(eitherOrText),
-      inline: false
-    });
-  }
-
-  return {
-    embeds: [embed],
-    components: buildEventActionRows(event, false)
-  };
-}
-
-async function refreshSpecificCard(channel, messageId, eventId) {
-  await syncDiscordScheduledEvent(channel.client, eventId);
-
-  const payload = buildEventCardPayload(eventId);
-  if (!payload) return false;
-
-  try {
-    const message = await channel.messages.fetch(messageId);
-    if (!message) return false;
-    await message.edit(payload);
-
-    await syncPlayerCalendarCard(channel.client, eventId);
-
-    return true;
-  } catch (error) {
-    console.error(`[Spieltermin] Konnte Karte ${messageId} für Event #${eventId} nicht aktualisieren:`, error);
-    return false;
-  }
-}
-
-async function refreshStoredPlayerCard(client, eventId) {
-  const event = getEventById(eventId);
-  if (!event) return false;
-
-  if (Number(event.show_in_player_calendar) !== 1) {
-    if (event.player_message_id) {
-      await deleteStoredPlayerCard(client, eventId);
-    }
-    return false;
-  }
-
-  const playerChannelId = getTeamById(event.team_id)?.player_calendar_channel_id || process.env.PLAYER_CALENDAR_CHANNEL_ID;
-  if (!playerChannelId) return false;
-
-  try {
-    const channel = await client.channels.fetch(playerChannelId);
-    if (!channel || !channel.isTextBased()) return false;
-
-    const payload = buildPlayerCalendarPayload(eventId);
-    if (!payload) return false;
-
-    if (!event.player_message_id || event.player_channel_id !== channel.id) {
-      const message = await upsertPlayerCardMessage(channel, eventId);
-      return !!message;
-    }
-
-    const message = await channel.messages.fetch(event.player_message_id);
-    if (!message) return false;
-
-    await message.edit(payload);
-    return true;
-  } catch (error) {
-    console.error(`[Spieltermin] Konnte Player-Karte für Event #${eventId} nicht aktualisieren:`, error);
-    return false;
-  }
-}
-
-async function refreshStoredEventCard(client, eventId) {
-  let refreshed = false;
-  await syncDiscordScheduledEvent(client, eventId);
-  const event = getEventById(eventId);
-
-  if (event?.admin_channel_id && event?.admin_message_id) {
-    try {
-      const adminChannel = await client.channels.fetch(event.admin_channel_id);
-      if (adminChannel && adminChannel.isTextBased()) {
-        const payload = buildEventCardPayload(eventId);
-        if (payload) {
-          const message = await adminChannel.messages.fetch(event.admin_message_id);
-          if (message) {
-            await message.edit(payload);
-            refreshed = true;
-          }
-        }
-      }
-    } catch (error) {
-      console.error(`[Spieltermin] Konnte gespeicherte Admin-Karte für Event #${eventId} nicht laden:`, error);
-    }
-  }
-
-  const mirrored = await refreshStoredPlayerCard(client, eventId);
-  return refreshed || mirrored;
-}
-
-async function upsertPlayerCardMessage(channel, eventId) {
-  const event = getEventById(eventId);
-  if (!event) return null;
-
-  const payload = buildPlayerCalendarPayload(eventId);
-  if (!payload) return null;
-
-  if (event.player_message_id) {
-    try {
-      const existingMessage = await channel.messages.fetch(event.player_message_id);
-      if (existingMessage) {
-        await existingMessage.edit(payload);
-
-        if (event.player_channel_id !== channel.id) {
-          db.prepare(`
-            UPDATE team_calendar_events
-            SET player_channel_id = ?, updated_at = ?
-            WHERE id = ?
-          `).run(channel.id, new Date().toISOString(), eventId);
-        }
-
-        return existingMessage;
-      }
-    } catch (error) {
-      console.warn(`[Spieltermin] Gespeicherte Player-Karte für Event #${eventId} nicht gefunden, sende neu.`);
-    }
-  }
-
-  const sentMessage = await channel.send(payload);
-
-  db.prepare(`
-    UPDATE team_calendar_events
-    SET player_channel_id = ?,
-        player_message_id = ?,
-        updated_at = ?
-    WHERE id = ?
-  `).run(channel.id, sentMessage.id, new Date().toISOString(), eventId);
-
-  return sentMessage;
-}
-
-async function upsertAdminCardMessage(channel, eventId, options = {}) {
+     …2374 tokens truncated…nnel, eventId, options = {}) {
   const { syncPlayerCalendar = true } = options;
   await syncDiscordScheduledEvent(channel.client, eventId);
 
@@ -3615,6 +3290,13 @@ const command = {
       return;
     }
     if (subcommand === 'erstellen') {
+      const interactionTeam = resolveTeamForInteraction(interaction);
+      if (!interactionTeam) {
+        return interaction.reply({
+          content: 'Das für diesen Kanal eingerichtete Team nimmt nicht mehr an der aktiven Planung teil.',
+          flags: MessageFlags.Ephemeral
+        });
+      }
       const datumInput = interaction.options.getString('datum', true);
       const startzeit = interaction.options.getString('startzeit', true).trim();
       const dauerMinuten = interaction.options.getInteger('dauer_minuten') ?? 150;
@@ -3692,7 +3374,7 @@ const command = {
     ?, ?, ?, ?
   )
 `).run(
-        resolveTeamForInteraction(interaction)?.id || null,
+        interactionTeam.id,
         titel,
         nextOpponent,
         typ,
