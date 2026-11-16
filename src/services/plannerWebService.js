@@ -3,6 +3,7 @@ const EVENT_TYPES = new Set(['open', 'scrim', 'primeleague', 'training', 'flex',
 const PLANNER_STATES = new Set(['open', 'preplanned', 'published', 'excluded']);
 const EVENT_STATUSES = new Set(['pending', 'planned', 'confirmed', 'scheduled', 'fixed', 'completed', 'cancelled']);
 const STARTER_ROLES = ['Top', 'Jgl', 'Mid', 'ADC', 'Supp'];
+const { prmAvailabilityEnabled } = require('../utils/features');
 
 function addDaysIso(dateStr, amount) {
   const [year, month, day] = dateStr.split('-').map(Number);
@@ -85,6 +86,37 @@ function availabilityFor(entries, date) {
   };
 }
 
+function normalizedRole(position) {
+  return ({ top: 'Top', jgl: 'Jgl', jungle: 'Jgl', mid: 'Mid', middle: 'Mid', adc: 'ADC', bot: 'ADC', supp: 'Supp', support: 'Supp' })[String(position || '').toLowerCase()] || null;
+}
+
+function coversEvent(day, event) {
+  if (!day || day.state === 'unavailable') return false;
+  if (day.onlyForPrm && event.type !== 'primeleague') return false;
+  const start = String(event.startsAt || '').slice(11, 16);
+  const end = String(event.endsAt || '').slice(11, 16);
+  if (day.availableFrom && start && start < day.availableFrom) return false;
+  if (day.availableUntil && end && end > day.availableUntil) return false;
+  return true;
+}
+
+function suggestedLineupForEvent(event, roster) {
+  const existingIds = new Set((event.lineup || []).map(item => item.playerId).filter(Boolean));
+  const suggestion = [];
+  const candidates = roster
+    .filter(player => coversEvent(player.days?.[event.date], event) && !existingIds.has(player.id))
+    .sort((a, b) => (a.rosterStatus === 'main' ? 0 : 1) - (b.rosterStatus === 'main' ? 0 : 1) || a.name.localeCompare(b.name, 'de'));
+  for (const role of STARTER_ROLES) {
+    if ((event.lineup || []).some(item => item.role === role)) continue;
+    let index = candidates.findIndex(player => normalizedRole(player.primaryPosition) === role);
+    if (index < 0) index = candidates.findIndex(player => normalizedRole(player.secondaryPosition) === role);
+    if (index < 0) continue;
+    const [player] = candidates.splice(index, 1);
+    suggestion.push({ role, player: player.name, playerId: player.id });
+  }
+  return suggestion;
+}
+
 function eventTasks(event, assignments, today = berlinDate()) {
   if (event.type === 'open' || event.plannerState === 'open') return [];
   const isPrm = event.type === 'primeleague';
@@ -117,6 +149,7 @@ function eventTasks(event, assignments, today = berlinDate()) {
 }
 
 function buildPlannerSnapshot(client, database, options = {}) {
+  const prmAvailability = prmAvailabilityEnabled();
   const weekStart = mondayOf(options.week);
   const weekEnd = addDaysIso(weekStart, 6);
   const dates = Array.from({ length: 7 }, (_, index) => addDaysIso(weekStart, index));
@@ -193,7 +226,7 @@ function buildPlannerSnapshot(client, database, options = {}) {
       `).all(...players.map(player => player.id), `${weekStart} 00:00`, `${weekEnd} 23:59`)
     : [];
 
-  const availabilityPreferences = players.length && columns(database, 'weekly_availability_preferences').size
+  const availabilityPreferences = prmAvailability && players.length && columns(database, 'weekly_availability_preferences').size
     ? database.prepare(`
         SELECT player_id, availability_date, only_if_needed
         FROM weekly_availability_preferences
@@ -251,7 +284,10 @@ function buildPlannerSnapshot(client, database, options = {}) {
     const starters = roster.filter(player => player.rosterStatus === 'main');
     return {
       id: team.id, name: team.name, slug: team.slug, shortName: team.short_name,
-      roster, events: normalizedEvents.filter(event => event.teamId === team.id),
+      roster, events: normalizedEvents.filter(event => event.teamId === team.id).map(event => ({
+        ...event,
+        suggestedLineup: suggestedLineupForEvent(event, roster)
+      })),
       standins: standins.filter(standin => standin.team_id == null || standin.team_id === team.id).map(standin => ({
         id: standin.id, name: standin.display_name, riotId: `${standin.riot_game_name}#${standin.riot_tag}`,
         region: standin.riot_region, preferredPosition: standin.preferred_position
@@ -291,6 +327,7 @@ function buildPlannerSnapshot(client, database, options = {}) {
 
   return {
     generatedAt: new Date().toISOString(), botOnline: Boolean(client?.isReady?.()), readOnly: false,
+    features: { prmAvailability },
     week: { start: weekStart, end: weekEnd, dates, previous: addDaysIso(weekStart, -7), next: addDaysIso(weekStart, 7) },
     teams: teamData, tasks: normalizedEvents.flatMap(event => event.tasks.map(task => ({ ...task, eventId: event.id, teamId: event.teamId, date: event.date, title: event.title }))),
     conflicts, changes
@@ -726,5 +763,6 @@ function copyPreviousWeek(database, week, actorId) {
 
 module.exports = {
   buildPlannerSnapshot, parseBody, validateOrigin, updateEvent, exportPreview,
-  exportWeek, undoExport, copyPreviousWeek, createStandin, createEvent, mondayOf, addDaysIso
+  exportWeek, undoExport, copyPreviousWeek, createStandin, createEvent, mondayOf, addDaysIso,
+  suggestedLineupForEvent
 };
