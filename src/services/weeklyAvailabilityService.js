@@ -14,6 +14,7 @@ const { todayInBerlin, isValidTime } = require('../utils/time');
 const { upsertPlayer, playerDisplay } = require('../utils/playerUtils');
 const { requireAdmin } = require('../utils/permissions');
 const { getTeamById, getTeamForChannel, resolveTeamForInteraction } = require('./teamService');
+const { prmAvailabilityEnabled } = require('../utils/features');
 
 const PREFIX = 'wavail';
 const DAYS_PER_WEEK = 7;
@@ -293,14 +294,17 @@ function buildPublicPromptEmbed(weekStartDate) {
   const weekDates = getWeekDates(weekStartDate);
   const weekEndDate = weekDates[weekDates.length - 1];
 
+  const prmHint = prmAvailabilityEnabled()
+    ? '\nMit **🟠 Nur für PRM** bist du nur für Prime-League-Termine einsetzbar und zählst sonst nicht als regulär verfügbar.'
+    : '';
+
   return new EmbedBuilder()
     .setTitle(`📅 Verfügbarkeitscheck – ${formatDateRange(weekStartDate, weekEndDate)}`)
     .setDescription(
       `Diese Karte gilt für **Montag bis Sonntag** (${formatDateDE(weekStartDate)} – ${formatDateDE(weekEndDate)}).\n\n` +
       'Klicke auf **Meine Woche öffnen** und markiere deine Verfügbarkeit für diese Woche.\n\n' +
       'Normale Klicks setzen einen Tag auf **✅ verfügbar** oder **❌ nicht verfügbar**.\n' +
-      'Über **🕒 Zeitfenster** kannst du z. B. **bis 15:00** oder **ab 18:00** angeben.\n' +
-      'Mit **🟠 Nur für PRM** bist du nur für Prime-League-Termine einsetzbar und zählst sonst nicht als regulär verfügbar.'
+      'Über **🕒 Zeitfenster** kannst du z. B. **bis 15:00** oder **ab 18:00** angeben.' + prmHint
     );
 }
 
@@ -561,7 +565,7 @@ function buildEditorEmbed(player, weekStartDate) {
   const weekEndDate = weekDates[weekDates.length - 1];
   const entries = getWeeklyEntries(player.id, weekStartDate);
   const choice = getEitherOrChoice(player.id, weekStartDate);
-  const onlyIfNeededDates = getOnlyIfNeededDates(player.id, weekStartDate);
+  const onlyIfNeededDates = prmAvailabilityEnabled() ? getOnlyIfNeededDates(player.id, weekStartDate) : new Set();
   const lines = weekDates.map(dateStr => {
     const dayEntries = getWeeklyEntriesForDate(entries, dateStr);
     const linked = choice && (choice.first_date === dateStr || choice.second_date === dateStr);
@@ -575,14 +579,16 @@ function buildEditorEmbed(player, weekStartDate) {
   return new EmbedBuilder()
     .setTitle(`🗓️ Deine Woche – ${playerDisplay(player)}`)
     .setDescription(`**${formatDateDE(weekStartDate)} – ${formatDateDE(weekEndDate)}**\n\n${lines.join('\n')}${choiceText}`)
-    .setFooter({ text: 'Tagesbutton = ✅/❌ · 🕒 = eingeschränkt · 🟠 = nur für PRM · 🔗 = entweder/oder' });
+    .setFooter({ text: prmAvailabilityEnabled()
+      ? 'Tagesbutton = ✅/❌ · 🕒 = eingeschränkt · 🟠 = nur für PRM · 🔗 = entweder/oder'
+      : 'Tagesbutton = ✅/❌ · 🕒 = eingeschränkt · 🔗 = entweder/oder' });
 }
 
 function buildEditorComponents(player, weekStartDate, options = {}) {
   const weekDates = getWeekDates(weekStartDate);
   const entries = getWeeklyEntries(player.id, weekStartDate);
   const choice = getEitherOrChoice(player.id, weekStartDate);
-  const onlyIfNeededDates = getOnlyIfNeededDates(player.id, weekStartDate);
+  const onlyIfNeededDates = prmAvailabilityEnabled() ? getOnlyIfNeededDates(player.id, weekStartDate) : new Set();
   const withTimeSelect = options.withTimeSelect === true;
   const withEitherOrSelect = options.withEitherOrSelect === true;
 
@@ -611,7 +617,7 @@ function buildEditorComponents(player, weekStartDate, options = {}) {
     rows.push(new ActionRowBuilder().addComponents(dayButtons.slice(index, index + 5)));
   }
 
-  rows.push(new ActionRowBuilder().addComponents(
+  const actionButtons = [
     new ButtonBuilder()
       .setCustomId(`${PREFIX}:allyes:${weekStartDate}`)
       .setLabel('Alle ✅')
@@ -627,12 +633,15 @@ function buildEditorComponents(player, weekStartDate, options = {}) {
     new ButtonBuilder()
       .setCustomId(`${PREFIX}:either:${weekStartDate}`)
       .setLabel(choice ? '🔗 Tage ändern' : '🔗 Entweder/oder')
-      .setStyle(ButtonStyle.Primary),
+      .setStyle(ButtonStyle.Primary)
+  ];
+  if (prmAvailabilityEnabled()) actionButtons.push(
     new ButtonBuilder()
       .setCustomId(`${PREFIX}:needed:${weekStartDate}`)
       .setLabel('🟠 Nur für PRM')
       .setStyle(ButtonStyle.Secondary)
-  ));
+  );
+  rows.push(new ActionRowBuilder().addComponents(actionButtons));
 
   if (withTimeSelect) {
     rows.push(new ActionRowBuilder().addComponents(
@@ -674,7 +683,7 @@ function buildEditorComponents(player, weekStartDate, options = {}) {
     }
   }
 
-  if (options.withNeededSelect === true) {
+  if (options.withNeededSelect === true && prmAvailabilityEnabled()) {
     const selectableDates = weekDates.filter(dateStr => states.get(dateStr).kind !== 'unavailable');
     if (selectableDates.length) {
       rows.push(new ActionRowBuilder().addComponents(
@@ -1043,14 +1052,15 @@ function updateAvailabilityFromWeb(client, {
   }
 
   setDayState(player.id, actorDiscordUserId, dateStr, state);
-  setOnlyIfNeeded(player.id, actorDiscordUserId, dateStr, state.kind !== 'unavailable' && onlyForPrm === true);
+  const useOnlyForPrm = prmAvailabilityEnabled() && state.kind !== 'unavailable' && onlyForPrm === true;
+  setOnlyIfNeeded(player.id, actorDiscordUserId, dateStr, useOnlyForPrm);
   schedulePlannerRefresh(client, player.team_id, [dateStr]);
   return {
     playerId: player.id,
     date: dateStr,
     status: state.kind === 'unavailable' ? 'unavailable' : 'available',
     state,
-    onlyForPrm: state.kind !== 'unavailable' && onlyForPrm === true
+    onlyForPrm: useOnlyForPrm
   };
 }
 
@@ -1193,6 +1203,13 @@ async function handleInteraction(interaction) {
     }
 
     if (action === 'needed') {
+      if (!prmAvailabilityEnabled()) {
+        const player = upsertPlayer(interaction.user, { team_id: resolveTeamForInteraction(interaction)?.id });
+        await interaction.update(buildEditorPayload(player, weekStartDate, {
+          notice: '„Nur für PRM“ ist für dieses Team nicht aktiviert.'
+        }));
+        return true;
+      }
       const player = upsertPlayer(interaction.user, { team_id: resolveTeamForInteraction(interaction)?.id });
       await interaction.update(buildEditorPayload(player, weekStartDate, { withNeededSelect: true }));
       return true;
@@ -1279,6 +1296,13 @@ async function handleInteraction(interaction) {
 
 
     if (action === 'neededdays') {
+      if (!prmAvailabilityEnabled()) {
+        const player = upsertPlayer(interaction.user, { team_id: resolveTeamForInteraction(interaction)?.id });
+        await interaction.update(buildEditorPayload(player, weekStartDate, {
+          notice: '„Nur für PRM“ ist für dieses Team nicht aktiviert.'
+        }));
+        return true;
+      }
       const player = upsertPlayer(interaction.user, { team_id: resolveTeamForInteraction(interaction)?.id });
       const selected = new Set(interaction.values);
       const weekDates = getWeekDates(weekStartDate);
