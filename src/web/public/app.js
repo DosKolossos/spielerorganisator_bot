@@ -302,6 +302,18 @@ function openEvent(id, options = {}) {
     }
     label.append(select); ownLineup.append(label);
   });
+  let suggestedCount = 0;
+  for (const item of event.suggestedLineup || []) {
+    const select = ownLineup.querySelector(`select[data-role="${item.role}"]`);
+    const value = `player:${item.playerId}`;
+    if (select && !select.value && [...select.options].some(option => option.value === value)) {
+      select.value = value;
+      suggestedCount += 1;
+    }
+  }
+  if (suggestedCount) {
+    $('#form-message').textContent = `${suggestedCount} verfügbare Spieler wurden passend zu ihren Positionen vorausgewählt. Bitte prüfen und speichern.`;
+  }
   if (options.selectPlayer) {
     const playerValue = `player:${options.selectPlayer.id}`;
     const selects = [...ownLineup.querySelectorAll('select')];
@@ -334,7 +346,12 @@ function openAvailability(day, player) {
   $('#availability-status').value = day.state === 'unavailable' ? 'unavailable' : 'available';
   $('#availability-from').value = day.availableFrom || '';
   $('#availability-until').value = day.availableUntil || '';
-  $('#availability-prm').checked = Boolean(day.onlyForPrm);
+  const prmAvailability = snapshot.features?.prmAvailability !== false;
+  $('#availability-prm-option').hidden = !prmAvailability;
+  $('#availability-prm-hint').textContent = prmAvailability
+    ? 'Leere Uhrzeiten bedeuten ganztägig verfügbar. „Nur für PRM“ gilt nicht für Scrims oder Trainings.'
+    : 'Leere Uhrzeiten bedeuten ganztägig verfügbar.';
+  $('#availability-prm').checked = prmAvailability && Boolean(day.onlyForPrm);
   $('#availability-message').textContent = '';
   updateAvailabilityFields();
   availabilityDialog.showModal();
@@ -405,7 +422,7 @@ $('#availability-form').addEventListener('submit', async event => {
     status: $('#availability-status').value,
     availableFrom: $('#availability-from').value || null,
     availableUntil: $('#availability-until').value || null,
-    onlyForPrm: $('#availability-prm').checked
+    onlyForPrm: snapshot.features?.prmAvailability !== false && $('#availability-prm').checked
   };
   try {
     await api('/api/availability', { method: 'PATCH', body: JSON.stringify(body) });
