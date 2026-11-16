@@ -131,6 +131,40 @@ test('Nur-für-PRM bleibt sichtbar und zählt nicht als normale Verfügbarkeit',
   database.close();
 });
 
+test('Nur-für-PRM kann für eine Instanz vollständig deaktiviert werden', () => {
+  const previous = process.env.ENABLE_PRM_AVAILABILITY;
+  process.env.ENABLE_PRM_AVAILABILITY = 'false';
+  const database = createTestDatabase();
+  database.prepare(`
+    INSERT INTO weekly_availability_preferences (player_id, availability_date, only_if_needed)
+    VALUES (7, '2099-04-06', 1)
+  `).run();
+  try {
+    const snapshot = buildPlannerSnapshot({ isReady: () => true }, database, { week: '2099-04-06' });
+    assert.equal(snapshot.features.prmAvailability, false);
+    assert.equal(snapshot.teams[0].roster[0].days['2099-04-06'].onlyForPrm, false);
+  } finally {
+    database.close();
+    if (previous == null) delete process.env.ENABLE_PRM_AVAILABILITY;
+    else process.env.ENABLE_PRM_AVAILABILITY = previous;
+  }
+});
+
+test('Verfügbare Mainspieler werden positionsgerecht als Line-up vorgeschlagen', () => {
+  const database = createTestDatabase();
+  database.exec(`
+    INSERT INTO players VALUES (8, 1, 'Jungle', NULL, 'jungle', 'discord-8', 'main', 'Jgl', NULL, 0);
+    INSERT INTO players VALUES (9, 1, 'Mitte', NULL, 'mitte', 'discord-9', 'main', 'Mid', NULL, 0);
+    INSERT INTO players VALUES (10, 1, 'Carry', NULL, 'carry', 'discord-10', 'main', 'ADC', NULL, 0);
+    INSERT INTO players VALUES (11, 1, 'Support', NULL, 'support', 'discord-11', 'main', 'Supp', NULL, 0);
+  `);
+  const snapshot = buildPlannerSnapshot({ isReady: () => true }, database, { week: '2099-04-06' });
+  assert.deepEqual(snapshot.teams[0].events[0].suggestedLineup.map(item => [item.role, item.player]), [
+    ['Jgl', 'Jungle'], ['Mid', 'Mitte'], ['ADC', 'Carry'], ['Supp', 'Support']
+  ]);
+  database.close();
+});
+
 test('Aufgabenlogik erkennt die gespeicherte eigene Aufstellung', () => {
   const database = createTestDatabase();
   let snapshot = buildPlannerSnapshot({ isReady: () => true }, database, {
