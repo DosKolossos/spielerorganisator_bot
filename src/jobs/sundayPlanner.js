@@ -2,6 +2,7 @@ const db = require('../db/database');
 const { upsertAdminCardMessage, refreshStoredEventCard } = require('../commands/spieltermin');
 const { displayName, formatRosterGroups, normalizeRosterStatus } = require('../utils/rosterUtils');
 const { getTeamById, getDefaultTeam } = require('../services/teamService');
+const { prmAvailabilityEnabled } = require('../utils/features');
 
 const PLANNER_WINDOW_DAYS = 14;
 
@@ -865,11 +866,11 @@ async function runSundayPlanner(client, options = {}) {
     ORDER BY p.id ASC, r.id ASC
   `).all(teamId);
 
-  const availabilityPreferences = db.prepare(`
+  const availabilityPreferences = prmAvailabilityEnabled() ? db.prepare(`
     SELECT player_id, availability_date, only_if_needed
     FROM weekly_availability_preferences
     WHERE availability_date BETWEEN ? AND ? AND only_if_needed = 1
-  `).all(plannerStartDate, windowEndDate);
+  `).all(plannerStartDate, windowEndDate) : [];
 
   const explicitItems = mapExplicitEntries(upcomingEntries);
   const recurringItems = expandRecurringRules(rules, windowDates);
@@ -1108,11 +1109,11 @@ async function refreshPlannerDates(client, { teamId, dates }) {
       ORDER BY e.start_at ASC
     `).all(`${dateStr} 00:00`, `${dateStr} 23:59`, teamId);
 
-    const preferences = db.prepare(`
+    const preferences = prmAvailabilityEnabled() ? db.prepare(`
       SELECT player_id, availability_date, only_if_needed
       FROM weekly_availability_preferences
       WHERE availability_date = ? AND only_if_needed = 1
-    `).all(dateStr);
+    `).all(dateStr) : [];
     const suggestion = buildDailySuggestion(players, entries, rules, preferences, dateStr);
     if (!suggestion) continue;
 
